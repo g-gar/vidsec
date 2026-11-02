@@ -35,11 +35,21 @@ test "ManagedBuffer: memory buffer basic operations" {
 test "ManagedBuffer: mmap file and Copy-on-Write promotion" {
     const allocator = std.testing.allocator;
 
-    // Use a known existing test file in root
-    var buf = try ManagedBuffer.initMmap(allocator, "video.mp4");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "test_sample.mp4",
+        .data = "\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isomiso2mp41EXTRA_COW_PAYLOAD_FOR_TESTING_PURPOSES",
+    });
+
+    const real_path = try tmp.dir.realPathFileAlloc(std.testing.io, "test_sample.mp4", allocator);
+    defer allocator.free(real_path);
+
+    var buf = try ManagedBuffer.initMmap(allocator, real_path);
     defer buf.deinit(allocator);
 
-    try std.testing.expect(buf.size() > 1000);
+    try std.testing.expect(buf.size() > 20);
     try std.testing.expectEqual(BufferKind.mapped_file, buf.kind);
 
     // Read ftyp box header without loading file into heap RAM
@@ -52,8 +62,8 @@ test "ManagedBuffer: mmap file and Copy-on-Write promotion" {
     try std.testing.expectEqual(BufferKind.memory, buf.kind);
     try std.testing.expectEqualStrings("TEST", buf.slice()[0..4]);
 
-    // Verify underlying video.mp4 file on disk was NOT mutated
-    var fresh_buf = try ManagedBuffer.initMmap(allocator, "video.mp4");
+    // Verify underlying file on disk was NOT mutated (Copy-on-Write invariant)
+    var fresh_buf = try ManagedBuffer.initMmap(allocator, real_path);
     defer fresh_buf.deinit(allocator);
     var fresh_header: [4]u8 = undefined;
     try fresh_buf.readAt(4, &fresh_header);
@@ -62,7 +72,19 @@ test "ManagedBuffer: mmap file and Copy-on-Write promotion" {
 
 test "ArtifactStore: initFromFile" {
     const allocator = std.testing.allocator;
-    var store = try ArtifactStore.initFromFile(allocator, "video.mp4");
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "test_store.mp4",
+        .data = "\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2mp41",
+    });
+
+    const real_path = try tmp.dir.realPathFileAlloc(std.testing.io, "test_store.mp4", allocator);
+    defer allocator.free(real_path);
+
+    var store = try ArtifactStore.initFromFile(allocator, real_path);
     defer store.deinit();
 
     const root = try store.getBuffer("file");

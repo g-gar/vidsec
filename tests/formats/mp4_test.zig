@@ -10,7 +10,7 @@ test "Mp4Inspector on real video.mp4 sample file" {
     const allocator = std.testing.allocator;
     const path_z = "video.mp4";
 
-    const fp = c_stdio.fopen(path_z, "rb") orelse return;
+    const fp = c_stdio.fopen(path_z, "rb") orelse (c_stdio.fopen("zig-out/out/video.mp4", "rb") orelse return);
     defer _ = c_stdio.fclose(fp);
 
     if (c_stdio.fseek(fp, 0, c_stdio.SEEK_END) != 0) return;

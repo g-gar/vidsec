@@ -1,5 +1,6 @@
 const std = @import("std");
 const vidsec = @import("vidsec");
+const build_options = @import("build_options");
 
 const c_stdio = @cImport({
     @cInclude("stdio.h");
@@ -9,6 +10,7 @@ const CliCommand = enum {
     validate,
     run,
     help,
+    version,
 };
 
 fn printUsage() void {
@@ -20,6 +22,7 @@ fn printUsage() void {
         \\  vidsec run      --pipeline <pipeline.yaml> [--schemas <schemas.yaml>] [--env <.env>]
         \\                  [--db <state.db>] [--trace-out <trace.jsonl>]
         \\                  [--artifact-out <artifact_id>=<out_path>] <input_file>
+        \\  vidsec version  (--version, -v)
         \\
     ;
     _ = c_stdio.fwrite(usage.ptr, 1, usage.len, c_stdio.stdout);
@@ -41,6 +44,8 @@ pub fn main(init: std.process.Init) !u8 {
         .run
     else if (std.mem.eql(u8, cmd_str, "help") or std.mem.eql(u8, cmd_str, "--help") or std.mem.eql(u8, cmd_str, "-h"))
         .help
+    else if (std.mem.eql(u8, cmd_str, "version") or std.mem.eql(u8, cmd_str, "--version") or std.mem.eql(u8, cmd_str, "-v"))
+        .version
     else {
         printUsage();
         return 1;
@@ -48,6 +53,13 @@ pub fn main(init: std.process.Init) !u8 {
 
     if (cmd == .help) {
         printUsage();
+        return 0;
+    }
+
+    if (cmd == .version) {
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "vidsec {s}\n", .{build_options.version_string}) catch "vidsec 2.0.0\n";
+        _ = c_stdio.fwrite(msg.ptr, 1, msg.len, c_stdio.stdout);
         return 0;
     }
 
@@ -156,7 +168,7 @@ pub fn main(init: std.process.Init) !u8 {
             );
             _ = c_stdio.fwrite(line.ptr, 1, line.len, c_stdio.stdout);
         },
-        .help => unreachable,
+        .help, .version => unreachable,
     }
 
     return 0;

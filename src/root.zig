@@ -53,6 +53,10 @@ pub const ArtifactStore = pipeline.ArtifactStore;
 pub const ExecutionTracer = pipeline.ExecutionTracer;
 pub const PipelineEngine = pipeline.PipelineEngine;
 
+pub const build_options = @import("build_options");
+pub const version = build_options.version;
+pub const version_string = build_options.version_string;
+
 test {
     std.testing.refAllDecls(@This());
 }

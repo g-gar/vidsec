@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
 const c_posix = @cImport({
+    @cUndef("_FORTIFY_SOURCE");
     @cInclude("sys/mman.h");
     @cInclude("sys/stat.h");
     @cInclude("fcntl.h");

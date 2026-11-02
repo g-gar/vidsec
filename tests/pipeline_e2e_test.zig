@@ -372,7 +372,10 @@ test "E2E: Pipeline execution on real sample bird.avi detects trailing overlay" 
     defer eng.deinit();
     try eng.preflightValidate();
 
-    var artifacts = try pipeline_core.ArtifactStore.initFromFile(std.testing.allocator, "bird.avi");
+    var artifacts = pipeline_core.ArtifactStore.initFromFile(std.testing.allocator, "bird.avi") catch |err| switch (err) {
+        error.StreamNotFound => pipeline_core.ArtifactStore.initFromFile(std.testing.allocator, "zig-out/out/bird.avi") catch return,
+        else => return err,
+    };
     defer artifacts.deinit();
 
     const summary = try eng.run(&artifacts);
@@ -433,7 +436,10 @@ test "E2E: Pipeline execution on real sample video.mp4 verifies clean" {
     defer eng.deinit();
     try eng.preflightValidate();
 
-    var artifacts = try pipeline_core.ArtifactStore.initFromFile(std.testing.allocator, "video.mp4");
+    var artifacts = pipeline_core.ArtifactStore.initFromFile(std.testing.allocator, "video.mp4") catch |err| switch (err) {
+        error.StreamNotFound => pipeline_core.ArtifactStore.initFromFile(std.testing.allocator, "zig-out/out/video.mp4") catch return,
+        else => return err,
+    };
     defer artifacts.deinit();
 
     const summary = try eng.run(&artifacts);

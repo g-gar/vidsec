@@ -57,7 +57,7 @@ test "SafeRiffParser parses synthetic RIFF/AVI container" {
 
 test "SafeRiffParser parses real bird.avi" {
     const path_z = "bird.avi";
-    const fp = c_stdio.fopen(path_z, "rb") orelse return;
+    const fp = c_stdio.fopen(path_z, "rb") orelse (c_stdio.fopen("zig-out/out/bird.avi", "rb") orelse return);
     defer _ = c_stdio.fclose(fp);
 
     if (c_stdio.fseek(fp, 0, c_stdio.SEEK_END) != 0) return;

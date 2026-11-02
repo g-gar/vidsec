@@ -61,7 +61,7 @@ test "SafeEbmlParser parses synthetic EBML Header and reports doctype" {
 
 test "SafeEbmlParser parses real Jellyfish_1080_10s_30MB.mkv cleanly" {
     const path_z = "Jellyfish_1080_10s_30MB.mkv";
-    const fp = c_stdio.fopen(path_z, "rb") orelse return;
+    const fp = c_stdio.fopen(path_z, "rb") orelse (c_stdio.fopen("zig-out/out/Jellyfish_1080_10s_30MB.mkv", "rb") orelse return);
     defer _ = c_stdio.fclose(fp);
 
     if (c_stdio.fseek(fp, 0, c_stdio.SEEK_END) != 0) return;

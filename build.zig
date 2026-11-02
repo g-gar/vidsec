@@ -4,6 +4,14 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const vidsec_version = std.SemanticVersion{ .major = 2, .minor = 0, .patch = 0 };
+    const version_str = "2.0.0";
+
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version_string", version_str);
+    build_options.addOption(std.SemanticVersion, "version", vidsec_version);
+    const options_mod = build_options.createModule();
+
     // 1. Standalone C-ABI & Plugin SDK module (zero SQLite/YAML dependencies for .so plugins)
     const abi_mod = b.addModule("vidsec_abi", .{
         .root_source_file = b.path("src/lib/abi/mod.zig"),
@@ -76,6 +84,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     root_mod.linkSystemLibrary("sqlite3", .{});
+    root_mod.addImport("build_options", options_mod);
     root_mod.addImport("vidsec_abi", abi_mod);
     root_mod.addImport("vidsec_magic", magic_mod);
     root_mod.addImport("vidsec_math", math_mod);
@@ -86,9 +95,9 @@ pub fn build(b: *std.Build) void {
     root_mod.addImport("vidsec_riff", riff_mod);
 
     // 10. Official `.so` Plugin Shared Libraries (`src/plugin/*`)
-    _ = addPluginSharedLib(b, target, optimize, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, "triage", "src/plugin/triage/mod.zig");
-    _ = addPluginSharedLib(b, target, optimize, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, "ir", "src/plugin/ir/mod.zig");
-    _ = addPluginSharedLib(b, target, optimize, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, "forensics", "src/plugin/forensics/mod.zig");
+    _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, "triage", "src/plugin/triage/mod.zig");
+    _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, "ir", "src/plugin/ir/mod.zig");
+    _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, "forensics", "src/plugin/forensics/mod.zig");
 
     // 6. Main CLI executable (`vidsec`)
     const exe_mod = b.createModule(.{
@@ -97,6 +106,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    exe_mod.addImport("build_options", options_mod);
     exe_mod.addImport("vidsec", root_mod);
     exe_mod.addImport("vidsec_abi", abi_mod);
     exe_mod.addImport("vidsec_magic", magic_mod);
@@ -104,6 +114,7 @@ pub fn build(b: *std.Build) void {
 
     const exe = b.addExecutable(.{
         .name = "vidsec",
+        .version = vidsec_version,
         .root_module = exe_mod,
     });
     b.installArtifact(exe);
@@ -131,6 +142,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     test_suite_mod.linkSystemLibrary("sqlite3", .{});
+    test_suite_mod.addImport("build_options", options_mod);
     test_suite_mod.addImport("vidsec", root_mod);
     test_suite_mod.addImport("vidsec_abi", abi_mod);
     test_suite_mod.addImport("vidsec_magic", magic_mod);
@@ -145,6 +157,7 @@ pub fn build(b: *std.Build) void {
         .root_module = test_suite_mod,
     });
     const run_test_suite = b.addRunArtifact(test_suite);
+    run_test_suite.setCwd(b.path("."));
 
     const test_step = b.step("test", "Run all tests in the tests/ suite");
     test_step.dependOn(&run_unit_check.step);
@@ -156,6 +169,7 @@ pub fn addPluginSharedLib(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
+    version: std.SemanticVersion,
     abi_mod: *std.Build.Module,
     magic_mod: *std.Build.Module,
     math_mod: *std.Build.Module,
@@ -195,6 +209,7 @@ pub fn addPluginSharedLib(
     const lib = b.addLibrary(.{
         .linkage = .dynamic,
         .name = name,
+        .version = version,
         .root_module = plugin_mod,
     });
 
