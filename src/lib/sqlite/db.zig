@@ -310,7 +310,14 @@ fn formatSavepointCmd(buf: []u8, prefix: []const u8, name: []const u8) ![]const 
     return std.fmt.bufPrint(buf, "{s} \"{s}\";", .{ prefix, name });
 }
 
-const sqlite_transient: c.sqlite3_destructor_type = @ptrFromInt(std.math.maxInt(usize));
+// SQLite's SQLITE_TRANSIENT is defined in C as ((sqlite3_destructor_type)-1).
+// On AArch64 and ARM architectures, function pointers enforce alignment >= 2 or 4,
+// which causes a direct `@ptrFromInt(~0)` to fail comptime alignment assertions.
+// Reinterpreting the bit pattern bypasses this restriction while preserving the exact sentinel value.
+const sqlite_transient: c.sqlite3_destructor_type = blk: {
+    const raw: usize = std.math.maxInt(usize);
+    break :blk @as(*const c.sqlite3_destructor_type, @ptrCast(&raw)).*;
+};
 
 /// Idiomatic Zig wrapper around `*c.sqlite3_stmt`.
 pub const Stmt = struct {
