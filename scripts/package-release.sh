@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Vidsec local packaging script
-VERSION="v2.0.0"
+ZON_VER="$(grep '\.version' build.zig.zon | sed -E 's/.*"([^"]+)".*/\1/')"
+VERSION="v${ZON_VER}"
 TARGET="${1:-native}"
 NAME="linux-x86_64"
 
@@ -35,7 +36,11 @@ cp configs/pipeline.yaml configs/schemas.yaml "${DIST_DIR}/configs/"
 # Tarball
 cd dist
 tar -czvf "${PKG_NAME}.tar.gz" "${PKG_NAME}"
-sha256sum "${PKG_NAME}.tar.gz" > "${PKG_NAME}.tar.gz.sha256"
+if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "${PKG_NAME}.tar.gz" > "${PKG_NAME}.tar.gz.sha256"
+else
+    shasum -a 256 "${PKG_NAME}.tar.gz" > "${PKG_NAME}.tar.gz.sha256"
+fi
 cat *.sha256 > SHA256SUMS.txt
 
 echo "==> Release package ready:"
