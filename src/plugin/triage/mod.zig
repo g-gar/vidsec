@@ -42,7 +42,6 @@ pub const PROBE_FILE_OUTPUT_FIELDS = [_][*:0]const u8{
     "flags_csv",
     "suspicious_string",
     "zip_eocd_offset",
-    "report_json",
 };
 
 pub const PROBE_ISOBMFF_OUTPUT_FIELDS = [_][*:0]const u8{
@@ -56,7 +55,6 @@ pub const PROBE_ISOBMFF_OUTPUT_FIELDS = [_][*:0]const u8{
     "has_ftyp",
     "has_moov",
     "flags_csv",
-    "report_json",
 };
 
 pub const PROBE_MP4_OUTPUT_FIELDS = [_][*:0]const u8{
@@ -72,7 +70,6 @@ pub const PROBE_MP4_OUTPUT_FIELDS = [_][*:0]const u8{
     "unreferenced_mdat_slack",
     "verdict",
     "flags_csv",
-    "report_json",
 };
 
 pub const PROBE_EBML_OUTPUT_FIELDS = [_][*:0]const u8{
@@ -88,7 +85,6 @@ pub const PROBE_EBML_OUTPUT_FIELDS = [_][*:0]const u8{
     "has_ebml_header",
     "has_segment",
     "flags_csv",
-    "report_json",
 };
 
 pub const PROBE_MKV_OUTPUT_FIELDS = [_][*:0]const u8{
@@ -106,7 +102,6 @@ pub const PROBE_MKV_OUTPUT_FIELDS = [_][*:0]const u8{
     "unreferenced_cluster_slack",
     "verdict",
     "flags_csv",
-    "report_json",
 };
 
 pub const PROBE_RIFF_OUTPUT_FIELDS = [_][*:0]const u8{
@@ -120,7 +115,6 @@ pub const PROBE_RIFF_OUTPUT_FIELDS = [_][*:0]const u8{
     "trailing_slack_bytes",
     "verdict",
     "flags_csv",
-    "report_json",
 };
 
 /// C-ABI task implementation for `triage/probe_file`.
@@ -148,9 +142,6 @@ pub fn runProbeFile(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
     var flags_buf: [512]u8 = undefined;
     const flags_csv = res.formatFlagsCsv(&flags_buf);
 
-    var json_buf: [2048]u8 = undefined;
-    const report_json = res.formatJson(&json_buf);
-
     const suspicious_val = if (res.first_suspicious_string.len > 0)
         abi.Value_ABI.fromText(res.first_suspicious_string)
     else
@@ -167,7 +158,7 @@ pub fn runProbeFile(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
         abi.NamedField_ABI.init("true_magic_kind", abi.Value_ABI.fromInt(res.true_magic_kind)),
         abi.NamedField_ABI.init("true_magic_name", abi.Value_ABI.fromText(res.true_magic_name)),
         abi.NamedField_ABI.init("exceeds_size_limit", abi.Value_ABI.fromBool(res.exceeds_size_limit)),
-        abi.NamedField_ABI.init("verdict", abi.Value_ABI.fromText(res.verdict.asText())),
+        abi.NamedField_ABI.init("verdict", abi.Value_ABI.fromInt(res.verdict.toInt())),
         abi.NamedField_ABI.init("identified_format", abi.Value_ABI.fromText(res.identified_format)),
         abi.NamedField_ABI.init("mime_type", abi.Value_ABI.fromText(res.magic_info.mime_type)),
         abi.NamedField_ABI.init("extension_match", abi.Value_ABI.fromBool(res.extension_match)),
@@ -177,7 +168,6 @@ pub fn runProbeFile(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
         abi.NamedField_ABI.init("flags_csv", abi.Value_ABI.fromText(flags_csv)),
         abi.NamedField_ABI.init("suspicious_string", suspicious_val),
         abi.NamedField_ABI.init("zip_eocd_offset", zip_eocd_val),
-        abi.NamedField_ABI.init("report_json", abi.Value_ABI.fromText(report_json)),
     });
 
     if (res.verdict == .pass) {

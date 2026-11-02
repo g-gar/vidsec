@@ -162,25 +162,6 @@ pub fn runProbeEbml(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
     var flags_buf: [1024]u8 = undefined;
     const evaluation = evaluateEbmlPolicy(parse_result, stream.len(), &flags_buf);
 
-    var json_buf: [2048]u8 = undefined;
-    const report_json = std.fmt.bufPrint(
-        &json_buf,
-        \\{{"element_count":{d},"root_elements":{d},"max_depth":{d},"cluster_count":{d},"total_cluster_bytes":{d},"trailing_slack":{d},"doc_type":"{s}","doc_type_version":{d},"verdict":"{s}","flags":"{s}"}}
-    ,
-        .{
-            evaluation.element_count,
-            evaluation.root_element_count,
-            evaluation.max_depth,
-            evaluation.cluster_count,
-            evaluation.total_cluster_bytes,
-            evaluation.trailing_slack_bytes,
-            evaluation.doc_type,
-            evaluation.doc_type_version,
-            evaluation.verdict.asText(),
-            evaluation.flags_csv,
-        },
-    ) catch "{}";
-
     try ctx.emitRow("ebml_triage", &.{
         abi.NamedField_ABI.init("element_count", abi.Value_ABI.fromInt(@intCast(evaluation.element_count))),
         abi.NamedField_ABI.init("root_element_count", abi.Value_ABI.fromInt(@intCast(evaluation.root_element_count))),
@@ -190,11 +171,10 @@ pub fn runProbeEbml(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
         abi.NamedField_ABI.init("trailing_slack_bytes", abi.Value_ABI.fromInt(@intCast(evaluation.trailing_slack_bytes))),
         abi.NamedField_ABI.init("doc_type", abi.Value_ABI.fromText(evaluation.doc_type)),
         abi.NamedField_ABI.init("doc_type_version", abi.Value_ABI.fromInt(@intCast(evaluation.doc_type_version))),
-        abi.NamedField_ABI.init("verdict", abi.Value_ABI.fromText(evaluation.verdict.asText())),
+        abi.NamedField_ABI.init("verdict", abi.Value_ABI.fromInt(evaluation.verdict.toInt())),
         abi.NamedField_ABI.init("has_ebml_header", abi.Value_ABI.fromBool(evaluation.has_ebml_header)),
         abi.NamedField_ABI.init("has_segment", abi.Value_ABI.fromBool(evaluation.has_segment)),
         abi.NamedField_ABI.init("flags_csv", abi.Value_ABI.fromText(evaluation.flags_csv)),
-        abi.NamedField_ABI.init("report_json", abi.Value_ABI.fromText(report_json)),
     });
 
     if (emit_elements) {

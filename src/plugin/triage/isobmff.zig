@@ -173,23 +173,6 @@ pub fn runProbeIsobmff(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
     var flags_buf: [1024]u8 = undefined;
     const triage_res = evaluatePolicy(parse_result, file_size, &flags_buf);
 
-    var json_buf: [2048]u8 = undefined;
-    const report_json = std.fmt.bufPrint(
-        &json_buf,
-        \\{{"box_count":{d},"root_boxes":{d},"max_depth":{d},"mdat_count":{d},"total_mdat_bytes":{d},"trailing_slack":{d},"verdict":"{s}","flags":"{s}"}}
-    ,
-        .{
-            triage_res.box_count,
-            triage_res.root_box_count,
-            triage_res.max_depth,
-            triage_res.mdat_count,
-            triage_res.total_mdat_bytes,
-            triage_res.trailing_slack_bytes,
-            triage_res.verdict.asText(),
-            triage_res.flags_csv,
-        },
-    ) catch "{}";
-
     // 1. Emit primary triage summary row into `isobmff_triage`
     try ctx.emitRow("isobmff_triage", &.{
         abi.NamedField_ABI.init("box_count", abi.Value_ABI.fromInt(@intCast(triage_res.box_count))),
@@ -198,11 +181,10 @@ pub fn runProbeIsobmff(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
         abi.NamedField_ABI.init("mdat_count", abi.Value_ABI.fromInt(@intCast(triage_res.mdat_count))),
         abi.NamedField_ABI.init("total_mdat_bytes", abi.Value_ABI.fromInt(@intCast(triage_res.total_mdat_bytes))),
         abi.NamedField_ABI.init("trailing_slack_bytes", abi.Value_ABI.fromInt(@intCast(triage_res.trailing_slack_bytes))),
-        abi.NamedField_ABI.init("verdict", abi.Value_ABI.fromText(triage_res.verdict.asText())),
+        abi.NamedField_ABI.init("verdict", abi.Value_ABI.fromInt(triage_res.verdict.toInt())),
         abi.NamedField_ABI.init("has_ftyp", abi.Value_ABI.fromBool(triage_res.has_ftyp)),
         abi.NamedField_ABI.init("has_moov", abi.Value_ABI.fromBool(triage_res.has_moov)),
         abi.NamedField_ABI.init("flags_csv", abi.Value_ABI.fromText(triage_res.flags_csv)),
-        abi.NamedField_ABI.init("report_json", abi.Value_ABI.fromText(report_json)),
     });
 
     // 2. Optionally emit individual box rows into `isobmff_boxes`

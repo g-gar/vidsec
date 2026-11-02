@@ -14,6 +14,8 @@ modules:
     path: "./zig-out/lib/libir.so"
   forensics:
     path: "./zig-out/lib/libforensics.so"
+  remediation:
+    path: "./zig-out/lib/libremediation.so"
 
 pipelines:
   # ===========================================================================
@@ -36,7 +38,7 @@ pipelines:
 
       - router: dispatch_after_triage
         cases:
-          - when: "SELECT 1 FROM file_triage WHERE verdict = 'DROP' OR true_magic_kind >= 10 OR exceeds_size_limit = 1"
+          - when: "SELECT 1 FROM file_triage t JOIN enum_verdict v ON t.verdict = v.id WHERE v.code = 'DROP' OR t.true_magic_kind >= 10 OR t.exceeds_size_limit = 1"
             goto: quarantine_flow
         default: stage1_container_ready
 
@@ -83,7 +85,7 @@ pipelines:
 
       - router: dispatch_after_isobmff_triage
         cases:
-          - when: "SELECT 1 FROM isobmff_triage WHERE verdict = 'DROP'"
+          - when: "SELECT 1 FROM isobmff_triage t JOIN enum_verdict v ON t.verdict = v.id WHERE v.code = 'DROP'"
             goto: quarantine_flow
         default: isobmff_verified_flow
 
@@ -114,7 +116,7 @@ pipelines:
 
       - router: dispatch_after_mp4
         cases:
-          - when: "SELECT 1 FROM mp4_triage WHERE verdict = 'DROP'"
+          - when: "SELECT 1 FROM mp4_triage t JOIN enum_verdict v ON t.verdict = v.id WHERE v.code = 'DROP'"
             goto: quarantine_flow
         default: ir_lowering_pipeline
 
@@ -133,7 +135,7 @@ pipelines:
 
       - router: dispatch_after_mp4_triage
         cases:
-          - when: "SELECT 1 FROM mp4_triage WHERE verdict = 'DROP'"
+          - when: "SELECT 1 FROM mp4_triage t JOIN enum_verdict v ON t.verdict = v.id WHERE v.code = 'DROP'"
             goto: quarantine_flow
         default: mp4_verified_flow
 
@@ -172,7 +174,7 @@ pipelines:
 
       - router: dispatch_after_ebml_triage
         cases:
-          - when: "SELECT 1 FROM ebml_triage WHERE verdict = 'DROP'"
+          - when: "SELECT 1 FROM ebml_triage t JOIN enum_verdict v ON t.verdict = v.id WHERE v.code = 'DROP'"
             goto: quarantine_flow
         default: ebml_verified_flow
 
@@ -203,7 +205,7 @@ pipelines:
 
       - router: dispatch_after_mkv
         cases:
-          - when: "SELECT 1 FROM mkv_triage WHERE verdict = 'DROP'"
+          - when: "SELECT 1 FROM mkv_triage t JOIN enum_verdict v ON t.verdict = v.id WHERE v.code = 'DROP'"
             goto: quarantine_flow
         default: ir_lowering_pipeline
 
@@ -222,7 +224,7 @@ pipelines:
 
       - router: dispatch_after_mkv_triage
         cases:
-          - when: "SELECT 1 FROM mkv_triage WHERE verdict = 'DROP'"
+          - when: "SELECT 1 FROM mkv_triage t JOIN enum_verdict v ON t.verdict = v.id WHERE v.code = 'DROP'"
             goto: quarantine_flow
         default: mkv_verified_flow
 
@@ -261,7 +263,7 @@ pipelines:
 
       - router: dispatch_after_riff_triage
         cases:
-          - when: "SELECT 1 FROM riff_triage WHERE verdict = 'DROP'"
+          - when: "SELECT 1 FROM riff_triage t JOIN enum_verdict v ON t.verdict = v.id WHERE v.code = 'DROP'"
             goto: quarantine_flow
         default: riff_verified_flow
 
@@ -406,8 +408,66 @@ pipelines:
       - router: dispatch_after_forensics
         cases:
           - when: "SELECT 1 FROM audit_findings WHERE severity >= 2 AND is_remediated = 0"
-            goto: forensics_findings_detected
+            goto: remediation_pipeline
         default: video_verified_clean
+
+  # ===========================================================================
+  # STAGE 3: Remediation & Content Disarm (CDR) Pipeline
+  # ===========================================================================
+  remediation_pipeline:
+    steps:
+      - task: carve_threats_to_quarantine
+        use: remediation/carve_quarantine
+        input:
+          stream:
+            from: file
+          threats:
+            table: audit_findings
+            filter: "severity >= 2 AND byte_length > 0 AND is_remediated = 0"
+            map: { finding_id: finding_id, rule_id: rule_id, file_offset: file_offset, byte_length: byte_length }
+
+      - task: sanitize_container
+        use: remediation/sanitize
+        input:
+          stream:
+            from: file
+          findings:
+            table: audit_findings
+            filter: "severity >= 2 AND is_remediated = 0"
+            map: { finding_id: finding_id, rule_id: rule_id, file_offset: file_offset, byte_length: byte_length }
+          meta:
+            table: container_metadata
+            map: { highest_root_end: highest_root_end, file_size: file_size }
+        output:
+          artifact: clean_video
+          into: audit_findings
+          mode: update
+          key: finding_id
+          fields: [finding_id, is_remediated, remediation_action]
+
+      - router: dispatch_after_remediation
+        cases:
+          - when: "SELECT 1 FROM audit_findings WHERE severity >= 2 AND is_remediated = 0"
+            goto: forensics_findings_detected
+        default: video_remediated_clean
+
+  video_remediated_clean:
+    steps:
+      - task: log_remediation_success
+        use: sql_rule
+        query: |
+          SELECT 'VIDEO_REMEDIATED_CLEAN' AS rule_id,
+                 0 AS severity,
+                 0 AS file_offset,
+                 0 AS byte_length,
+                 0 AS end_offset,
+                 'remediation' AS region_tag,
+                 CAST((SELECT COUNT(*) FROM audit_findings WHERE is_remediated = 1) AS REAL) AS measured_value,
+                 'Video certified sanitized: All critical anomalies neutralized and clean artifact produced' AS message,
+                 1 AS is_remediated,
+                 'REMEDIATION_COMPLETE' AS remediation_action
+        output:
+          into: audit_findings
 
   forensics_findings_detected:
     steps:

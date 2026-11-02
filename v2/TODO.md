@@ -76,3 +76,24 @@ Aprovechar el fichero de traza estructurado (`../zig-out/out/trace.jsonl`) y el 
 
 - **Cuota de Memoria por Tarea (`max_task_memory_mb`):** Exponer un asignador o `CountingAllocator` en el Host o límites `setrlimit` / `cgroup` para abortar tareas que superen el umbral configurado en `.env`.
 - **Streams y Cuarentena Remota Transparente (SSH / SFTP / S3):** Dado que los plugins leen bytes exclusivamente mediante `host.stream_read_at` y extraen payloads mediante `host.carve_to_quarantine`, el Host podrá montar orígenes o destinos remotos configurados con credenciales en `.env` sin modificar ni recompilar ningún plugin `.so`.
+
+---
+
+## 4. Integración de Google Magika (`libmagika`) para Clasificación Dual y Alineación con VirusTotal
+
+### Caso de Uso
+Complementar el escáner forense determinista de firmas ([`src/lib/magic/`](file:///home/ubuntu/.gemini/antigravity/scratch/vidsec/src/lib/magic/)) con el modelo de *Deep Learning* **Google Magika** empleado por **VirusTotal**, permitiendo detección anticipada de evasión (*spoofing* de cabeceras, ejecutables camuflados como MP4) y enriquecimiento de metadatos con scores probabilísticos de confianza.
+
+Para el análisis técnico detallado, comparativa de rendimiento y trade-offs de compilación, consultar el documento de diseño específico:
+👉 [`v2/development/magika.md`](file:///home/ubuntu/.gemini/antigravity/scratch/vidsec/v2/development/magika.md)
+
+### Puntos Clave de la Integración
+1. **Validación Cruzada Dual (*Dual-Engine Verification*):**
+   - Comparación en SQLite entre la estructura física analizada por `vidsec_magic` y la clasificación neuronal de Magika (`magika_label` + `magika_score`).
+   - Detección inmediata de anomalías cuando los primeros bytes parecen un contenedor multimedia válido pero la red neuronal clasifica el cuerpo como `pebin`, `elf` o `script`.
+2. **Preservación de la Autonomía de Compilación:**
+   - Mantener el motor base `vidsec` 100% puro en Zig (cero dependencias externas de Rust/Python/ONNX).
+   - Encapsular `libmagika` como un **plugin C-ABI opcional** (`vidsec_magika.so`), activable dinámicamente mediante `pipeline.yaml` cuando las librerías nativas o el CLI estén presentes en el entorno.
+3. **Estandarización de Esquema e Informes:**
+   - Alinear los campos de `file_triage` con las convenciones de Magika/VirusTotal (`ct_label`, `score`, `group`, `mime_type`).
+   - Exponer la etiqueta y confianza de Magika en las vistas ejecutivas (`v_executive_summary`) e informes de auditoría (PDF/LaTeX).

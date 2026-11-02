@@ -149,27 +149,6 @@ pub fn runProbeMp4(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
         brand_buf = f.major_brand.bytes;
     }
 
-    var json_buf: [2048]u8 = undefined;
-    const report_json = std.fmt.bufPrint(
-        &json_buf,
-        \\{{"tracks":{d},"video_tracks":{d},"audio_tracks":{d},"major_brand":"{s}","video_codec":"{s}","width":{d},"height":{d},"total_samples":{d},"sample_bytes":{d},"unreferenced_slack":{d},"verdict":"{s}","flags":"{s}"}}
-    ,
-        .{
-            mp4_result.tracks.len,
-            video_count,
-            audio_count,
-            brand_buf,
-            primary_video_codec,
-            primary_video_w,
-            primary_video_h,
-            mp4_result.total_samples,
-            mp4_result.total_sample_bytes,
-            mp4_result.unreferenced_mdat_slack,
-            evaluation.verdict.asText(),
-            evaluation.flags_csv,
-        },
-    ) catch "{}";
-
     // 4. Emit primary MP4 triage row
     try ctx.emitRow("mp4_triage", &.{
         abi.NamedField_ABI.init("track_count", abi.Value_ABI.fromInt(@intCast(mp4_result.tracks.len))),
@@ -182,9 +161,8 @@ pub fn runProbeMp4(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
         abi.NamedField_ABI.init("total_samples", abi.Value_ABI.fromInt(@intCast(mp4_result.total_samples))),
         abi.NamedField_ABI.init("total_sample_bytes", abi.Value_ABI.fromInt(@intCast(mp4_result.total_sample_bytes))),
         abi.NamedField_ABI.init("unreferenced_mdat_slack", abi.Value_ABI.fromInt(@intCast(mp4_result.unreferenced_mdat_slack))),
-        abi.NamedField_ABI.init("verdict", abi.Value_ABI.fromText(evaluation.verdict.asText())),
+        abi.NamedField_ABI.init("verdict", abi.Value_ABI.fromInt(evaluation.verdict.toInt())),
         abi.NamedField_ABI.init("flags_csv", abi.Value_ABI.fromText(evaluation.flags_csv)),
-        abi.NamedField_ABI.init("report_json", abi.Value_ABI.fromText(report_json)),
     });
 
     // 5. Optionally emit tracks table

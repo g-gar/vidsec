@@ -8,6 +8,7 @@ const pipeline_core = vidsec.pipeline;
 const triage = vidsec.plugin.triage;
 const ir = vidsec.plugin.ir;
 const forensics = vidsec.plugin.forensics;
+const remediation = vidsec.plugin.remediation;
 
 test "E2E: PipelineEngine integration with real triage/probe_file plugin (polyglot MP4)" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -40,12 +41,12 @@ test "E2E: PipelineEngine integration with real triage/probe_file plugin (polygl
         \\        use: sql_rule
         \\        query: |
         \\          SELECT 'STAGE0_TRIAGE' AS rule_id,
-        \\                 CASE WHEN verdict = 'DROP' THEN 2 ELSE 1 END AS severity,
+        \\                 CASE WHEN verdict = 2 THEN 2 ELSE 1 END AS severity,
         \\                 COALESCE(zip_eocd_offset, 0) AS file_offset,
         \\                 identified_format AS region_tag,
         \\                 mid_entropy AS measured_value,
         \\                 flags_csv AS message
-        \\          FROM file_triage WHERE verdict != 'PASS'
+        \\          FROM file_triage WHERE verdict != 0
         \\        output:
         \\          into: audit_findings
     ;
@@ -91,7 +92,7 @@ test "E2E: PipelineEngine integration with real triage/probe_file plugin (polygl
     try std.testing.expectEqual(@as(usize, 2), summary.total_rows_emitted);
 
     var stmt = try db_runtime.db.prepareReadOnly(
-        "SELECT verdict, identified_format, mime_type, flags_csv, zip_eocd_offset, report_json FROM file_triage",
+        "SELECT v.code, identified_format, mime_type, flags_csv, zip_eocd_offset FROM file_triage t JOIN enum_verdict v ON t.verdict = v.id",
     );
     defer stmt.deinit();
     const row = (try stmt.step()).?;
@@ -100,7 +101,6 @@ test "E2E: PipelineEngine integration with real triage/probe_file plugin (polygl
     try std.testing.expectEqualStrings("video/mp4", row.text(2));
     try std.testing.expectEqualStrings("SECONDARY_SIGNATURE_ZIP_EOCD_FOUND", row.text(3));
     try std.testing.expectEqual(@as(i64, 8170), row.int64(4));
-    try std.testing.expect(std.mem.indexOf(u8, row.text(5), "\"verdict\":\"FLAGGED\"") != null);
 }
 
 test "E2E: configs/pipeline.yaml clean MP4 execution reaches video_verified_clean" {
@@ -127,6 +127,7 @@ test "E2E: configs/pipeline.yaml clean MP4 execution reaches video_verified_clea
     try registry.registerStaticModule("triage", &triage.manifest);
     try registry.registerStaticModule("ir", &ir.manifest);
     try registry.registerStaticModule("forensics", &forensics.manifest);
+    try registry.registerStaticModule("remediation", &remediation.manifest);
 
     var eng = pipeline_core.PipelineEngine.init(
         std.testing.allocator,
@@ -155,7 +156,7 @@ test "E2E: configs/pipeline.yaml clean MP4 execution reaches video_verified_clea
     try std.testing.expectEqualStrings("video_verified_clean", summary.final_pipeline);
 
     var stmt = try db_runtime.db.prepareReadOnly(
-        "SELECT file_size, detected_family, verdict, identified_format, mime_type FROM file_triage",
+        "SELECT file_size, detected_family, v.code, identified_format, mime_type FROM file_triage t JOIN enum_verdict v ON t.verdict = v.id",
     );
     defer stmt.deinit();
     const row = (try stmt.step()).?;
@@ -190,6 +191,7 @@ test "E2E: configs/pipeline.yaml disguised ELF executable routes to quarantine_f
     try registry.registerStaticModule("triage", &triage.manifest);
     try registry.registerStaticModule("ir", &ir.manifest);
     try registry.registerStaticModule("forensics", &forensics.manifest);
+    try registry.registerStaticModule("remediation", &remediation.manifest);
 
     var eng = pipeline_core.PipelineEngine.init(
         std.testing.allocator,
@@ -244,6 +246,7 @@ test "E2E: configs/pipeline.yaml overflowing mdat box triggers IR_REGION_OVERFLO
     try registry.registerStaticModule("triage", &triage.manifest);
     try registry.registerStaticModule("ir", &ir.manifest);
     try registry.registerStaticModule("forensics", &forensics.manifest);
+    try registry.registerStaticModule("remediation", &remediation.manifest);
 
     var eng = pipeline_core.PipelineEngine.init(
         std.testing.allocator,
@@ -271,7 +274,7 @@ test "E2E: configs/pipeline.yaml overflowing mdat box triggers IR_REGION_OVERFLO
     try std.testing.expectEqualStrings("quarantine_flow", summary.final_pipeline);
 
     var stmt = try db_runtime.db.prepareReadOnly(
-        "SELECT verdict FROM isobmff_triage",
+        "SELECT v.code FROM isobmff_triage t JOIN enum_verdict v ON t.verdict = v.id",
     );
     defer stmt.deinit();
     const row = (try stmt.step()).?;
@@ -302,6 +305,7 @@ test "E2E: configs/pipeline.yaml valid MPEG-TS stream routes to unsupported_form
     try registry.registerStaticModule("triage", &triage.manifest);
     try registry.registerStaticModule("ir", &ir.manifest);
     try registry.registerStaticModule("forensics", &forensics.manifest);
+    try registry.registerStaticModule("remediation", &remediation.manifest);
 
     var eng = pipeline_core.PipelineEngine.init(
         std.testing.allocator,
@@ -361,6 +365,7 @@ test "E2E: Pipeline execution on real sample bird.avi detects trailing overlay" 
     try registry.registerStaticModule("triage", &triage.manifest);
     try registry.registerStaticModule("ir", &ir.manifest);
     try registry.registerStaticModule("forensics", &forensics.manifest);
+    try registry.registerStaticModule("remediation", &remediation.manifest);
 
     var eng = pipeline_core.PipelineEngine.init(
         std.testing.allocator,
@@ -379,11 +384,11 @@ test "E2E: Pipeline execution on real sample bird.avi detects trailing overlay" 
     defer artifacts.deinit();
 
     const summary = try eng.run(&artifacts);
-    try std.testing.expectEqualStrings("forensics_findings_detected", summary.final_pipeline);
+    try std.testing.expectEqualStrings("video_remediated_clean", summary.final_pipeline);
 
     // Verify Stage 0 triage detected AVI
     var triage_stmt = try db_runtime.db.prepareReadOnly(
-        "SELECT verdict, identified_format, mime_type FROM file_triage",
+        "SELECT v.code, identified_format, mime_type FROM file_triage t JOIN enum_verdict v ON t.verdict = v.id",
     );
     defer triage_stmt.deinit();
     const triage_row = (try triage_stmt.step()).?;
@@ -391,14 +396,22 @@ test "E2E: Pipeline execution on real sample bird.avi detects trailing overlay" 
     try std.testing.expectEqualStrings("avi", triage_row.text(1));
     try std.testing.expectEqualStrings("video/x-msvideo", triage_row.text(2));
 
-    // Verify R01_TRAILING_OVERLAY was detected by the forensics plugin
+    // Verify R01_TRAILING_OVERLAY was detected and remediated by the remediation plugin
     var audit_stmt = try db_runtime.db.prepareReadOnly(
-        "SELECT rule_id, severity FROM audit_findings WHERE rule_id = 'R01_TRAILING_OVERLAY'",
+        "SELECT rule_id, severity, is_remediated, remediation_action FROM audit_findings WHERE rule_id = 'R01_TRAILING_OVERLAY'",
     );
     defer audit_stmt.deinit();
     const audit_row = (try audit_stmt.step()).?;
     try std.testing.expectEqualStrings("R01_TRAILING_OVERLAY", audit_row.text(0));
     try std.testing.expectEqual(@as(i64, 2), audit_row.int64(1));
+    try std.testing.expectEqual(@as(i64, 1), audit_row.int64(2));
+    try std.testing.expectEqualStrings("TRUNCATED_OVERLAY", audit_row.text(3));
+
+    // Verify clean_video artifact was created and truncated
+    const clean_art = try artifacts.getBuffer("clean_video");
+    const orig_file = try artifacts.getBuffer("file");
+    try std.testing.expect(clean_art.size() < orig_file.size());
+    try std.testing.expect(artifacts.carved_items.items.len > 0);
 }
 
 test "E2E: Pipeline execution on real sample video.mp4 verifies clean" {
@@ -425,6 +438,7 @@ test "E2E: Pipeline execution on real sample video.mp4 verifies clean" {
     try registry.registerStaticModule("triage", &triage.manifest);
     try registry.registerStaticModule("ir", &ir.manifest);
     try registry.registerStaticModule("forensics", &forensics.manifest);
+    try registry.registerStaticModule("remediation", &remediation.manifest);
 
     var eng = pipeline_core.PipelineEngine.init(
         std.testing.allocator,
@@ -446,7 +460,7 @@ test "E2E: Pipeline execution on real sample video.mp4 verifies clean" {
     try std.testing.expectEqualStrings("video_verified_clean", summary.final_pipeline);
 
     var triage_stmt = try db_runtime.db.prepareReadOnly(
-        "SELECT verdict, identified_format, mime_type FROM file_triage",
+        "SELECT v.code, identified_format, mime_type FROM file_triage t JOIN enum_verdict v ON t.verdict = v.id",
     );
     defer triage_stmt.deinit();
     const triage_row = (try triage_stmt.step()).?;

@@ -147,26 +147,6 @@ pub fn runProbeMkv(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
 
     const duration_sec = mkv_result.info.durationSeconds();
 
-    var json_buf: [2048]u8 = undefined;
-    const report_json = std.fmt.bufPrint(
-        &json_buf,
-        \\{{"tracks":{d},"video_tracks":{d},"audio_tracks":{d},"duration_sec":{d:.2},"video_codec":"{s}","width":{d},"height":{d},"clusters":{d},"cluster_bytes":{d},"verdict":"{s}","flags":"{s}"}}
-    ,
-        .{
-            mkv_result.tracks.len,
-            video_count,
-            audio_count,
-            duration_sec,
-            primary_video_codec,
-            primary_video_w,
-            primary_video_h,
-            mkv_result.cluster_count,
-            mkv_result.total_cluster_bytes,
-            evaluation.verdict.asText(),
-            evaluation.flags_csv,
-        },
-    ) catch "{}";
-
     // 4. Emit primary MKV triage row
     try ctx.emitRow("mkv_triage", &.{
         abi.NamedField_ABI.init("track_count", abi.Value_ABI.fromInt(@intCast(mkv_result.tracks.len))),
@@ -181,9 +161,8 @@ pub fn runProbeMkv(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
         abi.NamedField_ABI.init("cluster_count", abi.Value_ABI.fromInt(@intCast(mkv_result.cluster_count))),
         abi.NamedField_ABI.init("total_cluster_bytes", abi.Value_ABI.fromInt(@intCast(mkv_result.total_cluster_bytes))),
         abi.NamedField_ABI.init("unreferenced_cluster_slack", abi.Value_ABI.fromInt(@intCast(mkv_result.unreferenced_cluster_slack))),
-        abi.NamedField_ABI.init("verdict", abi.Value_ABI.fromText(evaluation.verdict.asText())),
+        abi.NamedField_ABI.init("verdict", abi.Value_ABI.fromInt(evaluation.verdict.toInt())),
         abi.NamedField_ABI.init("flags_csv", abi.Value_ABI.fromText(evaluation.flags_csv)),
-        abi.NamedField_ABI.init("report_json", abi.Value_ABI.fromText(report_json)),
     });
 
     // 5. Optionally emit tracks table

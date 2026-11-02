@@ -98,6 +98,7 @@ pub fn build(b: *std.Build) void {
     _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, "triage", "src/plugin/triage/mod.zig");
     _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, "ir", "src/plugin/ir/mod.zig");
     _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, "forensics", "src/plugin/forensics/mod.zig");
+    _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, "remediation", "src/plugin/remediation/mod.zig");
 
     // 6. Main CLI executable (`vidsec`)
     const exe_mod = b.createModule(.{

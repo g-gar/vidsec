@@ -10,4 +10,7 @@ pub const ir = @import("ir/mod.zig");
 /// Stage 3 Deep Forensics & Security Audit Plugin (`libforensics.so` / `forensics/analyze_topology`, `forensics/scan_entropy`, `forensics/check_inconsistencies`).
 pub const forensics = @import("forensics/mod.zig");
 
+/// Stage 4 Remediation & Content Disarm Plugin (`libremediation.so` / `remediation/sanitize`, `remediation/carve_quarantine`).
+pub const remediation = @import("remediation/mod.zig");
+
 

@@ -35,6 +35,8 @@ pub fn runScanEntropy(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
                 .rule_id = "R07_HIGH_ENTROPY_PAYLOAD",
                 .severity = 2,
                 .file_offset = @intCast(slack.file_offset),
+                .byte_length = @intCast(slack.byte_length),
+                .end_offset = @intCast(slack.file_offset + slack.byte_length),
                 .region_tag = slack.region_tag,
                 .measured_value = h,
                 .message = msg,

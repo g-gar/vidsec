@@ -1,6 +1,72 @@
 version: 2
 
 schemas:
+  # 0. Canonical Lookup Tables & Reporting Views (`catalog`)
+  catalog:
+    enum_container_format:
+      columns:
+        id:           { type: int64, pk: true }
+        code:         { type: text, unique: true }
+        display_name: { type: text }
+        default_mime: { type: text }
+
+    enum_severity:
+      columns:
+        level:        { type: int64, pk: true }
+        code:         { type: text, unique: true }
+        badge_color:  { type: text }
+        description:  { type: text }
+
+    enum_verdict:
+      columns:
+        id:          { type: int64, pk: true }
+        code:        { type: text, unique: true }
+        description: { type: text }
+
+    enum_region_role:
+      columns:
+        id:          { type: int64, pk: true }
+        code:        { type: text, unique: true }
+        description: { type: text }
+
+    v_findings_report:
+      view_as: |
+        SELECT 
+            f.finding_id,
+            f.rule_id,
+            f.severity,
+            s.code AS severity_label,
+            s.badge_color,
+            f.file_offset,
+            f.byte_length,
+            f.end_offset,
+            f.region_tag,
+            f.measured_value,
+            f.message,
+            f.is_remediated,
+            f.remediation_action
+        FROM audit_findings f
+        LEFT JOIN enum_severity s ON f.severity = s.level
+
+    v_executive_summary:
+      view_as: |
+        SELECT 
+            t.verdict AS verdict_id,
+            v.code AS verdict,
+            v.description AS verdict_description,
+            t.identified_format,
+            f.display_name AS format_name,
+            t.mime_type,
+            m.file_size,
+            m.highest_root_end,
+            (SELECT COUNT(*) FROM audit_findings) AS total_findings,
+            (SELECT COUNT(*) FROM audit_findings WHERE severity >= 2) AS critical_high_findings
+        FROM file_triage t
+        LEFT JOIN enum_verdict v ON t.verdict = v.id
+        LEFT JOIN container_metadata m ON 1=1
+        LEFT JOIN enum_container_format f ON m.detected_format = f.id
+        LIMIT 1
+
   # 1. Pre-Triage Domain (Format Family, Magic Spoofing, Entropy & Polyglot Gatekeeper)
   triage:
     file_triage:
@@ -10,7 +76,7 @@ schemas:
         true_magic_kind:    { type: int64 }
         true_magic_name:    { type: text }
         exceeds_size_limit: { type: bool, default: false }
-        verdict:            { type: text, default: "'PASS'" }
+        verdict:            { type: int64, default: 0, ref: enum_verdict.id }
         identified_format:  { type: text, default: "'unknown'" }
         mime_type:          { type: text, default: "'application/octet-stream'" }
         extension_match:    { type: bool, default: true }
@@ -20,7 +86,6 @@ schemas:
         flags_csv:          { type: text, default: "''" }
         suspicious_string:  { type: text, nullable: true }
         zip_eocd_offset:    { type: int64, nullable: true }
-        report_json:        { type: text, nullable: true }
 
     isobmff_triage:
       columns:
@@ -30,11 +95,10 @@ schemas:
         mdat_count:           { type: int64 }
         total_mdat_bytes:     { type: int64 }
         trailing_slack_bytes: { type: int64 }
-        verdict:              { type: text, default: "'PASS'" }
+        verdict:              { type: int64, default: 0, ref: enum_verdict.id }
         has_ftyp:             { type: bool, default: true }
         has_moov:             { type: bool, default: true }
         flags_csv:            { type: text, default: "''" }
-        report_json:          { type: text, nullable: true }
 
     isobmff_boxes:
       columns:
@@ -67,9 +131,8 @@ schemas:
         total_samples:           { type: int64 }
         total_sample_bytes:      { type: int64 }
         unreferenced_mdat_slack: { type: int64 }
-        verdict:                 { type: text, default: "'PASS'" }
+        verdict:                 { type: int64, default: 0, ref: enum_verdict.id }
         flags_csv:               { type: text, default: "''" }
-        report_json:             { type: text, nullable: true }
 
     mp4_tracks:
       columns:
@@ -95,11 +158,10 @@ schemas:
         trailing_slack_bytes: { type: int64 }
         doc_type:             { type: text }
         doc_type_version:     { type: int64 }
-        verdict:              { type: text, default: "'PASS'" }
+        verdict:              { type: int64, default: 0, ref: enum_verdict.id }
         has_ebml_header:      { type: bool, default: true }
         has_segment:          { type: bool, default: true }
         flags_csv:            { type: text, default: "''" }
-        report_json:          { type: text, nullable: true }
 
     ebml_elements:
       columns:
@@ -132,9 +194,8 @@ schemas:
         cluster_count:              { type: int64 }
         total_cluster_bytes:        { type: int64 }
         unreferenced_cluster_slack: { type: int64 }
-        verdict:                    { type: text, default: "'PASS'" }
+        verdict:                    { type: int64, default: 0, ref: enum_verdict.id }
         flags_csv:                  { type: text, default: "''" }
-        report_json:                { type: text, nullable: true }
 
     mkv_tracks:
       columns:
@@ -161,9 +222,8 @@ schemas:
         movi_bytes:           { type: int64 }
         junk_bytes:           { type: int64 }
         trailing_slack_bytes: { type: int64 }
-        verdict:              { type: text, default: "'PASS'" }
+        verdict:              { type: int64, default: 0, ref: enum_verdict.id }
         flags_csv:            { type: text, default: "''" }
-        report_json:          { type: text, nullable: true }
 
     riff_chunks:
       columns:
@@ -187,7 +247,7 @@ schemas:
     container_metadata:
       columns:
         file_size:        { type: int64 }
-        detected_format:  { type: int64 }
+        detected_format:  { type: int64, ref: enum_container_format.id }
         true_magic:       { type: int64 }
         true_magic_name:  { type: text }
         highest_root_end: { type: int64 }
@@ -261,8 +321,10 @@ schemas:
       columns:
         finding_id:         { type: int64, pk: true }
         rule_id:            { type: text }
-        severity:           { type: int64 }
+        severity:           { type: int64, ref: enum_severity.level }
         file_offset:        { type: int64 }
+        byte_length:        { type: int64, default: 0 }
+        end_offset:         { type: int64, default: 0 }
         region_tag:         { type: text, nullable: true }
         measured_value:     { type: float64, nullable: true }
         message:            { type: text, nullable: true }

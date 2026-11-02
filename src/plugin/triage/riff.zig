@@ -138,25 +138,6 @@ pub fn runProbeRiff(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
     var flags_buf: [1024]u8 = undefined;
     const evaluation = evaluateRiffPolicy(parse_result, stream.len(), &flags_buf);
 
-    var json_buf: [2048]u8 = undefined;
-    const report_json = std.fmt.bufPrint(
-        &json_buf,
-        \\{{"chunks":{d},"root_chunks":{d},"max_depth":{d},"form_type":"{s}","root_size":{d},"movi_bytes":{d},"junk_bytes":{d},"trailing_slack":{d},"verdict":"{s}","flags":"{s}"}}
-    ,
-        .{
-            parse_result.chunks.len,
-            root_chunk_count,
-            max_depth,
-            parse_result.form_type.bytes,
-            parse_result.root_size,
-            parse_result.movi_bytes,
-            parse_result.junk_bytes,
-            parse_result.trailing_slack_bytes,
-            evaluation.verdict.asText(),
-            evaluation.flags_csv,
-        },
-    ) catch "{}";
-
     // 1. Emit primary RIFF triage row
     try ctx.emitRow("riff_triage", &.{
         abi.NamedField_ABI.init("chunk_count", abi.Value_ABI.fromInt(@intCast(parse_result.chunks.len))),
@@ -167,9 +148,8 @@ pub fn runProbeRiff(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
         abi.NamedField_ABI.init("movi_bytes", abi.Value_ABI.fromInt(@intCast(parse_result.movi_bytes))),
         abi.NamedField_ABI.init("junk_bytes", abi.Value_ABI.fromInt(@intCast(parse_result.junk_bytes))),
         abi.NamedField_ABI.init("trailing_slack_bytes", abi.Value_ABI.fromInt(@intCast(parse_result.trailing_slack_bytes))),
-        abi.NamedField_ABI.init("verdict", abi.Value_ABI.fromText(evaluation.verdict.asText())),
+        abi.NamedField_ABI.init("verdict", abi.Value_ABI.fromInt(evaluation.verdict.toInt())),
         abi.NamedField_ABI.init("flags_csv", abi.Value_ABI.fromText(evaluation.flags_csv)),
-        abi.NamedField_ABI.init("report_json", abi.Value_ABI.fromText(report_json)),
     });
 
     // 2. Optionally emit chunks table

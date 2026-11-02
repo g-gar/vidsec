@@ -51,11 +51,13 @@ pub fn runLowerContainer(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
 
     var highest_root_end: i64 = 0;
     var lowered_count: usize = 0;
+    var detected_format: abi.ir.ContainerFormat = .unknown;
 
     // 2. Check and lower ISOBMFF boxes
     var has_boxes = false;
     while (try tryNextRow(ctx, "boxes", "isobmff_boxes")) |box_row| {
         has_boxes = true;
+        detected_format = .isobmff;
         const box_id = if (box_row.getField("box_id")) |v| v.asInt() orelse 0 else 0;
         const maybe_parent = if (box_row.getField("parent_box_id")) |v| v.asInt() else null;
         const fourcc = if (box_row.getField("fourcc")) |v| v.asText() orelse "????" else "????";
@@ -91,6 +93,7 @@ pub fn runLowerContainer(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
         var has_elements = false;
         while (try tryNextRow(ctx, "elements", "ebml_elements")) |elem_row| {
             has_elements = true;
+            detected_format = .ebml;
             const element_id = if (elem_row.getField("element_id")) |v| v.asInt() orelse 0 else 0;
             const maybe_parent = if (elem_row.getField("parent_element_id")) |v| v.asInt() else null;
             const ebml_id_hex = if (elem_row.getField("ebml_id_hex")) |v| v.asText() orelse "0x00" else "0x00";
@@ -124,6 +127,7 @@ pub fn runLowerContainer(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
         // 4. Check and lower RIFF chunks if neither boxes nor elements lowered
         if (!has_elements) {
             while (try tryNextRow(ctx, "chunks", "riff_chunks")) |chunk_row| {
+                detected_format = .riff;
                 const chunk_id = if (chunk_row.getField("chunk_id")) |v| v.asInt() orelse 0 else 0;
                 const maybe_parent = if (chunk_row.getField("parent_chunk_id")) |v| v.asInt() else null;
                 const fourcc = if (chunk_row.getField("fourcc")) |v| v.asText() orelse "????" else "????";
@@ -157,9 +161,19 @@ pub fn runLowerContainer(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
     }
 
     // 5. Populate container_metadata
+    if (detected_format == .unknown) {
+        if (std.mem.eql(u8, detected_family, "isobmff")) {
+            detected_format = .isobmff;
+        } else if (std.mem.eql(u8, detected_family, "ebml")) {
+            detected_format = .ebml;
+        } else if (std.mem.eql(u8, detected_family, "riff")) {
+            detected_format = .riff;
+        }
+    }
+
     const meta_fields = [_]abi.NamedField_ABI{
         abi.NamedField_ABI.init("file_size", abi.Value_ABI.fromInt(file_size)),
-        abi.NamedField_ABI.init("detected_format", abi.Value_ABI.fromInt(true_magic_kind)),
+        abi.NamedField_ABI.init("detected_format", abi.Value_ABI.fromInt(detected_format.toInt())),
         abi.NamedField_ABI.init("true_magic", abi.Value_ABI.fromInt(true_magic_kind)),
         abi.NamedField_ABI.init("true_magic_name", abi.Value_ABI.fromText(true_magic_name)),
         abi.NamedField_ABI.init("highest_root_end", abi.Value_ABI.fromInt(highest_root_end)),

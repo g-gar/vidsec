@@ -13,6 +13,10 @@ pub const Verdict = enum(u8) {
             .drop => "DROP",
         };
     }
+
+    pub fn toInt(self: Verdict) i64 {
+        return @intFromEnum(self);
+    }
 };
 
 /// High-efficiency, zero-heap-allocation buffer writer for formatting CSV flags and JSON reports.

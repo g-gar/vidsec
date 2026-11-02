@@ -78,6 +78,9 @@ pub const SqliteRuntime = struct {
         defer allocator.free(ddl_sql);
 
         try db.execZ(ddl_sql);
+        if (catalog.getDomain("catalog") != null) {
+            try populateCatalogSeeds(&db);
+        }
         return SqliteRuntime{
             .db = db,
             .catalog = catalog,
@@ -123,10 +126,47 @@ pub const SqliteRuntime = struct {
         }
 
         try db.execZ(ddl_sql);
+        if (catalog.getDomain("catalog") != null) {
+            try populateCatalogSeeds(&db);
+        }
         return SqliteRuntime{
             .db = db,
             .catalog = catalog,
         };
+    }
+
+    fn populateCatalogSeeds(db: *Db) RuntimeError!void {
+        const seeds =
+            \\INSERT OR IGNORE INTO enum_container_format (id, code, display_name, default_mime) VALUES
+            \\  (0, 'unknown', 'Unknown / Unrecognized Format', 'application/octet-stream'),
+            \\  (1, 'isobmff', 'ISO Base Media File Format (MP4/MOV)', 'video/mp4'),
+            \\  (2, 'ebml', 'Extensible Binary Meta Language (MKV/WebM)', 'video/x-matroska'),
+            \\  (3, 'riff', 'Resource Interchange File Format (AVI/WAV)', 'video/x-msvideo');
+            \\
+            \\INSERT OR IGNORE INTO enum_severity (level, code, badge_color, description) VALUES
+            \\  (0, 'INFO', '#3B82F6', 'Informational metric or clean indicator'),
+            \\  (1, 'LOW', '#10B981', 'Minor structural anomaly without immediate threat'),
+            \\  (2, 'MEDIUM', '#F59E0B', 'Suspicious unreferenced payload or slack data'),
+            \\  (3, 'HIGH', '#EF4444', 'Dangerous polyglot, trailing overlay, or format tampering'),
+            \\  (4, 'CRITICAL', '#7F1D1D', 'Confirmed exploit, corrupted header, or severe threat');
+            \\
+            \\INSERT OR IGNORE INTO enum_verdict (id, code, description) VALUES
+            \\  (0, 'PASS', 'Media file passed triage validation'),
+            \\  (1, 'FLAGGED', 'Media file triggered security or structural warnings'),
+            \\  (2, 'DROP', 'Media file violates security policies and should be rejected');
+            \\
+            \\INSERT OR IGNORE INTO enum_region_role (id, code, description) VALUES
+            \\  (0, 'unknown', 'Uncategorized container structure'),
+            \\  (1, 'container', 'Top-level or nested container structural header'),
+            \\  (2, 'media_data', 'Raw elementary audio/video/subtitle stream payload'),
+            \\  (3, 'padding', 'Safe zero or filler padding byte sequence'),
+            \\  (4, 'sample_table', 'Frame indexing and sample offset/chunk metadata'),
+            \\  (5, 'codec_config', 'Decoder configuration record (AVCC, HEVC, Vorbis)'),
+            \\  (6, 'metadata', 'Tags, chapters, user comments, or editorial metadata'),
+            \\  (7, 'attachment', 'Embedded auxiliary file or font attachment'),
+            \\  (8, 'external_ref', 'URL or external file path reference');
+        ;
+        try db.execZ(seeds);
     }
 
     fn resetCatalogTables(db: *Db, allocator: Allocator, catalog: *const SchemaCatalog) RuntimeError!void {

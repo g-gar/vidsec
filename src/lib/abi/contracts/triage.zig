@@ -51,7 +51,7 @@ pub const FileTriageRow = struct {
     true_magic_kind: i64,
     true_magic_name: []const u8,
     exceeds_size_limit: bool = false,
-    verdict: []const u8 = "PASS",
+    verdict: i64 = 0,
     identified_format: []const u8 = "unknown",
     mime_type: []const u8 = "application/octet-stream",
     extension_match: bool = true,
@@ -61,5 +61,4 @@ pub const FileTriageRow = struct {
     flags_csv: []const u8 = "",
     suspicious_string: ?[]const u8 = null,
     zip_eocd_offset: ?i64 = null,
-    report_json: ?[]const u8 = null,
 };
