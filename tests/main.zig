@@ -1,0 +1,25 @@
+const std = @import("std");
+
+test {
+    // End-to-end integration tests
+    _ = @import("pipeline_e2e_test.zig");
+
+    // Format parser tests
+    _ = @import("formats/isobmff_test.zig");
+    _ = @import("formats/mp4_test.zig");
+    _ = @import("formats/ebml_test.zig");
+    _ = @import("formats/mkv_test.zig");
+    _ = @import("formats/riff_test.zig");
+
+    // Core library tests
+    _ = @import("lib/abi_test.zig");
+    _ = @import("lib/magic_test.zig");
+    _ = @import("lib/math_test.zig");
+
+    // Core pipeline & artifact tests
+    _ = @import("core/pipeline_test.zig");
+    _ = @import("core/artifact_test.zig");
+
+    // Plugin domain tests
+    _ = @import("plugins/triage_test.zig");
+}

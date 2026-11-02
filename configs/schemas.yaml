@@ -1,0 +1,274 @@
+version: 2
+
+schemas:
+  # 1. Pre-Triage Domain (Format Family, Magic Spoofing, Entropy & Polyglot Gatekeeper)
+  triage:
+    file_triage:
+      columns:
+        file_size:          { type: int64 }
+        detected_family:    { type: text }
+        true_magic_kind:    { type: int64 }
+        true_magic_name:    { type: text }
+        exceeds_size_limit: { type: bool, default: false }
+        verdict:            { type: text, default: "'PASS'" }
+        identified_format:  { type: text, default: "'unknown'" }
+        mime_type:          { type: text, default: "'application/octet-stream'" }
+        extension_match:    { type: bool, default: true }
+        mid_entropy:        { type: float64, default: 0.0 }
+        head_size_read:     { type: int64, default: 0 }
+        tail_size_read:     { type: int64, default: 0 }
+        flags_csv:          { type: text, default: "''" }
+        suspicious_string:  { type: text, nullable: true }
+        zip_eocd_offset:    { type: int64, nullable: true }
+        report_json:        { type: text, nullable: true }
+
+    isobmff_triage:
+      columns:
+        box_count:            { type: int64 }
+        root_box_count:       { type: int64 }
+        max_depth:            { type: int64 }
+        mdat_count:           { type: int64 }
+        total_mdat_bytes:     { type: int64 }
+        trailing_slack_bytes: { type: int64 }
+        verdict:              { type: text, default: "'PASS'" }
+        has_ftyp:             { type: bool, default: true }
+        has_moov:             { type: bool, default: true }
+        flags_csv:            { type: text, default: "''" }
+        report_json:          { type: text, nullable: true }
+
+    isobmff_boxes:
+      columns:
+        box_id:               { type: int64, pk: true }
+        parent_box_id:        { type: int64, nullable: true }
+        depth:                { type: int64 }
+        fourcc:               { type: text }
+        role:                 { type: text }
+        header_offset:        { type: int64 }
+        payload_offset:       { type: int64 }
+        box_size:             { type: int64 }
+        is_extended_size:     { type: bool, default: false }
+        is_full_box:          { type: bool, default: false }
+        version:              { type: int64, default: 0 }
+        flags:                { type: int64, default: 0 }
+        child_count:          { type: int64, default: 0 }
+      indexes:
+        - fourcc
+        - role
+
+    mp4_triage:
+      columns:
+        track_count:             { type: int64 }
+        video_track_count:       { type: int64 }
+        audio_track_count:       { type: int64 }
+        major_brand:             { type: text }
+        video_codec:             { type: text }
+        video_width:             { type: int64 }
+        video_height:            { type: int64 }
+        total_samples:           { type: int64 }
+        total_sample_bytes:      { type: int64 }
+        unreferenced_mdat_slack: { type: int64 }
+        verdict:                 { type: text, default: "'PASS'" }
+        flags_csv:               { type: text, default: "''" }
+        report_json:             { type: text, nullable: true }
+
+    mp4_tracks:
+      columns:
+        track_id:           { type: int64, pk: true }
+        handler_type:       { type: text }
+        codec_fourcc:       { type: text }
+        width:              { type: int64 }
+        height:             { type: int64 }
+        timescale:          { type: int64 }
+        duration:           { type: int64 }
+        sample_count:       { type: int64 }
+        total_sample_bytes: { type: int64 }
+      indexes:
+        - codec_fourcc
+
+    ebml_triage:
+      columns:
+        element_count:        { type: int64 }
+        root_element_count:   { type: int64 }
+        max_depth:            { type: int64 }
+        cluster_count:        { type: int64 }
+        total_cluster_bytes:  { type: int64 }
+        trailing_slack_bytes: { type: int64 }
+        doc_type:             { type: text }
+        doc_type_version:     { type: int64 }
+        verdict:              { type: text, default: "'PASS'" }
+        has_ebml_header:      { type: bool, default: true }
+        has_segment:          { type: bool, default: true }
+        flags_csv:            { type: text, default: "''" }
+        report_json:          { type: text, nullable: true }
+
+    ebml_elements:
+      columns:
+        element_id:        { type: int64, pk: true }
+        parent_element_id: { type: int64, nullable: true }
+        depth:             { type: int64 }
+        ebml_id_hex:       { type: text }
+        role:              { type: text }
+        header_offset:     { type: int64 }
+        payload_offset:    { type: int64 }
+        data_size:         { type: int64 }
+        total_size:        { type: int64 }
+        is_unknown_size:   { type: bool, default: false }
+        child_count:       { type: int64, default: 0 }
+      indexes:
+        - ebml_id_hex
+        - role
+
+    mkv_triage:
+      columns:
+        track_count:                { type: int64 }
+        video_track_count:          { type: int64 }
+        audio_track_count:          { type: int64 }
+        duration_seconds:           { type: float64 }
+        muxing_app:                 { type: text }
+        writing_app:                { type: text }
+        primary_video_codec:        { type: text }
+        video_width:                { type: int64 }
+        video_height:               { type: int64 }
+        cluster_count:              { type: int64 }
+        total_cluster_bytes:        { type: int64 }
+        unreferenced_cluster_slack: { type: int64 }
+        verdict:                    { type: text, default: "'PASS'" }
+        flags_csv:                  { type: text, default: "''" }
+        report_json:                { type: text, nullable: true }
+
+    mkv_tracks:
+      columns:
+        track_number:        { type: int64, pk: true }
+        track_uid:           { type: int64 }
+        track_type:          { type: text }
+        codec_id:            { type: text }
+        codec_name:          { type: text }
+        width:               { type: int64 }
+        height:              { type: int64 }
+        sampling_frequency:  { type: float64 }
+        channels:            { type: int64 }
+        default_duration_ns: { type: int64 }
+      indexes:
+        - codec_id
+
+    riff_triage:
+      columns:
+        chunk_count:          { type: int64 }
+        root_chunk_count:     { type: int64 }
+        max_depth:            { type: int64 }
+        form_type:            { type: text }
+        root_size:            { type: int64 }
+        movi_bytes:           { type: int64 }
+        junk_bytes:           { type: int64 }
+        trailing_slack_bytes: { type: int64 }
+        verdict:              { type: text, default: "'PASS'" }
+        flags_csv:            { type: text, default: "''" }
+        report_json:          { type: text, nullable: true }
+
+    riff_chunks:
+      columns:
+        chunk_id:        { type: int64, pk: true }
+        parent_chunk_id: { type: int64, nullable: true }
+        depth:           { type: int64 }
+        fourcc:          { type: text }
+        role:            { type: text }
+        header_offset:   { type: int64 }
+        payload_offset:  { type: int64 }
+        data_size:       { type: int64 }
+        total_size:      { type: int64 }
+        is_padded:       { type: bool, default: false }
+        child_count:     { type: int64, default: 0 }
+      indexes:
+        - fourcc
+        - role
+
+  # 2. Structural Intermediate Representation (`ir_core`)
+  ir_core:
+    container_metadata:
+      columns:
+        file_size:        { type: int64 }
+        detected_format:  { type: int64 }
+        true_magic:       { type: int64 }
+        true_magic_name:  { type: text }
+        highest_root_end: { type: int64 }
+
+    ir_regions:
+      columns:
+        region_id:                { type: int64, pk: true }
+        parent_region_id:         { type: int64, nullable: true, ref: ir_regions.region_id }
+        tag_name:                 { type: text }
+        role:                     { type: text }
+        header_offset:            { type: int64 }
+        payload_offset:           { type: int64 }
+        effective_end_offset:     { type: int64 }
+        is_truncated_or_overflow: { type: bool, default: false }
+      indexes:
+        - role
+        - tag_name
+
+  # 3. Deep Media & Sample Table Intermediate Representation (`ir_deep`)
+  ir_deep:
+    ir_sample_extents:
+      columns:
+        extent_id:     { type: int64, pk: true }
+        track_id:      { type: int64 }
+        sample_index:  { type: int64 }
+        source_tag:    { type: text }
+        target_offset: { type: int64 }
+        byte_size:     { type: int64 }
+        end_offset:    { type: int64 }
+      indexes:
+        - target_offset
+        - track_id
+
+    ir_unreferenced_slack:
+      columns:
+        slack_id:    { type: int64, pk: true }
+        region_tag:  { type: text }
+        file_offset: { type: int64 }
+        byte_length: { type: int64 }
+
+    ir_codec_configs:
+      columns:
+        config_id:       { type: int64, pk: true }
+        track_id:        { type: int64 }
+        codec_tag:       { type: text }
+        container_width: { type: int64 }
+        container_height: { type: int64 }
+        bitstream_width: { type: int64 }
+        bitstream_height: { type: int64 }
+        is_mismatch:     { type: bool, default: false }
+
+    ir_attachments:
+      columns:
+        attachment_id:  { type: int64, pk: true }
+        file_name:      { type: text }
+        mime_type:      { type: text }
+        payload_offset: { type: int64 }
+        payload_length: { type: int64 }
+
+    ir_external_refs:
+      columns:
+        ref_id:      { type: int64, pk: true }
+        track_id:    { type: int64 }
+        source_tag:  { type: text }
+        file_offset: { type: int64 }
+        target_url:  { type: text }
+
+  # 4. Security Audit & Forensic Findings (`audit`)
+  audit:
+    audit_findings:
+      columns:
+        finding_id:         { type: int64, pk: true }
+        rule_id:            { type: text }
+        severity:           { type: int64 }
+        file_offset:        { type: int64 }
+        region_tag:         { type: text, nullable: true }
+        measured_value:     { type: float64, nullable: true }
+        message:            { type: text, nullable: true }
+        is_remediated:      { type: bool, default: false }
+        remediation_action: { type: text, default: "UNRESOLVED" }
+      indexes:
+        - rule_id
+        - severity
+        - is_remediated
