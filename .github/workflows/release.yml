@@ -14,6 +14,9 @@ on:
 permissions:
   contents: write
 
+env:
+  ACTIONS_RUNNER_FORCE_NODE24: "true"
+
 jobs:
   build-and-package:
     name: Build ${{ matrix.name }}
@@ -31,9 +34,6 @@ jobs:
           - name: macos-aarch64
             os: macos-14
             target: aarch64-macos
-          - name: macos-x86_64
-            os: macos-13
-            target: x86_64-macos
 
     steps:
       - name: Checkout repository

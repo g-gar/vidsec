@@ -2,9 +2,9 @@ const std = @import("std");
 const vidsec = @import("vidsec");
 const build_options = @import("build_options");
 
-const c_stdio = @cImport({
-    @cInclude("stdio.h");
-});
+fn printStdout(msg: []const u8) void {
+    _ = std.c.write(std.c.STDOUT_FILENO, msg.ptr, msg.len);
+}
 
 const CliCommand = enum {
     validate,
@@ -25,7 +25,7 @@ fn printUsage() void {
         \\  vidsec version  (--version, -v)
         \\
     ;
-    _ = c_stdio.fwrite(usage.ptr, 1, usage.len, c_stdio.stdout);
+    printStdout(usage);
 }
 
 pub fn main(init: std.process.Init) !u8 {
@@ -59,7 +59,7 @@ pub fn main(init: std.process.Init) !u8 {
     if (cmd == .version) {
         var buf: [128]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "vidsec {s}\n", .{build_options.version_string}) catch "vidsec 2.0.0\n";
-        _ = c_stdio.fwrite(msg.ptr, 1, msg.len, c_stdio.stdout);
+        printStdout(msg);
         return 0;
     }
 
@@ -143,7 +143,7 @@ pub fn main(init: std.process.Init) !u8 {
         .validate => {
             try runner.validatePreFlight(wal_db_path, load_shared);
             const msg = "[OK] Pre-flight validation passed (YAML, DAG, SQLite DDL/DML, and Plugin ABI).\n";
-            _ = c_stdio.fwrite(msg.ptr, 1, msg.len, c_stdio.stdout);
+            printStdout(msg);
         },
         .run => {
             const in_path = input_file_path orelse {
@@ -166,7 +166,7 @@ pub fn main(init: std.process.Init) !u8 {
                     active_db,
                 },
             );
-            _ = c_stdio.fwrite(line.ptr, 1, line.len, c_stdio.stdout);
+            printStdout(line);
         },
         .help, .version => unreachable,
     }
