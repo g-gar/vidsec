@@ -6,7 +6,7 @@ pub const intervals = @import("intervals.zig");
 pub const matrix = @import("matrix.zig");
 
 pub const shannonEntropy = entropy.shannonEntropy;
-pub const shannonEntropyFloat = entropy.shannonEntropyFloat;
+pub const shannonEntropyNonZero = entropy.shannonEntropyNonZero;
 pub const isAllZero = stats.isAllZero;
 pub const EntropyAccumulator = entropy.EntropyAccumulator;
 

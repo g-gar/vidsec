@@ -76,7 +76,23 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
-    // 9. Core framework library module (`src/root.zig`)
+    // 9. Standalone Video Intermediate Representation module (`src/lib/ir/mod.zig`)
+    const ir_mod = b.addModule("vidsec_ir", .{
+        .root_source_file = b.path("src/lib/ir/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // 10. Standalone Abstract Forensics library module (`src/lib/forensics/mod.zig`)
+    const forensics_mod = b.addModule("vidsec_forensics", .{
+        .root_source_file = b.path("src/lib/forensics/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    forensics_mod.addImport("vidsec_ir", ir_mod);
+    forensics_mod.addImport("vidsec_math", math_mod);
+
+    // 11. Core framework library module (`src/root.zig`)
     const root_mod = b.addModule("vidsec", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -93,6 +109,8 @@ pub fn build(b: *std.Build) void {
     root_mod.addImport("vidsec_ebml", ebml_mod);
     root_mod.addImport("vidsec_mkv", mkv_mod);
     root_mod.addImport("vidsec_riff", riff_mod);
+    root_mod.addImport("vidsec_ir", ir_mod);
+    root_mod.addImport("vidsec_forensics", forensics_mod);
 
     // 10. Official `.so` Plugin Shared Libraries (`src/plugin/*`)
     _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, "triage", "src/plugin/triage/mod.zig");
@@ -153,6 +171,8 @@ pub fn build(b: *std.Build) void {
     test_suite_mod.addImport("vidsec_ebml", ebml_mod);
     test_suite_mod.addImport("vidsec_mkv", mkv_mod);
     test_suite_mod.addImport("vidsec_riff", riff_mod);
+    test_suite_mod.addImport("vidsec_ir", ir_mod);
+    test_suite_mod.addImport("vidsec_forensics", forensics_mod);
 
     const test_suite = b.addTest(.{
         .root_module = test_suite_mod,

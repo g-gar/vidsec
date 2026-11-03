@@ -15,6 +15,8 @@ test {
     _ = @import("lib/abi_test.zig");
     _ = @import("lib/magic_test.zig");
     _ = @import("lib/math_test.zig");
+    _ = @import("lib/ir_domain_test.zig");
+    _ = @import("lib/forensics_domain_test.zig");
 
     // Core pipeline & artifact tests
     _ = @import("core/pipeline_test.zig");
