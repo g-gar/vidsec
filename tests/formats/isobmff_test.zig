@@ -196,3 +196,43 @@ test "Parse real MP4 sample file if present" {
     try std.testing.expect(result.has_moov);
     try std.testing.expect(result.boxes.len > 5);
 }
+
+test "SafeBoxParser with injected InLineChecks and StructuralAuditor" {
+    const allocator = std.testing.allocator;
+    const common = @import("vidsec_formats_common");
+
+    // Construct a synthetic stream with an overflowing box
+    var buf: [32]u8 = undefined;
+    std.mem.writeInt(u32, buf[0..4], 100, .big); // size 100 on 32-byte stream
+    @memcpy(buf[4..8], "ftyp");
+    @memset(buf[8..32], 0);
+
+    const source = mod.ByteSource.fromSlice(&buf);
+    const parser = mod.SafeBoxParser.init(allocator);
+
+    var diagnostics = common.DiagnosticList.init();
+    defer {
+        for (diagnostics.items.items) |d| {
+            allocator.free(d.message);
+        }
+        diagnostics.deinit(allocator);
+    }
+
+    const checks = [_]common.InLineCheck{
+        .{ .run_fn = mod.checks.checkBoxOverflow },
+        .{ .run_fn = mod.checks.checkBoxMinSize },
+    };
+
+    const result = try parser.parseWithDiagnostics(source, &checks, &diagnostics);
+    defer result.deinit(allocator);
+
+    try std.testing.expect(diagnostics.hasRuleId("isobmff.box_size_overflow"));
+    try std.testing.expectEqual(@as(usize, 1), diagnostics.countBySeverity(.critical));
+
+    // Test region conversion
+    const regions = try mod.toRegions(result.boxes, allocator);
+    defer allocator.free(regions);
+
+    try std.testing.expectEqual(@as(usize, 1), regions.len);
+    try std.testing.expectEqualStrings("ftyp", regions[0].tagSlice());
+}

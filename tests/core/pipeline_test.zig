@@ -250,7 +250,7 @@ test "Domain-agnostic PipelineEngine: C-ABI tasks, lazy windows, row cursors, sq
     const catalog = try yaml_core.SchemaCatalog.parseYaml(arena, schemas_yaml, null);
     const config = try yaml_core.PipelineConfig.parse(arena, pipeline_yaml, null);
 
-    var registry = abi_lib.ModuleRegistry.init(std.testing.allocator);
+    var registry = vidsec.pipeline.ModuleRegistry.init(std.testing.allocator);
     defer registry.deinit();
     try registry.registerStaticModule("ingest", &Plugins.ingest_manifest);
     try registry.registerStaticModule("analyzer", &Plugins.analyzer_manifest);
@@ -379,7 +379,7 @@ test "Pre-flight validation catches undeclared plugin output fields and SAVEPOIN
     const catalog = try yaml_core.SchemaCatalog.parseYaml(arena, schemas_yaml, null);
     const bad_config = try yaml_core.PipelineConfig.parse(arena, bad_map_yaml, null);
 
-    var registry = abi_lib.ModuleRegistry.init(std.testing.allocator);
+    var registry = vidsec.pipeline.ModuleRegistry.init(std.testing.allocator);
     defer registry.deinit();
     try registry.registerStaticModule("processors", &TestPlugin.manifest);
 

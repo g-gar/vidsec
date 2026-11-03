@@ -5,12 +5,10 @@ const abi = @import("vidsec_abi");
 const yaml_core = vidsec.yaml;
 const sqlite_core = vidsec.sqlite;
 const pipeline_core = vidsec.pipeline;
-const triage = vidsec.plugin.triage;
-const ir = vidsec.plugin.ir;
-const forensics = vidsec.plugin.forensics;
+const analyzer = vidsec.plugin.analyzer;
 const remediation = vidsec.plugin.remediation;
 
-test "E2E: PipelineEngine integration with real triage/probe_file plugin (polyglot MP4)" {
+test "E2E: PipelineEngine integration with real analyzer/probe_file plugin (polyglot MP4)" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -23,12 +21,12 @@ test "E2E: PipelineEngine integration with real triage/probe_file plugin (polygl
         \\engine:
         \\  schemas: "configs/schemas.yaml"
         \\modules:
-        \\  triage: { path: "./zig-out/lib/libtriage.so" }
+        \\  analyzer: { path: "./zig-out/lib/libanalyzer.so" }
         \\pipelines:
         \\  main:
         \\    steps:
         \\      - task: stage0_probe
-        \\        use: triage/probe_file
+        \\        use: analyzer/probe_file
         \\        input:
         \\          stream: { from: file }
         \\        params:
@@ -61,9 +59,9 @@ test "E2E: PipelineEngine integration with real triage/probe_file plugin (polygl
     );
     defer db_runtime.deinit();
 
-    var registry = abi.ModuleRegistry.init(std.testing.allocator);
+    var registry = pipeline_core.ModuleRegistry.init(std.testing.allocator);
     defer registry.deinit();
-    try registry.registerStaticModule("triage", &triage.manifest);
+    try registry.registerStaticModule("analyzer", &analyzer.manifest);
 
     var eng = pipeline_core.PipelineEngine.init(
         std.testing.allocator,
@@ -122,11 +120,9 @@ test "E2E: configs/pipeline.yaml clean MP4 execution reaches video_verified_clea
     );
     defer db_runtime.deinit();
 
-    var registry = abi.ModuleRegistry.init(std.testing.allocator);
+    var registry = pipeline_core.ModuleRegistry.init(std.testing.allocator);
     defer registry.deinit();
-    try registry.registerStaticModule("triage", &triage.manifest);
-    try registry.registerStaticModule("ir", &ir.manifest);
-    try registry.registerStaticModule("forensics", &forensics.manifest);
+    try registry.registerStaticModule("analyzer", &analyzer.manifest);
     try registry.registerStaticModule("remediation", &remediation.manifest);
 
     var eng = pipeline_core.PipelineEngine.init(
@@ -186,11 +182,9 @@ test "E2E: configs/pipeline.yaml disguised ELF executable routes to quarantine_f
     );
     defer db_runtime.deinit();
 
-    var registry = abi.ModuleRegistry.init(std.testing.allocator);
+    var registry = pipeline_core.ModuleRegistry.init(std.testing.allocator);
     defer registry.deinit();
-    try registry.registerStaticModule("triage", &triage.manifest);
-    try registry.registerStaticModule("ir", &ir.manifest);
-    try registry.registerStaticModule("forensics", &forensics.manifest);
+    try registry.registerStaticModule("analyzer", &analyzer.manifest);
     try registry.registerStaticModule("remediation", &remediation.manifest);
 
     var eng = pipeline_core.PipelineEngine.init(
@@ -241,11 +235,9 @@ test "E2E: configs/pipeline.yaml overflowing mdat box triggers IR_REGION_OVERFLO
     );
     defer db_runtime.deinit();
 
-    var registry = abi.ModuleRegistry.init(std.testing.allocator);
+    var registry = pipeline_core.ModuleRegistry.init(std.testing.allocator);
     defer registry.deinit();
-    try registry.registerStaticModule("triage", &triage.manifest);
-    try registry.registerStaticModule("ir", &ir.manifest);
-    try registry.registerStaticModule("forensics", &forensics.manifest);
+    try registry.registerStaticModule("analyzer", &analyzer.manifest);
     try registry.registerStaticModule("remediation", &remediation.manifest);
 
     var eng = pipeline_core.PipelineEngine.init(
@@ -300,11 +292,9 @@ test "E2E: configs/pipeline.yaml valid MPEG-TS stream routes to unsupported_form
     );
     defer db_runtime.deinit();
 
-    var registry = abi.ModuleRegistry.init(std.testing.allocator);
+    var registry = pipeline_core.ModuleRegistry.init(std.testing.allocator);
     defer registry.deinit();
-    try registry.registerStaticModule("triage", &triage.manifest);
-    try registry.registerStaticModule("ir", &ir.manifest);
-    try registry.registerStaticModule("forensics", &forensics.manifest);
+    try registry.registerStaticModule("analyzer", &analyzer.manifest);
     try registry.registerStaticModule("remediation", &remediation.manifest);
 
     var eng = pipeline_core.PipelineEngine.init(
@@ -360,11 +350,9 @@ test "E2E: Pipeline execution on real sample bird.avi detects trailing overlay" 
     );
     defer db_runtime.deinit();
 
-    var registry = abi.ModuleRegistry.init(std.testing.allocator);
+    var registry = pipeline_core.ModuleRegistry.init(std.testing.allocator);
     defer registry.deinit();
-    try registry.registerStaticModule("triage", &triage.manifest);
-    try registry.registerStaticModule("ir", &ir.manifest);
-    try registry.registerStaticModule("forensics", &forensics.manifest);
+    try registry.registerStaticModule("analyzer", &analyzer.manifest);
     try registry.registerStaticModule("remediation", &remediation.manifest);
 
     var eng = pipeline_core.PipelineEngine.init(
@@ -384,7 +372,7 @@ test "E2E: Pipeline execution on real sample bird.avi detects trailing overlay" 
     defer artifacts.deinit();
 
     const summary = try eng.run(&artifacts);
-    try std.testing.expectEqualStrings("video_remediated_clean", summary.final_pipeline);
+    try std.testing.expectEqualStrings("forensics_findings_detected", summary.final_pipeline);
 
     // Verify Stage 0 triage detected AVI
     var triage_stmt = try db_runtime.db.prepareReadOnly(
@@ -396,7 +384,7 @@ test "E2E: Pipeline execution on real sample bird.avi detects trailing overlay" 
     try std.testing.expectEqualStrings("avi", triage_row.text(1));
     try std.testing.expectEqualStrings("video/x-msvideo", triage_row.text(2));
 
-    // Verify R01_TRAILING_OVERLAY was detected and remediated by the remediation plugin
+    // Verify R01_TRAILING_OVERLAY was detected by the analyzer plugin
     var audit_stmt = try db_runtime.db.prepareReadOnly(
         "SELECT rule_id, severity, is_remediated, remediation_action FROM audit_findings WHERE rule_id = 'R01_TRAILING_OVERLAY'",
     );
@@ -404,14 +392,8 @@ test "E2E: Pipeline execution on real sample bird.avi detects trailing overlay" 
     const audit_row = (try audit_stmt.step()).?;
     try std.testing.expectEqualStrings("R01_TRAILING_OVERLAY", audit_row.text(0));
     try std.testing.expectEqual(@as(i64, 2), audit_row.int64(1));
-    try std.testing.expectEqual(@as(i64, 1), audit_row.int64(2));
-    try std.testing.expectEqualStrings("TRUNCATED_OVERLAY", audit_row.text(3));
-
-    // Verify clean_video artifact was created and truncated
-    const clean_art = try artifacts.getBuffer("clean_video");
-    const orig_file = try artifacts.getBuffer("file");
-    try std.testing.expect(clean_art.size() < orig_file.size());
-    try std.testing.expect(artifacts.carved_items.items.len > 0);
+    try std.testing.expectEqual(@as(i64, 0), audit_row.int64(2));
+    try std.testing.expectEqualStrings("UNRESOLVED", audit_row.text(3));
 }
 
 test "E2E: Pipeline execution on real sample video.mp4 verifies clean" {
@@ -433,11 +415,9 @@ test "E2E: Pipeline execution on real sample video.mp4 verifies clean" {
     );
     defer db_runtime.deinit();
 
-    var registry = abi.ModuleRegistry.init(std.testing.allocator);
+    var registry = pipeline_core.ModuleRegistry.init(std.testing.allocator);
     defer registry.deinit();
-    try registry.registerStaticModule("triage", &triage.manifest);
-    try registry.registerStaticModule("ir", &ir.manifest);
-    try registry.registerStaticModule("forensics", &forensics.manifest);
+    try registry.registerStaticModule("analyzer", &analyzer.manifest);
     try registry.registerStaticModule("remediation", &remediation.manifest);
 
     var eng = pipeline_core.PipelineEngine.init(

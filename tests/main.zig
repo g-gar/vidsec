@@ -5,6 +5,7 @@ test {
     _ = @import("pipeline_e2e_test.zig");
 
     // Format parser tests
+    _ = @import("formats/formats_common_test.zig");
     _ = @import("formats/isobmff_test.zig");
     _ = @import("formats/mp4_test.zig");
     _ = @import("formats/ebml_test.zig");
@@ -19,9 +20,11 @@ test {
     _ = @import("lib/forensics_domain_test.zig");
 
     // Core pipeline & artifact tests
+    _ = @import("core/loader_test.zig");
     _ = @import("core/pipeline_test.zig");
     _ = @import("core/artifact_test.zig");
+    _ = @import("core/field_pipeline_test.zig");
 
     // Plugin domain tests
-    _ = @import("plugins/triage_test.zig");
+    _ = @import("plugins/analyzer_test.zig");
 }

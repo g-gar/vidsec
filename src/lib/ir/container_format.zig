@@ -17,4 +17,8 @@ pub const ContainerFormat = enum(u8) {
             .mpegts => "mpegts",
         };
     }
+
+    pub fn toInt(self: ContainerFormat) i64 {
+        return @intFromEnum(self);
+    }
 };

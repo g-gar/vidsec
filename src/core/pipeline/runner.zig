@@ -80,7 +80,7 @@ pub const PipelineRunner = struct {
     env_interp: yaml_core.EnvInterpolator,
     config: yaml_core.PipelineConfig,
     catalog: yaml_core.SchemaCatalog,
-    registry: abi.ModuleRegistry,
+    registry: @import("loader/mod.zig").ModuleRegistry,
     db_runtime: sqlite_core.SqliteRuntime,
 
     pub fn initFromFiles(allocator: Allocator, options: RunnerOptions) anyerror!PipelineRunner {
@@ -101,7 +101,7 @@ pub const PipelineRunner = struct {
         const schemas_yaml_bytes = try readFileBytes(arena, schemas_path);
         const catalog = try yaml_core.SchemaCatalog.parseYaml(arena, schemas_yaml_bytes, &env_interp);
 
-        var registry = abi.ModuleRegistry.init(allocator);
+        var registry = @import("loader/mod.zig").ModuleRegistry.init(allocator);
         errdefer registry.deinit();
 
         return PipelineRunner{

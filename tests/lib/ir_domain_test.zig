@@ -187,3 +187,22 @@ test "IR: Media Tracks and Sample Extent Queries" {
     try std.testing.expectEqual(@as(u32, 2), video_samples[0].extent_id);
     try std.testing.expectEqual(@as(u32, 3), video_samples[1].extent_id);
 }
+
+test "IR: computeUnreferencedSlack (R08) calculation" {
+    // Intervals at [100..130) and [150..190) in a file of size 200
+    // Expected slacks: [0..100) len 100, [130..150) len 20, [190..200) len 10
+    const intervals = [_]ir.ByteInterval{
+        .{ .tag = "sample", .start = 150, .end = 190 },
+        .{ .tag = "sample", .start = 100, .end = 130 },
+    };
+    const slacks = try ir.computeUnreferencedSlack(std.testing.allocator, 200, &intervals);
+    defer std.testing.allocator.free(slacks);
+
+    try std.testing.expectEqual(@as(usize, 3), slacks.len);
+    try std.testing.expectEqual(@as(u64, 0), slacks[0].file_offset);
+    try std.testing.expectEqual(@as(u64, 100), slacks[0].byte_length);
+    try std.testing.expectEqual(@as(u64, 130), slacks[1].file_offset);
+    try std.testing.expectEqual(@as(u64, 20), slacks[1].byte_length);
+    try std.testing.expectEqual(@as(u64, 190), slacks[2].file_offset);
+    try std.testing.expectEqual(@as(u64, 10), slacks[2].byte_length);
+}

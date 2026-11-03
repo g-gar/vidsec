@@ -6,11 +6,15 @@ const sqlite_core = @import("../sqlite/mod.zig");
 const artifact_mod = @import("artifact.zig");
 const tracer_mod = @import("tracer.zig");
 const host_context_mod = @import("host_context.zig");
+const repository_mod = @import("repository/mod.zig");
+const binding_mod = @import("binding/mod.zig");
+const router_mod = @import("router/mod.zig");
 
 pub const PipelineConfig = yaml_core.PipelineConfig;
 pub const SchemaCatalog = yaml_core.SchemaCatalog;
 pub const TaskTarget = yaml_core.TaskTarget;
-pub const ModuleRegistry = abi.ModuleRegistry;
+pub const ModuleRegistry = @import("loader/mod.zig").ModuleRegistry;
+pub const LoaderError = @import("loader/mod.zig").LoaderError;
 pub const TaskDescriptor_ABI = abi.TaskDescriptor_ABI;
 pub const TaskStatus_ABI = abi.TaskStatus_ABI;
 pub const SqliteRuntime = sqlite_core.SqliteRuntime;
@@ -18,6 +22,9 @@ pub const ArtifactStore = artifact_mod.ArtifactStore;
 pub const ExecutionTracer = tracer_mod.ExecutionTracer;
 pub const DebugController = tracer_mod.DebugController;
 pub const HostExecutionContext = host_context_mod.HostExecutionContext;
+pub const MemoryRepository = repository_mod.MemoryRepository;
+pub const TaskOutputStore = binding_mod.TaskOutputStore;
+pub const InputResolver = binding_mod.InputResolver;
 
 pub const EngineError = error{
     MissingRequiredTaskParam,
@@ -25,7 +32,7 @@ pub const EngineError = error{
     TaskFatalError,
     AbortedByDebugger,
     OutOfMemory,
-} || sqlite_core.RuntimeError || abi.LoaderError || artifact_mod.ArtifactError;
+} || sqlite_core.RuntimeError || LoaderError || artifact_mod.ArtifactError;
 
 /// Summary metrics returned after a pipeline run completes or halts.
 pub const ExecutionSummary = struct {
@@ -45,6 +52,8 @@ pub const PipelineEngine = struct {
     catalog: *const SchemaCatalog,
     registry: *ModuleRegistry,
     db_runtime: *SqliteRuntime,
+    memory_repo: MemoryRepository,
+    task_outputs: TaskOutputStore,
     tracer: ExecutionTracer,
     debug_controller: DebugController = .{},
 
@@ -61,17 +70,21 @@ pub const PipelineEngine = struct {
             .catalog = catalog,
             .registry = registry,
             .db_runtime = db_runtime,
+            .memory_repo = MemoryRepository.init(allocator),
+            .task_outputs = TaskOutputStore.init(allocator),
             .tracer = ExecutionTracer.init(allocator),
         };
     }
 
     pub fn deinit(self: *PipelineEngine) void {
+        self.task_outputs.deinit();
+        self.memory_repo.deinit();
         self.tracer.deinit();
     }
 
     /// Dynamically loads all `.so` modules declared in `config.modules` that are not already registered
     /// in `self.registry` (enforcing `stat` permission checks and `VIDSEC_ABI_VERSION` verification).
-    pub fn loadConfiguredModules(self: *PipelineEngine) abi.LoaderError!void {
+    pub fn loadConfiguredModules(self: *PipelineEngine) LoaderError!void {
         for (self.config.modules.entries) |mod_entry| {
             const alias = mod_entry.key;
             const decl = mod_entry.value;
@@ -85,12 +98,45 @@ pub const PipelineEngine = struct {
     pub fn resolveTaskDescriptor(
         self: *const PipelineEngine,
         target: TaskTarget,
-    ) abi.LoaderError!*const TaskDescriptor_ABI {
+    ) LoaderError!*const TaskDescriptor_ABI {
         return switch (target) {
             .sql_rule => unreachable,
             .module_default => |mod_name| self.registry.resolveTask(mod_name, null),
             .module_task => |mt| self.registry.resolveTask(mt.module, mt.task),
         };
+    }
+
+    /// Evaluates a `RouterStep` (`cases: [{ when: "...", goto: "..." }]`, `default: ...`).
+    /// Dispatches in-memory expressions against `InputResolver` (without database roundtrips)
+    /// and SQL queries (`SELECT ...`) against `db_runtime`.
+    pub fn evaluateRouter(
+        self: *PipelineEngine,
+        router_step: yaml_core.RouterStep,
+        artifacts: *ArtifactStore,
+    ) EngineError!?[]const u8 {
+        const resolver = InputResolver.init(
+            &self.task_outputs,
+            &self.memory_repo,
+            self.db_runtime,
+            artifacts,
+        );
+
+        for (router_step.cases) |case_item| {
+            const when_str = case_item.when_sql;
+            var matched = false;
+
+            if (router_mod.isSqlQuery(when_str)) {
+                matched = try self.db_runtime.evaluateRouterWhen(when_str);
+            } else {
+                matched = router_mod.evaluateCondition(self.allocator, when_str, &resolver);
+            }
+
+            if (matched) {
+                return case_item.goto_pipeline;
+            }
+        }
+
+        return router_step.default_pipeline;
     }
 
     /// Performs full pre-flight validation across:
@@ -108,10 +154,10 @@ pub const PipelineEngine = struct {
 
                         const task_desc = try self.resolveTaskDescriptor(t_step.target);
 
-                        // 1. Verify all required parameters declared by the plugin task exist in `params:`
+                        // 1. Verify all required parameters declared by the plugin task exist in `params:` or `inputs:`
                         for (task_desc.requiredParams()) |req_param_z| {
                             const req_name = std.mem.span(req_param_z);
-                            if (t_step.getParam(req_name) == null) {
+                            if (t_step.getParam(req_name) == null and t_step.getInputBinding(req_name) == null) {
                                 return error.MissingRequiredTaskParam;
                             }
                         }
@@ -211,6 +257,8 @@ pub const PipelineEngine = struct {
                                 seq,
                                 t_step,
                                 self.db_runtime,
+                                &self.memory_repo,
+                                &self.task_outputs,
                                 artifacts,
                                 &self.tracer,
                             );
@@ -261,7 +309,7 @@ pub const PipelineEngine = struct {
                     },
                     .router => |r_step| {
                         summary.routers_evaluated += 1;
-                        const maybe_next = try self.db_runtime.evaluateRouter(r_step);
+                        const maybe_next = try self.evaluateRouter(r_step, artifacts);
                         try self.tracer.recordRouterDecision(current_pipeline_name, r_step.name, maybe_next);
 
                         if (self.debug_controller.notifyAfterStep(current_pipeline_name, r_step.name) == .abort_run) {

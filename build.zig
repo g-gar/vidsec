@@ -34,15 +34,32 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // 4. Standalone ISOBMFF parsing & structural triage module (`src/lib/formats/isobmff/mod.zig`)
+    // 4. Standalone Video Intermediate Representation module (`src/lib/ir/mod.zig`)
+    const ir_mod = b.addModule("vidsec_ir", .{
+        .root_source_file = b.path("src/lib/ir/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // 5. Standalone Common Format Abstractions module (`src/lib/formats/common/mod.zig`)
+    const formats_common_mod = b.addModule("vidsec_formats_common", .{
+        .root_source_file = b.path("src/lib/formats/common/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    formats_common_mod.addImport("vidsec_ir", ir_mod);
+
+    // 6. Standalone ISOBMFF parsing & structural triage module (`src/lib/formats/isobmff/mod.zig`)
     const isobmff_mod = b.addModule("vidsec_isobmff", .{
         .root_source_file = b.path("src/lib/formats/isobmff/mod.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
+    isobmff_mod.addImport("vidsec_formats_common", formats_common_mod);
 
-    // 5. Standalone MP4 inspection, brand & track decoding module (`src/lib/formats/mp4/mod.zig`)
+    // 7. Standalone MP4 inspection, brand & track decoding module (`src/lib/formats/mp4/mod.zig`)
     const mp4_mod = b.addModule("vidsec_mp4", .{
         .root_source_file = b.path("src/lib/formats/mp4/mod.zig"),
         .target = target,
@@ -51,15 +68,16 @@ pub fn build(b: *std.Build) void {
     });
     mp4_mod.addImport("vidsec_isobmff", isobmff_mod);
 
-    // 6. Standalone EBML grammar & element hierarchy parsing module (`src/lib/formats/ebml/mod.zig`)
+    // 8. Standalone EBML grammar & element hierarchy parsing module (`src/lib/formats/ebml/mod.zig`)
     const ebml_mod = b.addModule("vidsec_ebml", .{
         .root_source_file = b.path("src/lib/formats/ebml/mod.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
+    ebml_mod.addImport("vidsec_formats_common", formats_common_mod);
 
-    // 7. Standalone MKV track & cluster inspection module (`src/lib/formats/mkv/mod.zig`)
+    // 9. Standalone MKV track & cluster inspection module (`src/lib/formats/mkv/mod.zig`)
     const mkv_mod = b.addModule("vidsec_mkv", .{
         .root_source_file = b.path("src/lib/formats/mkv/mod.zig"),
         .target = target,
@@ -68,22 +86,16 @@ pub fn build(b: *std.Build) void {
     });
     mkv_mod.addImport("vidsec_ebml", ebml_mod);
 
-    // 8. Standalone RIFF container & chunk hierarchy parsing module (`src/lib/formats/riff/mod.zig`)
+    // 10. Standalone RIFF container & chunk hierarchy parsing module (`src/lib/formats/riff/mod.zig`)
     const riff_mod = b.addModule("vidsec_riff", .{
         .root_source_file = b.path("src/lib/formats/riff/mod.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
+    riff_mod.addImport("vidsec_formats_common", formats_common_mod);
 
-    // 9. Standalone Video Intermediate Representation module (`src/lib/ir/mod.zig`)
-    const ir_mod = b.addModule("vidsec_ir", .{
-        .root_source_file = b.path("src/lib/ir/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    // 10. Standalone Abstract Forensics library module (`src/lib/forensics/mod.zig`)
+    // 11. Standalone Abstract Forensics library module (`src/lib/forensics/mod.zig`)
     const forensics_mod = b.addModule("vidsec_forensics", .{
         .root_source_file = b.path("src/lib/forensics/mod.zig"),
         .target = target,
@@ -113,10 +125,8 @@ pub fn build(b: *std.Build) void {
     root_mod.addImport("vidsec_forensics", forensics_mod);
 
     // 10. Official `.so` Plugin Shared Libraries (`src/plugin/*`)
-    _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, "triage", "src/plugin/triage/mod.zig");
-    _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, "ir", "src/plugin/ir/mod.zig");
-    _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, "forensics", "src/plugin/forensics/mod.zig");
-    _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, "remediation", "src/plugin/remediation/mod.zig");
+    _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, ir_mod, forensics_mod, "analyzer", "src/plugin/analyzer/mod.zig");
+    _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, ir_mod, forensics_mod, "remediation", "src/plugin/remediation/mod.zig");
 
     // 6. Main CLI executable (`vidsec`)
     const exe_mod = b.createModule(.{
@@ -166,6 +176,7 @@ pub fn build(b: *std.Build) void {
     test_suite_mod.addImport("vidsec_abi", abi_mod);
     test_suite_mod.addImport("vidsec_magic", magic_mod);
     test_suite_mod.addImport("vidsec_math", math_mod);
+    test_suite_mod.addImport("vidsec_formats_common", formats_common_mod);
     test_suite_mod.addImport("vidsec_isobmff", isobmff_mod);
     test_suite_mod.addImport("vidsec_mp4", mp4_mod);
     test_suite_mod.addImport("vidsec_ebml", ebml_mod);
@@ -199,6 +210,8 @@ pub fn addPluginSharedLib(
     ebml_mod: ?*std.Build.Module,
     mkv_mod: ?*std.Build.Module,
     riff_mod: ?*std.Build.Module,
+    ir_mod: ?*std.Build.Module,
+    forensics_mod: ?*std.Build.Module,
     name: []const u8,
     root_source: []const u8,
 ) *std.Build.Step.Compile {
@@ -211,6 +224,12 @@ pub fn addPluginSharedLib(
     plugin_mod.addImport("vidsec_abi", abi_mod);
     plugin_mod.addImport("vidsec_magic", magic_mod);
     plugin_mod.addImport("vidsec_math", math_mod);
+    if (ir_mod) |m| {
+        plugin_mod.addImport("vidsec_ir", m);
+    }
+    if (forensics_mod) |m| {
+        plugin_mod.addImport("vidsec_forensics", m);
+    }
     if (isobmff_mod) |m| {
         plugin_mod.addImport("vidsec_isobmff", m);
     }

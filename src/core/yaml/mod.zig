@@ -46,12 +46,81 @@ pub const PipelineLoadError = error{
     module_loader_spec.ModuleSpecError ||
     step_loader.StepLoadError;
 
+pub const StorageTargetDecl = struct {
+    type: []const u8 = "sqlite",
+    schema: ?[]const u8 = null,
+    path: ?[]const u8 = null,
+    directory: ?[]const u8 = null,
+};
+
+pub const StorageConfigMap = yaml_lib.Map(StorageTargetDecl);
+
 /// Complete decoded and validated representation of `pipeline.yaml`.
 pub const PipelineConfig = struct {
     version: u32,
     engine: EngineSettings,
+    storages: ?StorageConfigMap = null,
     modules: ModuleDeclMap,
     pipelines: SubPipelineMap,
+
+    pub fn yamlParse(
+        arena: Allocator,
+        node: yaml_lib.Node,
+        options: yaml_lib.ParseOptions,
+    ) anyerror!PipelineConfig {
+        _ = node.asMap() orelse return error.TypeMismatch;
+
+        const version_node = node.get("version") orelse return error.UnsupportedPipelineVersion;
+        const version_val = if (version_node.asScalar()) |s|
+            std.fmt.parseInt(u32, s, 10) catch return error.UnsupportedPipelineVersion
+        else
+            return error.UnsupportedPipelineVersion;
+
+        var storages: ?StorageConfigMap = null;
+        if (node.get("storages")) |st_node| {
+            storages = try yaml_lib.parseFromNode(StorageConfigMap, arena, st_node, options);
+        }
+
+        var engine: EngineSettings = undefined;
+        if (node.get("engine")) |eng_node| {
+            engine = try yaml_lib.parseFromNode(EngineSettings, arena, eng_node, options);
+        } else if (storages) |st| {
+            var schemas_path: []const u8 = "./configs/schemas.yaml";
+            var db_path: ?[]const u8 = null;
+            var db_mode: DbMode = .memory;
+
+            if (st.get("db")) |db_entry| {
+                if (db_entry.schema) |s| schemas_path = s;
+                if (db_entry.path) |p| {
+                    db_path = p;
+                    db_mode = .wal_file;
+                }
+            }
+            engine = EngineSettings{
+                .schemas_path = schemas_path,
+                .db_path = db_path,
+                .db_mode = db_mode,
+            };
+        } else {
+            return error.MissingSchemasPath;
+        }
+
+        const mod_node = node.get("modules") orelse return error.TypeMismatch;
+        const modules = try yaml_lib.parseFromNode(ModuleDeclMap, arena, mod_node, options);
+
+        const pip_node = node.get("pipelines") orelse return error.TypeMismatch;
+        const pipelines = try yaml_lib.parseFromNode(SubPipelineMap, arena, pip_node, options);
+
+        const config = PipelineConfig{
+            .version = version_val,
+            .engine = engine,
+            .storages = storages,
+            .modules = modules,
+            .pipelines = pipelines,
+        };
+        try config.yamlValidate(arena);
+        return config;
+    }
 
     /// Parses a `pipeline.yaml` string (expanding `.env` variables via `ScalarHook` when `env_interp` is provided)
     /// and validates module references and the router transition DAG.

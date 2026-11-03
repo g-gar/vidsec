@@ -1,30 +1,33 @@
 version: 2
 
-engine:
-  schemas: "./configs/schemas.yaml"
-  db_mode: wal_file
-  db_path: "./vidsec_state.db"
-  db_busy_timeout_ms: 5000
-  max_task_memory_mb: 256
+# =============================================================================
+# VidSec Video Security & Forensics Pipeline
+# Declarative, in-memory, field-routed analytical pipeline configuration.
+# =============================================================================
+
+storages:
+  db:
+    type: sqlite
+    schema: "./configs/schemas.yaml"
+    path: "./vidsec_state.db"
+  artifacts:
+    type: file_store
+    directory: "./artifacts/"
 
 modules:
-  triage:
-    path: "./zig-out/lib/libtriage.so"
-  ir:
-    path: "./zig-out/lib/libir.so"
-  forensics:
-    path: "./zig-out/lib/libforensics.so"
-  remediation:
-    path: "./zig-out/lib/libremediation.so"
+  analyzer:
+    path: "./zig-out/lib/libanalyzer.so"
 
 pipelines:
   # ===========================================================================
-  # STAGE 0: Lightweight Pre-Triage Gatekeeper (libtriage.so -> SQLite file_triage)
+  # STAGE 0: Pre-Triage Gatekeeper
+  # Validates magic bytes, container entropy, and file dimensions.
+  # Persists initial triage metadata to SQLite; intermediate buffers remain in RAM.
   # ===========================================================================
   main:
     steps:
-      - task: stage0_probe_file
-        use: triage/probe_file
+      - id: stage0_probe_file
+        uses: analyzer/probe_file
         input:
           stream:
             from: file
@@ -33,22 +36,22 @@ pipelines:
           max_file_size_mb: 4096
           min_mid_entropy: 5.5
           strict_extension: true
-        output:
-          into: file_triage
+        persist:
+          db: file_triage
 
       - router: dispatch_after_triage
         cases:
-          - when: "SELECT 1 FROM file_triage t JOIN enum_verdict v ON t.verdict = v.id WHERE v.code = 'DROP' OR t.true_magic_kind >= 10 OR t.exceeds_size_limit = 1"
+          - when: "stage0_probe_file.verdict == 'DROP' or stage0_probe_file.true_magic_kind >= 10 or stage0_probe_file.exceeds_size_limit == true"
             goto: quarantine_flow
         default: stage1_container_ready
 
   # ===========================================================================
-  # STAGE 1: Downstream Container & Mitigation Flows
+  # STAGE 1: Format-Specific Container Inspection & Semantic Triaging
   # ===========================================================================
   stage1_container_ready:
     steps:
-      - task: log_triage_pass
-        use: sql_rule
+      - id: log_triage_pass
+        uses: sql_rule
         query: |
           SELECT 'STAGE0_VERIFIED' AS rule_id,
                  0 AS severity,
@@ -57,42 +60,47 @@ pipelines:
                  mid_entropy AS measured_value,
                  'Passed Stage 0 triage as ' || identified_format || ' (' || mime_type || ')' AS message
           FROM file_triage
-        output:
-          into: audit_findings
+        persist:
+          db: audit_findings
 
       - router: dispatch_to_format_triage
         cases:
-          - when: "SELECT 1 FROM file_triage WHERE detected_family = 'isobmff'"
+          - when: "stage0_probe_file.detected_family == 'isobmff'"
             goto: isobmff_triage_pipeline
-          - when: "SELECT 1 FROM file_triage WHERE detected_family = 'ebml'"
+          - when: "stage0_probe_file.detected_family == 'ebml'"
             goto: ebml_triage_pipeline
-          - when: "SELECT 1 FROM file_triage WHERE detected_family = 'riff'"
+          - when: "stage0_probe_file.detected_family == 'riff'"
             goto: riff_triage_pipeline
         default: unsupported_format_flow
 
-  # Stage 1: Dedicated Native ISOBMFF Structural Triaging Pipeline
+  # Stage 1: ISOBMFF Structural Triaging Pipeline
   isobmff_triage_pipeline:
     steps:
-      - task: isobmff_probe_and_expand
-        use: triage/probe_isobmff
+      - id: isobmff_probe_and_expand
+        uses: analyzer/probe_isobmff
         input:
           stream:
             from: file
         params:
           emit_boxes: true
-        output:
-          schema: triage
+          allow_gaps: false
+          max_gap_tolerance_bytes: 0
+          allow_trailing_data: false
+          max_depth: 8
+          strict_order: true
+        persist:
+          db: isobmff_triage
 
       - router: dispatch_after_isobmff_triage
         cases:
-          - when: "SELECT 1 FROM isobmff_triage t JOIN enum_verdict v ON t.verdict = v.id WHERE v.code = 'DROP'"
+          - when: "isobmff_probe_and_expand.verdict == 'DROP'"
             goto: quarantine_flow
         default: isobmff_verified_flow
 
   isobmff_verified_flow:
     steps:
-      - task: log_isobmff_triage_pass
-        use: sql_rule
+      - id: log_isobmff_triage_pass
+        uses: sql_rule
         query: |
           SELECT 'STAGE1_ISOBMFF_VERIFIED' AS rule_id,
                  0 AS severity,
@@ -101,48 +109,41 @@ pipelines:
                  CAST(box_count AS REAL) AS measured_value,
                  'Passed ISOBMFF structural triage: ' || box_count || ' boxes, ' || mdat_count || ' mdat (' || total_mdat_bytes || ' bytes)' AS message
           FROM isobmff_triage
-        output:
-          into: audit_findings
+        persist:
+          db: audit_findings
 
-      - task: mp4_probe_and_triage
-        use: triage/probe_mp4
-        input:
-          stream:
-            from: file
-        params:
-          emit_tracks: true
-        output:
-          schema: triage
+      - router: dispatch_to_mp4_triage
+        cases: []
+        default: mp4_triage_pipeline
 
-      - router: dispatch_after_mp4
-        cases:
-          - when: "SELECT 1 FROM mp4_triage t JOIN enum_verdict v ON t.verdict = v.id WHERE v.code = 'DROP'"
-            goto: quarantine_flow
-        default: ir_lowering_pipeline
-
-  # Stage 1: Dedicated Native MP4 Semantic Triaging Pipeline
+  # Stage 1: MP4 Semantic Triaging Pipeline
   mp4_triage_pipeline:
     steps:
-      - task: mp4_probe_and_triage
-        use: triage/probe_mp4
+      - id: mp4_probe_and_triage
+        uses: analyzer/probe_mp4
         input:
           stream:
             from: file
+        inputs:
+          file_size: stage0_probe_file.file_size
+          isobmff_box_count:
+            from: isobmff_probe_and_expand.box_count
+            default: 0
         params:
           emit_tracks: true
-        output:
-          schema: triage
+        persist:
+          db: mp4_triage
 
       - router: dispatch_after_mp4_triage
         cases:
-          - when: "SELECT 1 FROM mp4_triage t JOIN enum_verdict v ON t.verdict = v.id WHERE v.code = 'DROP'"
+          - when: "mp4_probe_and_triage.verdict == 'DROP'"
             goto: quarantine_flow
         default: mp4_verified_flow
 
   mp4_verified_flow:
     steps:
-      - task: log_mp4_triage_pass
-        use: sql_rule
+      - id: log_mp4_triage_pass
+        uses: sql_rule
         query: |
           SELECT 'STAGE1_MP4_VERIFIED' AS rule_id,
                  0 AS severity,
@@ -151,37 +152,37 @@ pipelines:
                  CAST(track_count AS REAL) AS measured_value,
                  'Passed MP4 triage: ' || track_count || ' tracks (' || video_track_count || ' video, ' || audio_track_count || ' audio), brand=' || major_brand || ', unreferenced slack=' || unreferenced_mdat_slack || ' bytes' AS message
           FROM mp4_triage
-        output:
-          into: audit_findings
+        persist:
+          db: audit_findings
 
       - router: dispatch_to_ir_from_mp4
         cases: []
         default: ir_lowering_pipeline
 
-  # Stage 1: Dedicated Native EBML Structural Triaging Pipeline
+  # Stage 1: EBML Structural Triaging Pipeline
   ebml_triage_pipeline:
     steps:
-      - task: ebml_probe_and_expand
-        use: triage/probe_ebml
+      - id: ebml_probe_and_expand
+        uses: analyzer/probe_ebml
         input:
           stream:
             from: file
         params:
           emit_elements: true
           recurse_clusters: false
-        output:
-          schema: triage
+        persist:
+          db: ebml_triage
 
       - router: dispatch_after_ebml_triage
         cases:
-          - when: "SELECT 1 FROM ebml_triage t JOIN enum_verdict v ON t.verdict = v.id WHERE v.code = 'DROP'"
+          - when: "ebml_probe_and_expand.verdict == 'DROP'"
             goto: quarantine_flow
         default: ebml_verified_flow
 
   ebml_verified_flow:
     steps:
-      - task: log_ebml_triage_pass
-        use: sql_rule
+      - id: log_ebml_triage_pass
+        uses: sql_rule
         query: |
           SELECT 'STAGE1_EBML_VERIFIED' AS rule_id,
                  0 AS severity,
@@ -190,48 +191,38 @@ pipelines:
                  CAST(element_count AS REAL) AS measured_value,
                  'Passed EBML structural triage: ' || element_count || ' elements, doctype=' || doc_type || ' v' || doc_type_version || ', ' || cluster_count || ' clusters (' || total_cluster_bytes || ' bytes)' AS message
           FROM ebml_triage
-        output:
-          into: audit_findings
+        persist:
+          db: audit_findings
 
-      - task: mkv_probe_and_triage
-        use: triage/probe_mkv
-        input:
-          stream:
-            from: file
-        params:
-          emit_tracks: true
-        output:
-          schema: triage
+      - router: dispatch_to_mkv_triage
+        cases: []
+        default: mkv_triage_pipeline
 
-      - router: dispatch_after_mkv
-        cases:
-          - when: "SELECT 1 FROM mkv_triage t JOIN enum_verdict v ON t.verdict = v.id WHERE v.code = 'DROP'"
-            goto: quarantine_flow
-        default: ir_lowering_pipeline
-
-  # Stage 1: Dedicated Native MKV Semantic Triaging Pipeline
+  # Stage 1: MKV Semantic Triaging Pipeline
   mkv_triage_pipeline:
     steps:
-      - task: mkv_probe_and_triage
-        use: triage/probe_mkv
+      - id: mkv_probe_and_triage
+        uses: analyzer/probe_mkv
         input:
           stream:
             from: file
+        inputs:
+          file_size: stage0_probe_file.file_size
         params:
           emit_tracks: true
-        output:
-          schema: triage
+        persist:
+          db: mkv_triage
 
       - router: dispatch_after_mkv_triage
         cases:
-          - when: "SELECT 1 FROM mkv_triage t JOIN enum_verdict v ON t.verdict = v.id WHERE v.code = 'DROP'"
+          - when: "mkv_probe_and_triage.verdict == 'DROP'"
             goto: quarantine_flow
         default: mkv_verified_flow
 
   mkv_verified_flow:
     steps:
-      - task: log_mkv_triage_pass
-        use: sql_rule
+      - id: log_mkv_triage_pass
+        uses: sql_rule
         query: |
           SELECT 'STAGE1_MKV_VERIFIED' AS rule_id,
                  0 AS severity,
@@ -240,37 +231,37 @@ pipelines:
                  CAST(track_count AS REAL) AS measured_value,
                  'Passed MKV triage: ' || track_count || ' tracks (' || video_track_count || ' video, ' || audio_track_count || ' audio), codec=' || primary_video_codec || ', ' || video_width || 'x' || video_height || ', duration=' || ROUND(duration_seconds, 2) || 's' AS message
           FROM mkv_triage
-        output:
-          into: audit_findings
+        persist:
+          db: audit_findings
 
       - router: dispatch_to_ir_from_mkv
         cases: []
         default: ir_lowering_pipeline
 
-  # Stage 1: Dedicated Native RIFF Structural Triaging Pipeline
+  # Stage 1: RIFF Structural Triaging Pipeline
   riff_triage_pipeline:
     steps:
-      - task: riff_probe_and_expand
-        use: triage/probe_riff
+      - id: riff_probe_and_expand
+        uses: analyzer/probe_riff
         input:
           stream:
             from: file
         params:
           emit_chunks: true
           recurse_movi: false
-        output:
-          schema: triage
+        persist:
+          db: riff_triage
 
       - router: dispatch_after_riff_triage
         cases:
-          - when: "SELECT 1 FROM riff_triage t JOIN enum_verdict v ON t.verdict = v.id WHERE v.code = 'DROP'"
+          - when: "riff_probe_and_expand.verdict == 'DROP'"
             goto: quarantine_flow
         default: riff_verified_flow
 
   riff_verified_flow:
     steps:
-      - task: log_riff_triage_pass
-        use: sql_rule
+      - id: log_riff_triage_pass
+        uses: sql_rule
         query: |
           SELECT 'STAGE1_RIFF_VERIFIED' AS rule_id,
                  0 AS severity,
@@ -279,8 +270,8 @@ pipelines:
                  CAST(chunk_count AS REAL) AS measured_value,
                  'Passed RIFF structural triage: ' || chunk_count || ' chunks, form=' || form_type || ', root_size=' || root_size || ', movi=' || movi_bytes || ' bytes' AS message
           FROM riff_triage
-        output:
-          into: audit_findings
+        persist:
+          db: audit_findings
 
       - router: dispatch_to_ir_from_riff
         cases: []
@@ -288,76 +279,63 @@ pipelines:
 
   # ===========================================================================
   # STAGE 2: Intermediate Representation (IR) Lowering Pipeline
+  # Zero-SQL flow: intermediate regions, extents, and configs stay in RAM.
+  # Only the consolidated container_metadata is persisted to SQLite.
   # ===========================================================================
   ir_lowering_pipeline:
     steps:
-      - task: lower_container_to_ir
-        use: ir/lower_container
+      - id: lower_container_to_ir
+        uses: analyzer/lower_container
         input:
           stream:
             from: file
-          triage:
-            table: file_triage
           boxes:
             table: isobmff_boxes
-            order_by: header_offset
           elements:
             table: ebml_elements
-            order_by: header_offset
           chunks:
             table: riff_chunks
-            order_by: header_offset
-        output:
-          schema: ir_core
+        inputs:
+          file_size: stage0_probe_file.file_size
+          detected_family: stage0_probe_file.detected_family
+          true_magic_kind: stage0_probe_file.true_magic_kind
+          true_magic_name: stage0_probe_file.true_magic_name
+        persist:
+          db: container_metadata
 
-      - task: lower_media_to_ir
-        use: ir/lower_media
+      - id: lower_media_to_ir
+        uses: analyzer/lower_media
+        inputs:
+          detected_family: stage0_probe_file.detected_family
         input:
-          stream:
-            from: file
           mp4_tracks:
             table: mp4_tracks
           mkv_tracks:
             table: mkv_tracks
-        output:
-          schema: ir_deep
-
-      - task: detect_region_overflows
-        use: sql_rule
-        query: |
-          SELECT 'IR_REGION_OVERFLOW' AS rule_id,
-                 2 AS severity,
-                 header_offset AS file_offset,
-                 tag_name AS region_tag,
-                 CAST(effective_end_offset AS REAL) AS measured_value,
-                 'Region ' || tag_name || ' (id=' || region_id || ') overflows file bounds: offset=' || header_offset || ' end=' || effective_end_offset AS message
-          FROM ir_regions
-          WHERE is_truncated_or_overflow = 1
-        output:
-          into: audit_findings
+        # Pure in-memory: no persist declaration keeps codec configs and sample extents in RAM
 
       - router: dispatch_after_ir_lowering
         cases:
-          - when: "SELECT 1 FROM ir_regions WHERE is_truncated_or_overflow = 1"
+          - when: "SELECT 1 FROM audit_findings WHERE rule_id = 'IR_REGION_OVERFLOW' OR severity >= 2"
             goto: quarantine_flow
         default: ir_verified_flow
 
   ir_verified_flow:
     steps:
-      - task: log_ir_lowered
-        use: sql_rule
+      - id: log_ir_lowered
+        uses: sql_rule
         query: |
           SELECT 'IR_LOWERED' AS rule_id,
                  0 AS severity,
                  0 AS file_offset,
                  true_magic_name AS region_tag,
-                 CAST((SELECT COUNT(*) FROM ir_regions) AS REAL) AS measured_value,
-                 'Consolidated IR: ' || (SELECT COUNT(*) FROM ir_regions) || ' regions, file_size=' || file_size || ', highest_root_end=' || highest_root_end AS message,
+                 0.0 AS measured_value,
+                 'Consolidated IR container: file_size=' || file_size || ', highest_root_end=' || highest_root_end AS message,
                  1 AS is_remediated,
                  'VERIFIED' AS remediation_action
           FROM container_metadata
-        output:
-          into: audit_findings
+        persist:
+          db: audit_findings
 
       - router: dispatch_to_forensics
         cases: []
@@ -365,36 +343,43 @@ pipelines:
 
   # ===========================================================================
   # STAGE 3: Deep Forensic Analysis & Security Audit Pipeline
+  # Reads topology, entropy, and codec structures from memory and registers findings.
   # ===========================================================================
   forensics_analysis_pipeline:
     steps:
-      - task: analyze_topology
-        use: forensics/analyze_topology
+      - id: analyze_topology
+        uses: analyzer/analyze_topology
         input:
           stream:
             from: file
-          meta:
-            table: container_metadata
           regions:
             table: ir_regions
-            order_by: header_offset
-        output:
-          schema: ir_deep
+        inputs:
+          file_size: stage0_probe_file.file_size
+          highest_root_end: lower_container_to_ir.highest_root_end
+          prev_verdict: db.file_triage.verdict
+        params:
+          allow_trailing_slack: false
+          max_trailing_slack_bytes: 0
+        persist:
+          db: audit_findings
 
-      - task: scan_entropy
-        use: forensics/scan_entropy
+      - id: scan_entropy
+        uses: analyzer/scan_entropy
         input:
           stream:
             from: file
           slack:
             table: ir_unreferenced_slack
+        inputs:
+          file_size: stage0_probe_file.file_size
         params:
           min_entropy: 7.2
-        output:
-          into: audit_findings
+        persist:
+          db: audit_findings
 
-      - task: check_inconsistencies
-        use: forensics/check_inconsistencies
+      - id: check_inconsistencies
+        uses: analyzer/check_inconsistencies
         input:
           stream:
             from: file
@@ -402,93 +387,38 @@ pipelines:
             table: ir_codec_configs
           extents:
             table: ir_sample_extents
-        output:
-          into: audit_findings
+        persist:
+          db: audit_findings
 
       - router: dispatch_after_forensics
         cases:
-          - when: "SELECT 1 FROM audit_findings WHERE severity >= 2 AND is_remediated = 0"
-            goto: remediation_pipeline
+          - when: "SELECT 1 FROM audit_findings WHERE severity >= 2"
+            goto: forensics_findings_detected
         default: video_verified_clean
 
   # ===========================================================================
-  # STAGE 3: Remediation & Content Disarm (CDR) Pipeline
+  # Final Terminal Flows
   # ===========================================================================
-  remediation_pipeline:
-    steps:
-      - task: carve_threats_to_quarantine
-        use: remediation/carve_quarantine
-        input:
-          stream:
-            from: file
-          threats:
-            table: audit_findings
-            filter: "severity >= 2 AND byte_length > 0 AND is_remediated = 0"
-            map: { finding_id: finding_id, rule_id: rule_id, file_offset: file_offset, byte_length: byte_length }
-
-      - task: sanitize_container
-        use: remediation/sanitize
-        input:
-          stream:
-            from: file
-          findings:
-            table: audit_findings
-            filter: "severity >= 2 AND is_remediated = 0"
-            map: { finding_id: finding_id, rule_id: rule_id, file_offset: file_offset, byte_length: byte_length }
-          meta:
-            table: container_metadata
-            map: { highest_root_end: highest_root_end, file_size: file_size }
-        output:
-          artifact: clean_video
-          into: audit_findings
-          mode: update
-          key: finding_id
-          fields: [finding_id, is_remediated, remediation_action]
-
-      - router: dispatch_after_remediation
-        cases:
-          - when: "SELECT 1 FROM audit_findings WHERE severity >= 2 AND is_remediated = 0"
-            goto: forensics_findings_detected
-        default: video_remediated_clean
-
-  video_remediated_clean:
-    steps:
-      - task: log_remediation_success
-        use: sql_rule
-        query: |
-          SELECT 'VIDEO_REMEDIATED_CLEAN' AS rule_id,
-                 0 AS severity,
-                 0 AS file_offset,
-                 0 AS byte_length,
-                 0 AS end_offset,
-                 'remediation' AS region_tag,
-                 CAST((SELECT COUNT(*) FROM audit_findings WHERE is_remediated = 1) AS REAL) AS measured_value,
-                 'Video certified sanitized: All critical anomalies neutralized and clean artifact produced' AS message,
-                 1 AS is_remediated,
-                 'REMEDIATION_COMPLETE' AS remediation_action
-        output:
-          into: audit_findings
-
   forensics_findings_detected:
     steps:
-      - task: log_forensics_summary
-        use: sql_rule
+      - id: log_forensics_summary
+        uses: sql_rule
         query: |
-          SELECT 'FORENSICS_FINDINGS_PENDING' AS rule_id,
-                 1 AS severity,
+          SELECT 'FORENSICS_FINDINGS_DETECTED' AS rule_id,
+                 2 AS severity,
                  0 AS file_offset,
                  'forensics' AS region_tag,
-                 CAST((SELECT COUNT(*) FROM audit_findings WHERE severity >= 2 AND is_remediated = 0) AS REAL) AS measured_value,
-                 'Forensic scan completed: ' || (SELECT COUNT(*) FROM audit_findings WHERE severity >= 2 AND is_remediated = 0) || ' critical findings pending remediation' AS message,
+                 CAST((SELECT COUNT(*) FROM audit_findings WHERE severity >= 2) AS REAL) AS measured_value,
+                 'Forensic scan completed: ' || (SELECT COUNT(*) FROM audit_findings WHERE severity >= 2) || ' critical finding(s) detected' AS message,
                  0 AS is_remediated,
-                 'PENDING_SANITIZATION' AS remediation_action
-        output:
-          into: audit_findings
+                 'THREAT_DETECTED' AS remediation_action
+        persist:
+          db: audit_findings
 
   video_verified_clean:
     steps:
-      - task: log_clean_certification
-        use: sql_rule
+      - id: log_clean_certification
+        uses: sql_rule
         query: |
           SELECT 'VIDEO_CLEAN_VERIFIED' AS rule_id,
                  0 AS severity,
@@ -498,13 +428,13 @@ pipelines:
                  'Video certified clean: zero critical unresolved findings across all stages' AS message,
                  1 AS is_remediated,
                  'VERIFIED_CLEAN' AS remediation_action
-        output:
-          into: audit_findings
+        persist:
+          db: audit_findings
 
   unsupported_format_flow:
     steps:
-      - task: log_unsupported_format
-        use: sql_rule
+      - id: log_unsupported_format
+        uses: sql_rule
         query: |
           SELECT 'STAGE1_UNSUPPORTED_FORMAT' AS rule_id,
                  1 AS severity,
@@ -513,13 +443,13 @@ pipelines:
                  0.0 AS measured_value,
                  'Format family not supported for deep triage: ' || detected_family AS message
           FROM file_triage
-        output:
-          into: audit_findings
+        persist:
+          db: audit_findings
 
   quarantine_flow:
     steps:
-      - task: mark_quarantine_decision
-        use: sql_rule
+      - id: mark_quarantine_decision
+        uses: sql_rule
         query: |
           SELECT 'STAGE0_QUARANTINED' AS rule_id,
                  2 AS severity,
@@ -528,5 +458,5 @@ pipelines:
                  mid_entropy AS measured_value,
                  'File rejected at Stage 0 Triage (' || flags_csv || ')' AS message
           FROM file_triage
-        output:
-          into: audit_findings
+        persist:
+          db: audit_findings

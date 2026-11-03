@@ -10,6 +10,7 @@ pub const CatalogCompiler = compiler.CatalogCompiler;
 
 pub const RuntimeError = runtime.RuntimeError;
 pub const NamedValue = runtime.NamedValue;
+pub const Value = sqlite_lib.Value;
 pub const PreparedSink = runtime.PreparedSink;
 pub const SqliteRuntime = runtime.SqliteRuntime;
 

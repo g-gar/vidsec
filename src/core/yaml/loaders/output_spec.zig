@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const yaml = @import("../../../lib/yaml/mod.zig");
+const TargetDestination = @import("../../pipeline/field_router/field_target.zig").TargetDestination;
 
 pub const OutputSpecError = error{
     ConflictingOutputTargets,
@@ -50,17 +51,106 @@ pub const OutputTarget = union(enum) {
     into_table: TableOutputTarget,
 };
 
+/// Extracts a target table name from either a scalar (`"db.file_triage"`, `"file_triage"`)
+/// or a map (`{ db: "ir_regions" }`).
+pub fn extractPersistTable(arena: Allocator, node: yaml.Node) ?[]const u8 {
+    if (node.asScalar()) |scalar| {
+        if (std.mem.indexOfScalar(u8, scalar, '.')) |dot_idx| {
+            return arena.dupe(u8, scalar[dot_idx + 1 ..]) catch null;
+        }
+        return arena.dupe(u8, scalar) catch null;
+    }
+    if (node.asMap()) |map| {
+        for (map) |entry| {
+            if (std.mem.eql(u8, entry.key, "db") or std.mem.eql(u8, entry.key, "sqlite")) {
+                if (entry.value.asScalar()) |val| {
+                    if (std.mem.indexOfScalar(u8, val, '.')) |dot_idx| {
+                        return arena.dupe(u8, val[dot_idx + 1 ..]) catch null;
+                    }
+                    return arena.dupe(u8, val) catch null;
+                }
+            }
+        }
+    }
+    return null;
+}
+
 /// Decoded `output:` block for a task step.
 pub const OutputSpec = struct {
     schema: ?[]const u8 = null,
     into: ?[]const u8 = null,
+    target_dest: ?TargetDestination = null,
     mode: ?OutputMutationMode = null,
     key: ?[]const u8 = null,
     fields: ?[]const []const u8 = null,
     map: ?yaml.Map(OutputFieldSource) = null,
     artifact: ?[]const u8 = null,
 
+    pub const yaml_fields = .{
+        .target_dest = "target",
+    };
+
+    pub fn yamlParse(
+        arena: Allocator,
+        node: yaml.Node,
+        options: yaml.ParseOptions,
+    ) anyerror!OutputSpec {
+        const map = node.asMap() orelse return error.TypeMismatch;
+        var schema: ?[]const u8 = null;
+        var into: ?[]const u8 = null;
+        var target_dest: ?TargetDestination = null;
+        var mode: ?OutputMutationMode = null;
+        var key: ?[]const u8 = null;
+        var fields: ?[]const []const u8 = null;
+        var out_map: ?yaml.Map(OutputFieldSource) = null;
+        var artifact: ?[]const u8 = null;
+
+        for (map) |entry| {
+            if (std.mem.eql(u8, entry.key, "schema")) {
+                schema = try arena.dupe(u8, entry.value.asScalar() orelse return error.InvalidOutputMap);
+            } else if (std.mem.eql(u8, entry.key, "into")) {
+                into = try arena.dupe(u8, entry.value.asScalar() orelse return error.InvalidOutputMap);
+            } else if (std.mem.eql(u8, entry.key, "target")) {
+                const raw = entry.value.asScalar() orelse return error.InvalidOutputMap;
+                target_dest = try TargetDestination.yamlParseScalar(arena, .{ .value = raw, .quote_style = .plain }, .{ .line = 0, .column = 0 });
+            } else if (std.mem.eql(u8, entry.key, "persist")) {
+                if (extractPersistTable(arena, entry.value)) |tbl| {
+                    into = tbl;
+                }
+            } else if (std.mem.eql(u8, entry.key, "mode")) {
+                const raw = entry.value.asScalar() orelse return error.InvalidOutputMap;
+                mode = std.meta.stringToEnum(OutputMutationMode, raw);
+            } else if (std.mem.eql(u8, entry.key, "key")) {
+                key = try arena.dupe(u8, entry.value.asScalar() orelse return error.InvalidOutputMap);
+            } else if (std.mem.eql(u8, entry.key, "artifact")) {
+                artifact = try arena.dupe(u8, entry.value.asScalar() orelse return error.InvalidOutputMap);
+            } else if (std.mem.eql(u8, entry.key, "fields")) {
+                fields = try yaml.parseFromNode([]const []const u8, arena, entry.value, options);
+            } else if (std.mem.eql(u8, entry.key, "map")) {
+                out_map = try yaml.parseFromNode(yaml.Map(OutputFieldSource), arena, entry.value, options);
+            }
+        }
+
+        const spec = OutputSpec{
+            .schema = schema,
+            .into = into,
+            .target_dest = target_dest,
+            .mode = mode,
+            .key = key,
+            .fields = fields,
+            .map = out_map,
+            .artifact = artifact,
+        };
+        try spec.yamlValidate(arena);
+        return spec;
+    }
+
     pub fn target(self: OutputSpec) ?OutputTarget {
+        if (self.target_dest) |dest| {
+            if (dest == .memory) {
+                return null;
+            }
+        }
         if (self.schema) |dom| {
             return .{ .schema_domain = dom };
         }
@@ -79,6 +169,11 @@ pub const OutputSpec = struct {
     }
 
     pub fn yamlValidate(self: *const OutputSpec, _: Allocator) OutputSpecError!void {
+        if (self.target_dest) |dest| {
+            if (dest == .memory) {
+                return;
+            }
+        }
         if (self.schema != null and self.into != null) {
             return error.ConflictingOutputTargets;
         }

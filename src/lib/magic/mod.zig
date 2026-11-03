@@ -7,6 +7,7 @@ pub const document = @import("document.zig");
 pub const image_font = @import("image_font.zig");
 pub const media = @import("media.zig");
 pub const scanner = @import("scanner.zig");
+pub const file_triage_row = @import("file_triage_row.zig");
 
 pub const Category = types.Category;
 pub const ContainerFamily = types.ContainerFamily;
@@ -17,6 +18,11 @@ pub const RECOMMENDED_HEADER_BYTES = types.RECOMMENDED_HEADER_BYTES;
 pub const SignatureHit = scanner.SignatureHit;
 pub const TailArchiveScan = scanner.TailArchiveScan;
 pub const HeadExecutableScan = scanner.HeadExecutableScan;
+
+pub const DetectedFamily = file_triage_row.DetectedFamily;
+pub const MagicKind = file_triage_row.MagicKind;
+pub const FileTriageRow = file_triage_row.FileTriageRow;
+pub const emitFileTriage = file_triage_row.emitFileTriage;
 
 pub const findFirstEmbeddedSignature = scanner.findFirstEmbeddedSignature;
 pub const probeEmbeddedAt = scanner.probeEmbeddedAt;

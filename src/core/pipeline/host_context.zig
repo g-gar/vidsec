@@ -5,6 +5,10 @@ const sqlite_core = @import("../sqlite/mod.zig");
 const yaml_core = @import("../yaml/mod.zig");
 const artifact_mod = @import("artifact.zig");
 const tracer_mod = @import("tracer.zig");
+const repository_mod = @import("repository/mod.zig");
+const field_router_mod = @import("field_router/mod.zig");
+const cursor_mod = @import("cursor/mod.zig");
+const binding_mod = @import("binding/mod.zig");
 
 pub const SqliteRuntime = sqlite_core.SqliteRuntime;
 pub const PreparedSink = sqlite_core.PreparedSink;
@@ -19,6 +23,18 @@ pub const ArtifactStore = artifact_mod.ArtifactStore;
 pub const ManagedBuffer = artifact_mod.ManagedBuffer;
 pub const ExecutionTracer = tracer_mod.ExecutionTracer;
 
+pub const MemoryRepository = repository_mod.MemoryRepository;
+pub const StorageRepository = repository_mod.StorageRepository;
+pub const FieldRouter = field_router_mod.FieldRouter;
+pub const MemoryCursor = cursor_mod.MemoryCursor;
+pub const QueryCursor = cursor_mod.QueryCursor;
+pub const RecordCursor = cursor_mod.RecordCursor;
+pub const QueryCursorState = QueryCursor;
+
+pub const TaskOutputStore = binding_mod.TaskOutputStore;
+pub const InputResolver = binding_mod.InputResolver;
+pub const InputBinding = binding_mod.InputBinding;
+
 pub const Value_ABI = abi.Value_ABI;
 pub const NamedField_ABI = abi.NamedField_ABI;
 pub const WindowView_ABI = abi.WindowView_ABI;
@@ -28,49 +44,6 @@ pub const HostError_ABI = abi.HostError_ABI;
 pub const HostApiVTable_ABI = abi.HostApiVTable_ABI;
 pub const TaskContext_ABI = abi.TaskContext_ABI;
 
-/// State of an active SQLite `SELECT` cursor backing either `next_window` or `next_row`.
-pub const QueryCursorState = struct {
-    stream_source: ?[]const u8,
-    stmt: Stmt,
-    col_names_z: [][:0]u8,
-    row_fields_buf: []NamedField_ABI,
-
-    pub fn init(allocator: Allocator, stream_source: ?[]const u8, mut_stmt: Stmt) !QueryCursorState {
-        var stmt = mut_stmt;
-        const count = stmt.columnCount();
-        var col_names = try allocator.alloc([:0]u8, count);
-        errdefer allocator.free(col_names);
-
-        for (0..count) |i| {
-            col_names[i] = try allocator.dupeZ(u8, stmt.columnName(i));
-        }
-
-        const fields_buf = try allocator.alloc(NamedField_ABI, count);
-        return .{
-            .stream_source = stream_source,
-            .stmt = stmt,
-            .col_names_z = col_names,
-            .row_fields_buf = fields_buf,
-        };
-    }
-
-    pub fn deinit(self: *QueryCursorState, allocator: Allocator) void {
-        for (self.col_names_z) |c_name| {
-            allocator.free(c_name);
-        }
-        allocator.free(self.col_names_z);
-        allocator.free(self.row_fields_buf);
-        self.stmt.deinit();
-    }
-
-    pub fn findColIndex(self: *const QueryCursorState, name: []const u8) ?usize {
-        for (self.col_names_z, 0..) |col_z, idx| {
-            if (std.ascii.eqlIgnoreCase(col_z, name)) return idx;
-        }
-        return null;
-    }
-};
-
 /// Concrete Host state bound to `TaskContext_ABI.opaque_host_state` for a single plugin task execution.
 pub const HostExecutionContext = struct {
     allocator: Allocator,
@@ -79,11 +52,15 @@ pub const HostExecutionContext = struct {
     step_seq: usize,
     step_spec: *const TaskStep,
     db_runtime: *SqliteRuntime,
+    memory_repo: *MemoryRepository,
+    task_outputs: *TaskOutputStore,
+    input_resolver: InputResolver,
     artifacts: *ArtifactStore,
     tracer: *ExecutionTracer,
 
     primary_stream_source: ?[]const u8 = null,
-    cursors: std.StringHashMapUnmanaged(QueryCursorState) = .{},
+    cursors: std.StringHashMapUnmanaged(RecordCursor) = .{},
+    field_router: ?FieldRouter = null,
     single_sink: ?PreparedSink = null,
     domain_sinks: std.StringHashMapUnmanaged(PreparedSink) = .{},
     staged_artifact: ?ManagedBuffer = null,
@@ -101,6 +78,8 @@ pub const HostExecutionContext = struct {
         step_seq: usize,
         step_spec: *const TaskStep,
         db_runtime: *SqliteRuntime,
+        memory_repo: *MemoryRepository,
+        task_outputs: *TaskOutputStore,
         artifacts: *ArtifactStore,
         tracer: *ExecutionTracer,
     ) !HostExecutionContext {
@@ -111,6 +90,9 @@ pub const HostExecutionContext = struct {
             .step_seq = step_seq,
             .step_spec = step_spec,
             .db_runtime = db_runtime,
+            .memory_repo = memory_repo,
+            .task_outputs = task_outputs,
+            .input_resolver = InputResolver.init(task_outputs, memory_repo, db_runtime, artifacts),
             .artifacts = artifacts,
             .tracer = tracer,
         };
@@ -128,6 +110,10 @@ pub const HostExecutionContext = struct {
             cur.deinit(self.allocator);
         }
         self.cursors.deinit(self.allocator);
+
+        if (self.field_router) |*r| {
+            r.deinit();
+        }
 
         if (self.single_sink) |*s| {
             self.freeSinkSpec(s.sink_spec);
@@ -177,24 +163,60 @@ pub const HostExecutionContext = struct {
                 self.primary_stream_source = src_name orelse "file";
             }
 
-            if (try CatalogCompiler.compileInputSelect(temp, ch_spec)) |select_sql| {
+            // Target table name to look for in memory repository
+            const target_tbl = ch_spec.table orelse ch_name;
+
+            const has_sql_transform = ch_spec.query != null or
+                ch_spec.filter != null or
+                (ch_spec.map != null and ch_spec.map.?.entries.len > 0) or
+                ch_spec.order_by != null or
+                ch_spec.group_by.len > 0 or
+                ch_spec.limit != null or
+                ch_spec.offset != null;
+
+            // 1. If no SQL transformation is required and memory repository has records, bind MemoryCursor!
+            if (!has_sql_transform and self.memory_repo.tables.get(target_tbl) != null) {
+                const mem_tbl = self.memory_repo.tables.get(target_tbl).?;
+                const mem_cursor = MemoryCursor.init(
+                    src_name orelse self.primary_stream_source orelse "file",
+                    mem_tbl.records.items,
+                );
+                try self.cursors.put(self.allocator, ch_name, .{ .memory = mem_cursor });
+            } else if (try CatalogCompiler.compileInputSelect(temp, ch_spec)) |select_sql| {
+                // 2. Fall back to SQLite query cursor if configured via schema catalog
                 var stmt = try self.db_runtime.db.prepareReadOnly(select_sql);
                 errdefer stmt.deinit();
 
-                const cursor_state = try QueryCursorState.init(
+                const cursor_state = try QueryCursor.init(
                     self.allocator,
                     src_name orelse self.primary_stream_source orelse "file",
                     stmt,
                 );
-                try self.cursors.put(self.allocator, ch_name, cursor_state);
+                try self.cursors.put(self.allocator, ch_name, .{ .sqlite = cursor_state });
             }
         }
     }
 
     fn prepareOutputs(self: *HostExecutionContext) !void {
         const out_spec = self.step_spec.output orelse return;
-        const target = out_spec.target() orelse return;
 
+        const default_tbl = if (out_spec.into) |tbl|
+            tbl
+        else if (out_spec.schema) |dom|
+            dom
+        else
+            "default";
+
+        self.field_router = FieldRouter.init(self.allocator, default_tbl);
+
+        // If target destination is memory only, do not prepare any SQLite sinks
+        if (out_spec.target_dest) |dest| {
+            if (dest == .memory) {
+                return;
+            }
+        }
+
+        const target = out_spec.target() orelse return;
         switch (target) {
             .into_table => |into_tbl| {
                 self.single_sink = try self.db_runtime.prepareTableSink(self.allocator, into_tbl);
@@ -285,39 +307,14 @@ pub const HostExecutionContext = struct {
         const ch = if (channel_name) |c_ptr| std.mem.span(c_ptr) else "windows";
         const cur = self.cursors.getPtr(ch) orelse return .not_found;
 
-        const maybe_row = cur.stmt.step() catch return .io_error;
-        const row = maybe_row orelse return .end_of_stream;
+        const maybe_win = cur.nextWindow() catch return .io_error;
+        const win = maybe_win orelse return .end_of_stream;
 
-        const col_count = row.columnCount();
-        if (col_count < 3) return .invalid_argument;
-
-        const id_idx = cur.findColIndex("id") orelse cur.findColIndex("window_id") orelse 0;
-        const off_idx = cur.findColIndex("offset") orelse cur.findColIndex("file_offset") orelse 1;
-        const len_idx = cur.findColIndex("length") orelse cur.findColIndex("byte_length") orelse 2;
-        const tag_idx = cur.findColIndex("tag") orelse cur.findColIndex("region_tag") orelse
-            (if (col_count >= 4) @as(?usize, 3) else null);
-
-        const win_id = row.int64(id_idx);
-        const raw_offset = row.int64(off_idx);
-        const raw_length = row.int64(len_idx);
-
-        if (raw_offset < 0 or raw_length < 0) return .out_of_bounds;
-        const offset_u64: u64 = @intCast(raw_offset);
-        const length_u64: u64 = @intCast(raw_length);
-
-        const stream_buf = self.artifacts.getBuffer(cur.stream_source) catch return .not_found;
-        const end_u64 = std.math.add(u64, offset_u64, length_u64) catch return .out_of_bounds;
+        const stream_buf = self.artifacts.getBuffer(cur.streamSource()) catch return .not_found;
+        const end_u64 = std.math.add(u64, win.file_offset, win.byte_length) catch return .out_of_bounds;
         if (end_u64 > stream_buf.size()) return .out_of_bounds;
 
-        const tag_slice: []const u8 = if (tag_idx) |t_i| row.text(t_i) else "";
-
-        out_window.* = .{
-            .window_id = win_id,
-            .file_offset = offset_u64,
-            .byte_length = length_u64,
-            .tag_ptr = if (tag_slice.len > 0) tag_slice.ptr else "",
-            .tag_len = tag_slice.len,
-        };
+        out_window.* = win;
         self.windows_read += 1;
         return .ok;
     }
@@ -331,7 +328,7 @@ pub const HostExecutionContext = struct {
     ) callconv(.c) HostError_ABI {
         const self = fromRaw(raw_ctx);
         const src_name = if (self.cursors.getPtr("windows")) |c|
-            c.stream_source
+            c.streamSource()
         else
             self.primary_stream_source;
         const src = src_name orelse return .permission_denied;
@@ -357,21 +354,10 @@ pub const HostExecutionContext = struct {
         const ch = std.mem.span(cursor_name);
         const cur = self.cursors.getPtr(ch) orelse return .not_found;
 
-        const maybe_row = cur.stmt.step() catch return .io_error;
+        const maybe_row = cur.nextRow(self.allocator) catch return .io_error;
         const row = maybe_row orelse return .end_of_stream;
 
-        for (0..cur.col_names_z.len) |i| {
-            const sql_val = row.value(i);
-            cur.row_fields_buf[i] = .{
-                .name_ptr = cur.col_names_z[i].ptr,
-                .value = sqlValueToAbi(sql_val),
-            };
-        }
-
-        out_row.* = .{
-            .fields_ptr = if (cur.row_fields_buf.len > 0) cur.row_fields_buf.ptr else undefined,
-            .fields_len = cur.row_fields_buf.len,
-        };
+        out_row.* = row;
         self.rows_read += 1;
         return .ok;
     }
@@ -382,7 +368,18 @@ pub const HostExecutionContext = struct {
         out_val: *Value_ABI,
     ) callconv(.c) HostError_ABI {
         const self = fromRaw(raw_ctx);
-        const param_val = self.step_spec.getParam(std.mem.span(key)) orelse return .not_found;
+        const key_slice = std.mem.span(key);
+
+        // 1. Check if parameter is explicitly bound via inputs:
+        if (self.step_spec.getInputBinding(key_slice)) |binding_spec| {
+            if (self.input_resolver.resolveValue(self.arena.allocator(), binding_spec)) |resolved_val| {
+                out_val.* = sqlValueToAbi(resolved_val);
+                return .ok;
+            } else |_| {}
+        }
+
+        // 2. Fall back to static params: block
+        const param_val = self.step_spec.getParam(key_slice) orelse return .not_found;
         out_val.* = switch (param_val) {
             .int64 => |v| Value_ABI.fromInt(v),
             .float64 => |v| Value_ABI.fromFloat(v),
@@ -411,34 +408,54 @@ pub const HostExecutionContext = struct {
             });
         }
 
+        // Record into task output store for downstream task binding
+        self.task_outputs.recordRecord(self.step_spec.name, self.emit_scratch.items) catch {};
+
+        const ch_slice: ?[]const u8 = if (channel_name) |ch_z| std.mem.span(ch_z) else null;
+        const target_tbl = ch_slice orelse if (self.single_sink) |*s| s.sink_spec.table_name else "default";
+
+        // Route to in-memory repository for zero-copy downstream pipeline consumption
+        if (self.field_router) |*router| {
+            router.dispatchRecordToTable(
+                target_tbl,
+                self.emit_scratch.items,
+                self.memory_repo.storageRepository(),
+                null,
+            ) catch return .db_constraint_error;
+        } else {
+            self.memory_repo.saveRecord(target_tbl, self.emit_scratch.items) catch return .db_constraint_error;
+        }
+
+        // Persist to relational sinks if configured
         if (self.single_sink) |*sink| {
-            if (channel_name) |ch_z| {
-                const ch = std.mem.span(ch_z);
-                if (ch.len > 0 and !std.mem.eql(u8, ch, sink.sink_spec.table_name)) {
-                    return .invalid_argument;
-                }
+            if (ch_slice == null or std.mem.eql(u8, ch_slice.?, sink.sink_spec.table_name)) {
+                sink.emitRow(self.emit_scratch.items) catch {
+                    self.had_db_error = true;
+                    return .db_constraint_error;
+                };
             }
-            sink.emitRow(self.emit_scratch.items) catch {
-                self.had_db_error = true;
-                return .db_constraint_error;
-            };
             self.rows_emitted += 1;
             return .ok;
         }
 
-        const ch_z = channel_name orelse return .invalid_argument;
-        const sink = self.domain_sinks.getPtr(std.mem.span(ch_z)) orelse return .not_found;
-        sink.emitRow(self.emit_scratch.items) catch {
-            self.had_db_error = true;
-            return .db_constraint_error;
-        };
+        if (ch_slice) |ch| {
+            if (self.domain_sinks.getPtr(ch)) |sink| {
+                sink.emitRow(self.emit_scratch.items) catch {
+                    self.had_db_error = true;
+                    return .db_constraint_error;
+                };
+                self.rows_emitted += 1;
+                return .ok;
+            }
+        }
+
         self.rows_emitted += 1;
         return .ok;
     }
 
     fn resolveStreamOrWindowSource(self: *const HostExecutionContext) ?[]const u8 {
         if (self.primary_stream_source) |src| return src;
-        if (self.cursors.getPtr("windows")) |c| return c.stream_source;
+        if (self.cursors.getPtr("windows")) |c| return c.streamSource();
         return null;
     }
 

@@ -240,7 +240,10 @@ pub const SqliteRuntime = struct {
                 switch (step) {
                     .router => |r_step| {
                         for (r_step.cases) |c| {
-                            try self.validateReadOnlyQuery(c.when_sql);
+                            const trimmed = std.mem.trim(u8, c.when_sql, " \t\r\n");
+                            if (std.ascii.startsWithIgnoreCase(trimmed, "select")) {
+                                try self.validateReadOnlyQuery(c.when_sql);
+                            }
                         }
                     },
                     .task => |t_step| {

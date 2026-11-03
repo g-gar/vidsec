@@ -4,10 +4,12 @@ const yaml = @import("../../../lib/yaml/mod.zig");
 const input_spec = @import("input_spec.zig");
 const output_spec = @import("output_spec.zig");
 const router_spec = @import("router_spec.zig");
+const input_binding_mod = @import("../../pipeline/binding/input_binding.zig");
 
 pub const InputSpec = input_spec.InputSpec;
 pub const OutputSpec = output_spec.OutputSpec;
 pub const RouterStep = router_spec.RouterStep;
+pub const InputBinding = input_binding_mod.InputBinding;
 
 pub const StepLoadError = error{
     MissingMainPipeline,
@@ -109,16 +111,84 @@ pub const TaskStep = struct {
     target: TaskTarget,
     query: ?[]const u8 = null,
     input: ?InputSpec = null,
+    inputs: ?yaml.Map(InputBinding) = null,
     params: yaml.Map(ParamValue) = .{},
     output: ?OutputSpec = null,
 
-    pub const yaml_fields = .{
-        .name = "task",
-        .target = "use",
-    };
+    pub fn yamlParse(
+        arena: Allocator,
+        node: yaml.Node,
+        options: yaml.ParseOptions,
+    ) anyerror!TaskStep {
+        _ = node.asMap() orelse return error.TypeMismatch;
+
+        // 1. Resolve step name: from "task" or "id"
+        const name_node = node.get("task") orelse node.get("id") orelse return error.MissingTaskName;
+        const name_str = name_node.asScalar() orelse return error.MissingTaskName;
+
+        // 2. Resolve step target: from "use" or "uses"
+        const use_node = node.get("use") orelse node.get("uses") orelse return error.InvalidTaskUseSpec;
+        const use_scalar = use_node.asScalar() orelse return error.InvalidTaskUseSpec;
+        const target = try TaskTarget.yamlParseScalar(arena, .{ .value = use_scalar, .quote_style = .plain }, .{ .line = 0, .column = 0 });
+
+        // 3. Resolve query
+        var query: ?[]const u8 = null;
+        if (node.get("query")) |q_node| {
+            if (q_node.asScalar()) |q_str| query = try arena.dupe(u8, q_str);
+        }
+
+        // 4. Resolve input
+        var input: ?InputSpec = null;
+        if (node.get("input")) |in_node| {
+            input = try yaml.parseFromNode(InputSpec, arena, in_node, options);
+        }
+
+        // 5. Resolve inputs
+        var inputs: ?yaml.Map(InputBinding) = null;
+        if (node.get("inputs")) |ins_node| {
+            inputs = try yaml.parseFromNode(yaml.Map(InputBinding), arena, ins_node, options);
+        }
+
+        // 6. Resolve params
+        var params: yaml.Map(ParamValue) = .{};
+        if (node.get("params")) |p_node| {
+            params = try yaml.parseFromNode(yaml.Map(ParamValue), arena, p_node, options);
+        }
+
+        // 7. Resolve output / persist
+        var output: ?OutputSpec = null;
+        if (node.get("output")) |out_node| {
+            output = try yaml.parseFromNode(OutputSpec, arena, out_node, options);
+        } else if (node.get("persist")) |p_node| {
+            if (output_spec.extractPersistTable(arena, p_node)) |tbl| {
+                output = OutputSpec{
+                    .into = tbl,
+                };
+            }
+        }
+
+        var step = TaskStep{
+            .name = try arena.dupe(u8, name_str),
+            .target = target,
+            .query = query,
+            .input = input,
+            .inputs = inputs,
+            .params = params,
+            .output = output,
+        };
+        try step.yamlValidate(arena);
+        return step;
+    }
 
     pub fn getParam(self: *const TaskStep, key: []const u8) ?ParamValue {
         return self.params.get(key);
+    }
+
+    pub fn getInputBinding(self: *const TaskStep, key: []const u8) ?InputBinding {
+        if (self.inputs) |m| {
+            return m.get(key);
+        }
+        return null;
     }
 
     pub fn yamlValidate(self: *TaskStep, arena: Allocator) StepLoadError!void {
@@ -158,7 +228,7 @@ pub const Step = union(enum) {
         options: yaml.ParseOptions,
     ) anyerror!Step {
         _ = node.asMap() orelse return error.TypeMismatch;
-        const has_task = node.get("task") != null;
+        const has_task = node.get("task") != null or node.get("id") != null;
         const has_router = node.get("router") != null;
 
         if (has_task and has_router) return error.AmbiguousStepKind;

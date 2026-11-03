@@ -1,5 +1,6 @@
 pub const types = @import("types.zig");
 pub const reader = @import("reader.zig");
+pub const checks = @import("checks/mod.zig");
 
 pub const ByteSource = types.ByteSource;
 pub const FourCC = types.FourCC;
@@ -12,5 +13,7 @@ pub const ParserIssueCode = types.ParserIssueCode;
 pub const SafeRiffParser = reader.SafeRiffParser;
 pub const RiffParserOptions = reader.RiffParserOptions;
 pub const RiffParseResult = reader.RiffParseResult;
+pub const toRegions = reader.toRegions;
+pub const toElementSpans = reader.toElementSpans;
 
 

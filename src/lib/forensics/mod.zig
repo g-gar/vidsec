@@ -4,6 +4,7 @@ pub const severity = @import("severity.zig");
 pub const vulnerability_type = @import("vulnerability_type.zig");
 pub const finding = @import("finding.zig");
 pub const finding_list = @import("finding_list.zig");
+pub const audit_finding_row = @import("audit_finding_row.zig");
 
 pub const check_header_underflow = @import("check_header_underflow.zig");
 pub const check_region_overflow = @import("check_region_overflow.zig");
@@ -21,6 +22,8 @@ pub const Severity = severity.Severity;
 pub const VulnerabilityType = vulnerability_type.VulnerabilityType;
 pub const Finding = finding.Finding;
 pub const FindingList = finding_list.FindingList;
+pub const AuditFindingRow = audit_finding_row.AuditFindingRow;
+pub const emitAuditFinding = audit_finding_row.emitAuditFinding;
 
 // Independent Single-Responsibility Checkers
 pub const checkHeaderUnderflow = check_header_underflow.checkHeaderUnderflow;

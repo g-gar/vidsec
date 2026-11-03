@@ -12,24 +12,7 @@ pub const EsdsConfig = types.EsdsConfig;
 pub const Mp4Issue = types.Mp4Issue;
 pub const Mp4IssueCode = types.Mp4IssueCode;
 
-/// Complete structural and semantic inspection result for an MP4 container.
-pub const Mp4InspectionResult = struct {
-    ftyp: ?FtypInfo = null,
-    tracks: []const TrackInfo,
-    issues: []const Mp4Issue,
-    total_samples: u64 = 0,
-    total_sample_bytes: u64 = 0,
-    total_mdat_bytes: u64 = 0,
-    unreferenced_mdat_slack: u64 = 0,
-
-    pub fn deinit(self: Mp4InspectionResult, allocator: std.mem.Allocator) void {
-        if (self.ftyp) |f| {
-            allocator.free(f.compatible_brands);
-        }
-        allocator.free(self.tracks);
-        allocator.free(self.issues);
-    }
-};
+pub const Mp4InspectionResult = @import("mp4_inspection_result.zig").Mp4InspectionResult;
 
 /// Pure, policy-free MP4 inspector.
 pub const Mp4Inspector = struct {
