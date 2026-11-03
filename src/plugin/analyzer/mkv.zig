@@ -87,10 +87,16 @@ pub fn makeByteSource(stream: abi.BoundedStreamReader) ebml.ByteSource {
     };
 }
 
+pub const ProbeMkvInputs = struct {
+    stream: abi.BoundedStreamReader,
+    file_size: u64 = 0,
+    emit_tracks: bool = false,
+};
+
 /// C-ABI task implementation for `triage/probe_mkv`.
-pub fn runProbeMkv(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
-    const stream = ctx.streamReader();
-    const emit_tracks = try ctx.getParamBool("emit_tracks", false);
+pub fn runProbeMkv(ctx: abi.TaskContext, inputs: ProbeMkvInputs) abi.SdkError!abi.TaskStatus_ABI {
+    const stream = inputs.stream;
+    const emit_tracks = inputs.emit_tracks;
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();

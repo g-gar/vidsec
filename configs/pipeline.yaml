@@ -103,7 +103,36 @@ pipelines:
         cases:
           - when: "mp4_probe_and_triage.verdict == 'DROP'"
             goto: quarantine_flow
-        default: ir_lowering_pipeline
+        default: mp4_lowering_pipeline
+
+  # Stage 2: Declarative ISOBMFF / MP4 Lowering Pipeline
+  mp4_lowering_pipeline:
+    steps:
+      - id: lower_container_to_ir
+        uses: analyzer/lower_isobmff_container
+        input:
+          stream:
+            from: file
+          boxes:
+            table: isobmff_boxes
+        inputs:
+          file_size: stage0_probe_file.file_size
+          true_magic_kind: stage0_probe_file.true_magic_kind
+          true_magic_name: stage0_probe_file.true_magic_name
+        persist:
+          db: container_metadata
+
+      - id: lower_media_to_ir
+        uses: analyzer/lower_mp4_media
+        input:
+          tracks:
+            table: mp4_tracks
+
+      - router: dispatch_after_mp4_lowering
+        cases:
+          - when: "SELECT 1 FROM audit_findings WHERE rule_id = 'IR_REGION_OVERFLOW' OR severity >= 2"
+            goto: quarantine_flow
+        default: forensics_analysis_pipeline
 
   # Stage 1: EBML Structural Triaging Pipeline
   ebml_triage_pipeline:
@@ -144,7 +173,36 @@ pipelines:
         cases:
           - when: "mkv_probe_and_triage.verdict == 'DROP'"
             goto: quarantine_flow
-        default: ir_lowering_pipeline
+        default: mkv_lowering_pipeline
+
+  # Stage 2: Declarative EBML / MKV Lowering Pipeline
+  mkv_lowering_pipeline:
+    steps:
+      - id: lower_container_to_ir
+        uses: analyzer/lower_ebml_container
+        input:
+          stream:
+            from: file
+          elements:
+            table: ebml_elements
+        inputs:
+          file_size: stage0_probe_file.file_size
+          true_magic_kind: stage0_probe_file.true_magic_kind
+          true_magic_name: stage0_probe_file.true_magic_name
+        persist:
+          db: container_metadata
+
+      - id: lower_media_to_ir
+        uses: analyzer/lower_mkv_media
+        input:
+          tracks:
+            table: mkv_tracks
+
+      - router: dispatch_after_mkv_lowering
+        cases:
+          - when: "SELECT 1 FROM audit_findings WHERE rule_id = 'IR_REGION_OVERFLOW' OR severity >= 2"
+            goto: quarantine_flow
+        default: forensics_analysis_pipeline
 
   # Stage 1: RIFF Structural Triaging Pipeline
   riff_triage_pipeline:
@@ -164,46 +222,26 @@ pipelines:
         cases:
           - when: "riff_probe_and_expand.verdict == 'DROP'"
             goto: quarantine_flow
-        default: ir_lowering_pipeline
+        default: riff_lowering_pipeline
 
-  # ===========================================================================
-  # STAGE 2: Intermediate Representation (IR) Lowering Pipeline
-  # Zero-SQL flow: intermediate regions, extents, and configs stay in RAM.
-  # Only the consolidated container_metadata is persisted to SQLite.
-  # ===========================================================================
-  ir_lowering_pipeline:
+  # Stage 2: Declarative RIFF Lowering Pipeline
+  riff_lowering_pipeline:
     steps:
       - id: lower_container_to_ir
-        uses: analyzer/lower_container
+        uses: analyzer/lower_riff_container
         input:
           stream:
             from: file
-          boxes:
-            table: isobmff_boxes
-          elements:
-            table: ebml_elements
           chunks:
             table: riff_chunks
         inputs:
           file_size: stage0_probe_file.file_size
-          detected_family: stage0_probe_file.detected_family
           true_magic_kind: stage0_probe_file.true_magic_kind
           true_magic_name: stage0_probe_file.true_magic_name
         persist:
           db: container_metadata
 
-      - id: lower_media_to_ir
-        uses: analyzer/lower_media
-        inputs:
-          detected_family: stage0_probe_file.detected_family
-        input:
-          mp4_tracks:
-            table: mp4_tracks
-          mkv_tracks:
-            table: mkv_tracks
-        # Pure in-memory: no persist declaration keeps codec configs and sample extents in RAM
-
-      - router: dispatch_after_ir_lowering
+      - router: dispatch_after_riff_lowering
         cases:
           - when: "SELECT 1 FROM audit_findings WHERE rule_id = 'IR_REGION_OVERFLOW' OR severity >= 2"
             goto: quarantine_flow

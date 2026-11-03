@@ -104,11 +104,17 @@ pub fn makeByteSource(stream: abi.BoundedStreamReader) riff.ByteSource {
     };
 }
 
+pub const ProbeRiffInputs = struct {
+    stream: abi.BoundedStreamReader,
+    emit_chunks: bool = false,
+    recurse_movi: bool = false,
+};
+
 /// C-ABI task implementation for `triage/probe_riff`.
-pub fn runProbeRiff(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
-    const stream = ctx.streamReader();
-    const emit_chunks = try ctx.getParamBool("emit_chunks", false);
-    const recurse_movi = try ctx.getParamBool("recurse_movi", false);
+pub fn runProbeRiff(ctx: abi.TaskContext, inputs: ProbeRiffInputs) abi.SdkError!abi.TaskStatus_ABI {
+    const stream = inputs.stream;
+    const emit_chunks = inputs.emit_chunks;
+    const recurse_movi = inputs.recurse_movi;
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();

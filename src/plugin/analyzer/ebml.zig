@@ -135,11 +135,17 @@ pub fn makeByteSource(stream: abi.BoundedStreamReader) ebml.ByteSource {
     };
 }
 
+pub const ProbeEbmlInputs = struct {
+    stream: abi.BoundedStreamReader,
+    emit_elements: bool = false,
+    recurse_clusters: bool = false,
+};
+
 /// C-ABI task implementation for `triage/probe_ebml`.
-pub fn runProbeEbml(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
-    const stream = ctx.streamReader();
-    const emit_elements = try ctx.getParamBool("emit_elements", false);
-    const recurse_clusters = try ctx.getParamBool("recurse_clusters", false);
+pub fn runProbeEbml(ctx: abi.TaskContext, inputs: ProbeEbmlInputs) abi.SdkError!abi.TaskStatus_ABI {
+    const stream = inputs.stream;
+    const emit_elements = inputs.emit_elements;
+    const recurse_clusters = inputs.recurse_clusters;
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();

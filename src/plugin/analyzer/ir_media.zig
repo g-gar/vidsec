@@ -2,15 +2,19 @@ const std = @import("std");
 const abi = @import("vidsec_abi");
 const media = @import("media/mod.zig");
 
+pub const LowerMediaInputs = struct {
+    detected_family: []const u8 = "",
+};
+
 /// Task `ir/lower_media`:
 /// Normalizes format-specific track and codec tables into unified `ir_codec_configs`
 /// and `ir_sample_extents` using a format-specific Lowering Strategy.
 /// Requires NO stream access — operates 100% on probed in-memory track data.
-pub fn runLowerMedia(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
+pub fn runLowerMedia(ctx: abi.TaskContext, inputs: LowerMediaInputs) abi.SdkError!abi.TaskStatus_ABI {
     var config_counter: i64 = 1;
 
-    // 1. Resolve detected_family from bound inputs / params
-    const family = ctx.getParamText("detected_family", "") catch "";
+    // 1. Resolve detected_family from bound inputs
+    const family = inputs.detected_family;
 
     // 2. Dispatch to format lowering strategy via Factory
     if (media.getMediaLoweringStrategy(family)) |strat| {

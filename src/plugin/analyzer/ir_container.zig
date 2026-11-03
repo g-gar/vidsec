@@ -48,27 +48,22 @@ fn emitOverflowFinding(ctx: abi.TaskContext, tag: []const u8, header_offset: i64
     });
 }
 
+pub const LowerContainerInputs = struct {
+    stream: abi.BoundedStreamReader,
+    file_size: u64 = 0,
+    detected_family: []const u8 = "unknown",
+    true_magic_kind: i64 = 0,
+    true_magic_name: []const u8 = "unknown",
+};
+
 /// Task `ir/lower_container`:
 /// Normalizes format-specific container tables (`isobmff_boxes`, `ebml_elements`, `riff_chunks`)
 /// into the unified `ir_regions` hierarchy and populates `container_metadata`.
-pub fn runLowerContainer(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
-    var file_size: i64 = @intCast(ctx.streamSize());
-    var true_magic_kind: i64 = 0;
-    var true_magic_name: []const u8 = "unknown";
-    var detected_family: []const u8 = "unknown";
-
-    // 1. Read metadata from bound inputs / params first, then fall back to cursor
-    const p_sz = ctx.getParamInt("file_size", 0) catch 0;
-    if (p_sz > 0) file_size = p_sz;
-
-    const p_kind = ctx.getParamInt("true_magic_kind", 0) catch 0;
-    if (p_kind > 0) true_magic_kind = p_kind;
-
-    const p_name = ctx.getParamText("true_magic_name", "") catch "";
-    if (p_name.len > 0) true_magic_name = p_name;
-
-    const p_fam = ctx.getParamText("detected_family", "") catch "";
-    if (p_fam.len > 0) detected_family = p_fam;
+pub fn runLowerContainer(ctx: abi.TaskContext, inputs: LowerContainerInputs) abi.SdkError!abi.TaskStatus_ABI {
+    var file_size: i64 = if (inputs.file_size > 0) @intCast(inputs.file_size) else @intCast(inputs.stream.len());
+    var true_magic_kind: i64 = inputs.true_magic_kind;
+    var true_magic_name: []const u8 = inputs.true_magic_name;
+    var detected_family: []const u8 = inputs.detected_family;
 
     if (true_magic_kind == 0 and std.mem.eql(u8, detected_family, "unknown")) {
         if (try tryNextRow(ctx, "triage", "file_triage")) |triage_row| {

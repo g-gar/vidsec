@@ -549,18 +549,26 @@ pub fn mapToAbiMagicKind(info: magic.MagicInfo) i64 {
     };
 }
 
+pub const ProbeFileInputs = struct {
+    stream: abi.BoundedStreamReader,
+    min_file_size_bytes: u64 = DEFAULT_MIN_FILE_SIZE,
+    max_file_size_mb: u64 = DEFAULT_MAX_FILE_SIZE_MB,
+    min_mid_entropy: f64 = DEFAULT_MIN_MID_ENTROPY,
+    strict_extension: bool = false,
+    expected_extension: []const u8 = "",
+};
+
 /// C-ABI task execution function for `analyzer/probe_file`.
-pub fn runProbeFile(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
-    const max_mb: u64 = @intCast(@max(0, ctx.getParamInt("max_file_size_mb", DEFAULT_MAX_FILE_SIZE_MB) catch DEFAULT_MAX_FILE_SIZE_MB));
+pub fn runProbeFile(ctx: abi.TaskContext, inputs: ProbeFileInputs) abi.SdkError!abi.TaskStatus_ABI {
     const opts = TriageOptions{
-        .min_file_size_bytes = @intCast(@max(0, ctx.getParamInt("min_file_size_bytes", DEFAULT_MIN_FILE_SIZE) catch DEFAULT_MIN_FILE_SIZE)),
-        .max_file_size_bytes = max_mb * 1024 * 1024,
-        .min_mid_entropy = ctx.getParamFloat("min_mid_entropy", DEFAULT_MIN_MID_ENTROPY) catch DEFAULT_MIN_MID_ENTROPY,
-        .strict_extension = ctx.getParamBool("strict_extension", false) catch false,
-        .expected_extension = ctx.getParamText("expected_extension", "") catch "",
+        .min_file_size_bytes = inputs.min_file_size_bytes,
+        .max_file_size_bytes = inputs.max_file_size_mb * 1024 * 1024,
+        .min_mid_entropy = inputs.min_mid_entropy,
+        .strict_extension = inputs.strict_extension,
+        .expected_extension = inputs.expected_extension,
     };
 
-    const res = try analyzeStream(ctx.streamReader(), opts);
+    const res = try analyzeStream(inputs.stream, opts);
 
     var flags_buf: [512]u8 = undefined;
     const flags_csv = res.formatFlagsCsv(&flags_buf);

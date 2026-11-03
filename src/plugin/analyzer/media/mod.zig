@@ -17,3 +17,11 @@ pub const lowerSampleExtents = samples_strategy.lowerSampleExtents;
 
 pub const factory = @import("factory.zig");
 pub const getMediaLoweringStrategy = factory.getMediaLoweringStrategy;
+
+pub const mp4_media = @import("mp4_media.zig");
+pub const LowerMp4MediaInputs = mp4_media.LowerMp4MediaInputs;
+pub const runLowerMp4Media = mp4_media.runLowerMp4Media;
+
+pub const mkv_media = @import("mkv_media.zig");
+pub const LowerMkvMediaInputs = mkv_media.LowerMkvMediaInputs;
+pub const runLowerMkvMedia = mkv_media.runLowerMkvMedia;

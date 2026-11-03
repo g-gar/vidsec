@@ -14,6 +14,8 @@ pub const mkv_analyzer = @import("mkv.zig");
 pub const riff_analyzer = @import("riff.zig");
 pub const ir_container = @import("ir_container.zig");
 pub const ir_media = @import("ir_media.zig");
+pub const container = @import("container/mod.zig");
+pub const media = @import("media/mod.zig");
 pub const topology = @import("topology.zig");
 pub const entropy = @import("entropy.zig");
 pub const inconsistencies = @import("inconsistencies.zig");
@@ -148,124 +150,140 @@ pub const LOWER_MEDIA_OUTPUT_FIELDS = [_][*:0]const u8{
 
 pub const tasks = [_]abi.TaskDescriptor_ABI{
     // Level 0: Universal Pre-Triage
-    abi.defineTask(.{
+    abi.defineBoundTask(general.ProbeFileInputs, .{
         .name = "probe_file",
         .description = "Level 0 lightweight multimedia triage: magic bytes, MIME, polyglot EOCD, mid-stream Shannon entropy",
         .output_fields = &PROBE_FILE_OUTPUT_FIELDS,
-        .required_params = &.{},
         .run = &runProbeFile,
     }),
 
     // Level 1: Container Structural Audits (with aliases for backward compatibility)
-    abi.defineTask(.{
+    abi.defineBoundTask(isobmff_analyzer.ProbeIsobmffInputs, .{
         .name = "audit_isobmff",
         .description = "Level 1 structural auditing for ISOBMFF containers (MP4/MOV): box grammar, overflows, cycles, trailing slack",
         .output_fields = &PROBE_ISOBMFF_OUTPUT_FIELDS,
-        .required_params = &.{},
         .run = &runProbeIsobmff,
     }),
-    abi.defineTask(.{
+    abi.defineBoundTask(isobmff_analyzer.ProbeIsobmffInputs, .{
         .name = "probe_isobmff",
         .description = "Alias for audit_isobmff",
         .output_fields = &PROBE_ISOBMFF_OUTPUT_FIELDS,
-        .required_params = &.{},
         .run = &runProbeIsobmff,
     }),
-    abi.defineTask(.{
+    abi.defineBoundTask(ebml_analyzer.ProbeEbmlInputs, .{
         .name = "audit_ebml",
         .description = "Level 1 structural auditing for EBML containers (MKV/WebM): VINT encoding, element hierarchy, nesting bounds",
         .output_fields = &PROBE_EBML_OUTPUT_FIELDS,
-        .required_params = &.{},
         .run = &runProbeEbml,
     }),
-    abi.defineTask(.{
+    abi.defineBoundTask(ebml_analyzer.ProbeEbmlInputs, .{
         .name = "probe_ebml",
         .description = "Alias for audit_ebml",
         .output_fields = &PROBE_EBML_OUTPUT_FIELDS,
-        .required_params = &.{},
         .run = &runProbeEbml,
     }),
-    abi.defineTask(.{
+    abi.defineBoundTask(riff_analyzer.ProbeRiffInputs, .{
         .name = "audit_riff",
         .description = "Level 1 structural auditing for RIFF containers (AVI/WAV/WEBP): chunk headers, LIST nesting, word alignment",
         .output_fields = &PROBE_RIFF_OUTPUT_FIELDS,
-        .required_params = &.{},
         .run = &runProbeRiff,
     }),
-    abi.defineTask(.{
+    abi.defineBoundTask(riff_analyzer.ProbeRiffInputs, .{
         .name = "probe_riff",
         .description = "Alias for audit_riff",
         .output_fields = &PROBE_RIFF_OUTPUT_FIELDS,
-        .required_params = &.{},
         .run = &runProbeRiff,
     }),
 
     // Level 2: Format-Specific Semantic Audits
-    abi.defineTask(.{
+    abi.defineBoundTask(mp4_analyzer.ProbeMp4Inputs, .{
         .name = "audit_mp4",
         .description = "Level 2 semantic auditing for MP4: track decoding, ftyp brands, avcC/esds codec configs, sample tables",
         .output_fields = &PROBE_MP4_OUTPUT_FIELDS,
-        .required_params = &.{},
         .run = &runProbeMp4,
     }),
-    abi.defineTask(.{
+    abi.defineBoundTask(mp4_analyzer.ProbeMp4Inputs, .{
         .name = "probe_mp4",
         .description = "Alias for audit_mp4",
         .output_fields = &PROBE_MP4_OUTPUT_FIELDS,
-        .required_params = &.{},
         .run = &runProbeMp4,
     }),
-    abi.defineTask(.{
+    abi.defineBoundTask(mkv_analyzer.ProbeMkvInputs, .{
         .name = "audit_mkv",
         .description = "Level 2 semantic auditing for Matroska: track entries, codec parameters, SPS/PPS configs, cluster integrity",
         .output_fields = &PROBE_MKV_OUTPUT_FIELDS,
-        .required_params = &.{},
         .run = &runProbeMkv,
     }),
-    abi.defineTask(.{
+    abi.defineBoundTask(mkv_analyzer.ProbeMkvInputs, .{
         .name = "probe_mkv",
         .description = "Alias for audit_mkv",
         .output_fields = &PROBE_MKV_OUTPUT_FIELDS,
-        .required_params = &.{},
         .run = &runProbeMkv,
     }),
 
-    // Stage 2: Universal IR Lowering
-    abi.defineTask(.{
+    // Stage 2: Declarative Format-Specific IR Lowering
+    abi.defineBoundTask(container.LowerIsobmffContainerInputs, .{
+        .name = "lower_isobmff_container",
+        .description = "Stage 2 IR Lowering: Normalizes ISOBMFF boxes into universal container_metadata and ir_regions",
+        .output_fields = &LOWER_CONTAINER_OUTPUT_FIELDS,
+        .run = &container.runLowerIsobmffContainer,
+    }),
+    abi.defineBoundTask(container.LowerEbmlContainerInputs, .{
+        .name = "lower_ebml_container",
+        .description = "Stage 2 IR Lowering: Normalizes EBML elements into universal container_metadata and ir_regions",
+        .output_fields = &LOWER_CONTAINER_OUTPUT_FIELDS,
+        .run = &container.runLowerEbmlContainer,
+    }),
+    abi.defineBoundTask(container.LowerRiffContainerInputs, .{
+        .name = "lower_riff_container",
+        .description = "Stage 2 IR Lowering: Normalizes RIFF chunks into universal container_metadata and ir_regions",
+        .output_fields = &LOWER_CONTAINER_OUTPUT_FIELDS,
+        .run = &container.runLowerRiffContainer,
+    }),
+    abi.defineBoundTask(media.LowerMp4MediaInputs, .{
+        .name = "lower_mp4_media",
+        .description = "Stage 2 IR Lowering: Normalizes MP4 tracks and samples into ir_codec_configs and ir_sample_extents",
+        .output_fields = &LOWER_MEDIA_OUTPUT_FIELDS,
+        .run = &media.runLowerMp4Media,
+    }),
+    abi.defineBoundTask(media.LowerMkvMediaInputs, .{
+        .name = "lower_mkv_media",
+        .description = "Stage 2 IR Lowering: Normalizes MKV tracks into ir_codec_configs",
+        .output_fields = &LOWER_MEDIA_OUTPUT_FIELDS,
+        .run = &media.runLowerMkvMedia,
+    }),
+
+    // Stage 2: Universal IR Lowering (Aliases / Polyglot Fallbacks)
+    abi.defineBoundTask(ir_container.LowerContainerInputs, .{
         .name = "lower_container",
         .description = "Stage 2 IR Lowering: Normalizes format-specific container structures (ISOBMFF, EBML, RIFF) into universal container_metadata and ir_regions",
         .output_fields = &LOWER_CONTAINER_OUTPUT_FIELDS,
-        .required_params = &.{},
         .run = &runLowerContainer,
     }),
-    abi.defineTask(.{
+    abi.defineBoundTask(ir_media.LowerMediaInputs, .{
         .name = "lower_media",
         .description = "Stage 2 IR Lowering: Normalizes format-specific track and codec tables into universal ir_codec_configs and ir_sample_extents",
         .output_fields = &LOWER_MEDIA_OUTPUT_FIELDS,
-        .required_params = &.{},
         .run = &runLowerMedia,
     }),
 
     // Universal Topology, Entropy & Inconsistencies
-    abi.defineTask(.{
+    abi.defineBoundTask(topology.AnalyzeTopologyInputs, .{
         .name = "analyze_topology",
         .description = "Universal interval topology: unreferenced gaps, trailing overlays, and overlapping regions",
         .output_fields = &.{},
-        .required_params = &.{},
         .run = &runAnalyzeTopology,
     }),
-    abi.defineTask(.{
+    abi.defineBoundTask(entropy.ScanEntropyInputs, .{
         .name = "scan_entropy",
         .description = "Universal Shannon entropy scan over unreferenced slacks and gaps to detect hidden payloads",
         .output_fields = &.{},
-        .required_params = &.{},
         .run = &runScanEntropy,
     }),
-    abi.defineTask(.{
+    abi.defineBoundTask(inconsistencies.CheckInconsistenciesInputs, .{
         .name = "check_inconsistencies",
         .description = "Universal container vs bitstream dimension discrepancies and sample extent boundaries",
         .output_fields = &.{},
-        .required_params = &.{},
         .run = &runCheckInconsistencies,
     }),
 };

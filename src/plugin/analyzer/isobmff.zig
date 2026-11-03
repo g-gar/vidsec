@@ -149,11 +149,21 @@ pub fn makeByteSource(stream: abi.BoundedStreamReader) isobmff.ByteSource {
     };
 }
 
+pub const ProbeIsobmffInputs = struct {
+    stream: abi.BoundedStreamReader,
+    emit_boxes: bool = false,
+    allow_gaps: bool = false,
+    max_gap_tolerance_bytes: u64 = 0,
+    allow_trailing_data: bool = false,
+    max_depth: u8 = 8,
+    strict_order: bool = true,
+};
+
 /// C-ABI task implementation for `triage/probe_isobmff`.
-pub fn runProbeIsobmff(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
-    const stream = ctx.streamReader();
+pub fn runProbeIsobmff(ctx: abi.TaskContext, inputs: ProbeIsobmffInputs) abi.SdkError!abi.TaskStatus_ABI {
+    const stream = inputs.stream;
     const file_size = stream.len();
-    const emit_boxes = try ctx.getParamBool("emit_boxes", false);
+    const emit_boxes = inputs.emit_boxes;
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();

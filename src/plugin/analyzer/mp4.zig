@@ -89,10 +89,17 @@ pub fn makeByteSource(stream: abi.BoundedStreamReader) isobmff.ByteSource {
     };
 }
 
+pub const ProbeMp4Inputs = struct {
+    stream: abi.BoundedStreamReader,
+    file_size: u64 = 0,
+    isobmff_box_count: u32 = 0,
+    emit_tracks: bool = false,
+};
+
 /// C-ABI task implementation for `triage/probe_mp4`.
-pub fn runProbeMp4(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
-    const stream = ctx.streamReader();
-    const emit_tracks = try ctx.getParamBool("emit_tracks", false);
+pub fn runProbeMp4(ctx: abi.TaskContext, inputs: ProbeMp4Inputs) abi.SdkError!abi.TaskStatus_ABI {
+    const stream = inputs.stream;
+    const emit_tracks = inputs.emit_tracks;
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();

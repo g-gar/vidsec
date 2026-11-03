@@ -6,22 +6,24 @@ const forensics = @import("vidsec_forensics");
 
 const Interval = math.Interval;
 
+pub const AnalyzeTopologyInputs = struct {
+    stream: abi.BoundedStreamReader,
+    file_size: u64 = 0,
+    highest_root_end: u64 = 0,
+    prev_verdict: ?i64 = null,
+    allow_trailing_slack: bool = false,
+    max_trailing_slack_bytes: u64 = 0,
+};
+
 /// Task `forensics/analyze_topology`:
 /// Analyzes root intervals in `ir_regions` against `container_metadata` to detect:
 /// - R01: Trailing unreferenced slack/overlay (`highest_root_end < file_size`).
 /// - R02: Gaps between root container regions.
 /// - R05: Overlapping root regions (structural confusion attacks).
 /// Populates `ir_unreferenced_slack` and emits findings into `audit_findings`.
-pub fn runAnalyzeTopology(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
-    var file_size: u64 = ctx.streamSize();
-    var highest_root_end: u64 = 0;
-
-    // 1. Read metadata from bound inputs/params first, then fall back to cursor
-    const p_end = ctx.getParamInt("highest_root_end", 0) catch 0;
-    if (p_end > 0) highest_root_end = @intCast(p_end);
-
-    const p_sz = ctx.getParamInt("file_size", 0) catch 0;
-    if (p_sz > 0) file_size = @intCast(p_sz);
+pub fn runAnalyzeTopology(ctx: abi.TaskContext, inputs: AnalyzeTopologyInputs) abi.SdkError!abi.TaskStatus_ABI {
+    var file_size: u64 = if (inputs.file_size > 0) inputs.file_size else inputs.stream.len();
+    var highest_root_end: u64 = inputs.highest_root_end;
 
     if (highest_root_end == 0) {
         if (try ctx.nextRow("meta")) |meta_row| {

@@ -4,12 +4,18 @@ const math = @import("vidsec_math");
 const ir = @import("vidsec_ir");
 const forensics = @import("vidsec_forensics");
 
+pub const ScanEntropyInputs = struct {
+    stream: abi.BoundedStreamReader,
+    file_size: u64 = 0,
+    min_entropy: f64 = 7.2,
+};
+
 /// Task `forensics/scan_entropy`:
 /// Inspects unreferenced slack and gap regions in `ir_unreferenced_slack`
 /// using Shannon entropy to detect encrypted payloads, compressed archives, or shellcode.
-pub fn runScanEntropy(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
-    const min_entropy = try ctx.getParamFloat("min_entropy", 7.2);
-    const stream = ctx.streamReader();
+pub fn runScanEntropy(ctx: abi.TaskContext, inputs: ScanEntropyInputs) abi.SdkError!abi.TaskStatus_ABI {
+    const min_entropy = inputs.min_entropy;
+    const stream = inputs.stream;
 
     var buf: [65536]u8 = undefined;
 

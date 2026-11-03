@@ -3,12 +3,16 @@ const abi = @import("vidsec_abi");
 const ir = @import("vidsec_ir");
 const forensics = @import("vidsec_forensics");
 
+pub const CheckInconsistenciesInputs = struct {
+    stream: abi.BoundedStreamReader,
+};
+
 /// Task `forensics/check_inconsistencies`:
 /// Audits codec configuration discrepancies and sample boundary integrity:
 /// - R10: Inconsistencies between container dimensions and bitstream SPS dimensions.
 /// - R08: Sample extents pointing outside media container boundaries or EOF.
-pub fn runCheckInconsistencies(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
-    const file_size: u64 = ctx.streamSize();
+pub fn runCheckInconsistencies(ctx: abi.TaskContext, inputs: CheckInconsistenciesInputs) abi.SdkError!abi.TaskStatus_ABI {
+    const file_size: u64 = inputs.stream.len();
 
     // 1. Audit codec configs
     while (try ctx.nextRow("configs")) |row| {

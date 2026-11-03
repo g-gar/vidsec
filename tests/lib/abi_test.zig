@@ -291,3 +291,93 @@ test "BoundedStreamReader, subRegion clamping (R03)" {
     try std.testing.expect(clamped.is_truncated_or_overflow);
     try std.testing.expectEqual(@as(u64, 8), clamped.reader.len());
 }
+
+test "ABI SDK: injectInputs auto-injects struct fields with defaults and conversions" {
+    const TestInputs = struct {
+        file_size: u64,
+        allow_gaps: bool = false,
+        name: []const u8 = "default_name",
+        threshold: f64 = 5.5,
+        maybe_slack: ?u32 = null,
+        stream: abi.BoundedStreamReader,
+    };
+
+    const req_params = abi.computeRequiredParams(TestInputs);
+    try std.testing.expectEqual(@as(usize, 1), req_params.len);
+    try std.testing.expectEqualStrings("file_size", std.mem.span(req_params[0]));
+
+    const MockHost = struct {
+        fn streamSize(_: *TaskContext_ABI) callconv(.c) u64 {
+            return 2048;
+        }
+        fn streamReadAt(_: *TaskContext_ABI, _: u64, _: [*]u8, _: usize) callconv(.c) HostError_ABI {
+            return .ok;
+        }
+        fn stubNextWin(_: *TaskContext_ABI, _: ?[*:0]const u8, _: *WindowView_ABI) callconv(.c) HostError_ABI {
+            return .not_found;
+        }
+        fn stubWinRead(_: *TaskContext_ABI, _: *const WindowView_ABI, _: u64, _: [*]u8, _: usize) callconv(.c) HostError_ABI {
+            return .not_found;
+        }
+        fn stubNextRow(_: *TaskContext_ABI, _: [*:0]const u8, _: *RowView_ABI) callconv(.c) HostError_ABI {
+            return .end_of_stream;
+        }
+        fn stubGetParam(_: *TaskContext_ABI, key: [*:0]const u8, out_val: *Value_ABI) callconv(.c) HostError_ABI {
+            const k = std.mem.span(key);
+            if (std.mem.eql(u8, k, "file_size")) {
+                out_val.* = Value_ABI.fromInt(2048);
+                return .ok;
+            } else if (std.mem.eql(u8, k, "threshold")) {
+                out_val.* = Value_ABI.fromFloat(7.8);
+                return .ok;
+            }
+            return .not_found;
+        }
+        fn stubEmitRow(_: *TaskContext_ABI, _: ?[*:0]const u8, _: [*]const NamedField_ABI, _: usize) callconv(.c) HostError_ABI {
+            return .ok;
+        }
+        fn stubWrite(_: *TaskContext_ABI, _: u64, _: [*]const u8, _: usize) callconv(.c) HostError_ABI {
+            return .ok;
+        }
+        fn stubZero(_: *TaskContext_ABI, _: u64, _: u64) callconv(.c) HostError_ABI {
+            return .ok;
+        }
+        fn stubTrunc(_: *TaskContext_ABI, _: u64) callconv(.c) HostError_ABI {
+            return .ok;
+        }
+        fn stubCarve(_: *TaskContext_ABI, _: u64, _: u64, _: [*:0]const u8, _: *[64]u8) callconv(.c) HostError_ABI {
+            return .ok;
+        }
+        fn stubLog(_: *TaskContext_ABI, _: LogLevel_ABI, _: [*]const u8, _: usize) callconv(.c) void {}
+
+        const vtable = HostApiVTable_ABI{
+            .stream_size = &streamSize,
+            .stream_read_at = &streamReadAt,
+            .next_window = &stubNextWin,
+            .window_read_at = &stubWinRead,
+            .next_row = &stubNextRow,
+            .get_param = &stubGetParam,
+            .emit_row = &stubEmitRow,
+            .artifact_write_at = &stubWrite,
+            .artifact_zero_range = &stubZero,
+            .artifact_truncate = &stubTrunc,
+            .carve_to_quarantine = &stubCarve,
+            .log_event = &stubLog,
+        };
+    };
+
+    var raw_ctx = TaskContext_ABI{
+        .abi_version = VIDSEC_ABI_VERSION,
+        .opaque_host_state = undefined,
+        .host = &MockHost.vtable,
+    };
+    const ctx = TaskContext.init(&raw_ctx);
+
+    const inputs = try abi.injectInputs(TestInputs, ctx);
+    try std.testing.expectEqual(@as(u64, 2048), inputs.file_size);
+    try std.testing.expectEqual(false, inputs.allow_gaps);
+    try std.testing.expectEqualStrings("default_name", inputs.name);
+    try std.testing.expectApproxEqAbs(@as(f64, 7.8), inputs.threshold, 0.001);
+    try std.testing.expectEqual(@as(?u32, null), inputs.maybe_slack);
+    try std.testing.expectEqual(@as(u64, 2048), inputs.stream.len());
+}

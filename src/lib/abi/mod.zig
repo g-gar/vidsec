@@ -32,6 +32,11 @@ pub const TaskContext = sdk.TaskContext;
 pub const ZigTaskSpec = sdk.ZigTaskSpec;
 pub const defineTask = sdk.defineTask;
 pub const defineManifest = sdk.defineManifest;
+pub const injectInputs = sdk.injectInputs;
+pub const computeRequiredParams = sdk.computeRequiredParams;
+pub const InputInjectorError = sdk.InputInjectorError;
+pub const BoundTaskSpec = sdk.BoundTaskSpec;
+pub const defineBoundTask = sdk.defineBoundTask;
 pub const SdkError = sdk.SdkError;
 pub const mapHostError = sdk.mapHostError;
 
