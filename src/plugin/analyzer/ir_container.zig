@@ -231,5 +231,12 @@ pub fn runLowerContainer(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
 
     try ctx.emitRow("container_metadata", &meta_fields);
 
+    ctx.logInfoFmt("Consolidated IR container: format={s}, regions={d}, file_size={d}, highest_root_end={d}", .{
+        true_magic_name,
+        lowered_count,
+        file_size,
+        highest_root_end,
+    });
+
     return .ok;
 }

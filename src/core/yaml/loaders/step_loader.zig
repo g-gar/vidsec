@@ -246,7 +246,7 @@ pub const SubPipeline = struct {
     steps: []const Step,
 
     pub fn yamlValidate(self: *const SubPipeline, _: Allocator) StepLoadError!void {
-        if (self.steps.len == 0) return error.EmptyStepsSeq;
+        if (self.steps.len == 0) return;
         for (self.steps, 0..) |s, i| {
             for (self.steps[0..i]) |prev| {
                 if (std.mem.eql(u8, prev.name(), s.name())) {

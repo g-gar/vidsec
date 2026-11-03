@@ -215,11 +215,15 @@ pub fn runProbeIsobmff(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
     }
 
     if (triage_res.verdict == .pass) {
-        ctx.logInfo("triage/probe_isobmff: PASS");
+        ctx.logInfoFmt("Passed ISOBMFF structural triage: {d} boxes, {d} mdat ({d} bytes)", .{
+            triage_res.box_count,
+            triage_res.mdat_count,
+            triage_res.total_mdat_bytes,
+        });
     } else if (triage_res.verdict == .flagged) {
-        ctx.logWarn(triage_res.flags_csv);
+        ctx.logWarnFmt("ISOBMFF structural triage FLAGGED: {s}", .{triage_res.flags_csv});
     } else {
-        ctx.logError(triage_res.flags_csv);
+        ctx.logErrorFmt("ISOBMFF structural triage REJECTED/DROP: {s}", .{triage_res.flags_csv});
     }
 
     return .ok;

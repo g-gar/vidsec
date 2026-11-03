@@ -1,3 +1,4 @@
+const std = @import("std");
 const types = @import("../types/mod.zig");
 const reader = @import("../reader/mod.zig");
 const SdkError = @import("sdk_error.zig").SdkError;
@@ -201,6 +202,24 @@ pub const TaskContext = struct {
     }
 
     pub fn logError(self: TaskContext, msg: []const u8) void {
+        self.log(.err, msg);
+    }
+
+    pub fn logInfoFmt(self: TaskContext, comptime fmt: []const u8, args: anytype) void {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, fmt, args) catch "log_event_truncated";
+        self.log(.info, msg);
+    }
+
+    pub fn logWarnFmt(self: TaskContext, comptime fmt: []const u8, args: anytype) void {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, fmt, args) catch "log_event_truncated";
+        self.log(.warn, msg);
+    }
+
+    pub fn logErrorFmt(self: TaskContext, comptime fmt: []const u8, args: anytype) void {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, fmt, args) catch "log_event_truncated";
         self.log(.err, msg);
     }
 };

@@ -594,11 +594,16 @@ pub fn runProbeFile(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
     });
 
     if (res.verdict == .pass) {
-        ctx.logInfo("analyzer/probe_file: PASS");
+        ctx.logInfoFmt("Passed Stage 0 triage as {s} ({s}), size={d} bytes, mid_entropy={d:.2}", .{
+            res.identified_format,
+            res.magic_info.mime_type,
+            res.file_size,
+            res.mid_entropy,
+        });
     } else if (res.verdict == .flagged) {
-        ctx.logWarn(flags_csv);
+        ctx.logWarnFmt("Stage 0 triage FLAGGED ({s}): {s}", .{ res.identified_format, flags_csv });
     } else {
-        ctx.logError(flags_csv);
+        ctx.logErrorFmt("Stage 0 triage REJECTED/DROP ({s}): {s}", .{ res.identified_format, flags_csv });
     }
 
     return .ok;

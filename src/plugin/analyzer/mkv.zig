@@ -198,11 +198,19 @@ pub fn runProbeMkv(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
     }
 
     if (evaluation.verdict == .pass) {
-        ctx.logInfo("triage/probe_mkv: PASS");
+        ctx.logInfoFmt("Passed MKV triage: {d} tracks ({d} video, {d} audio), codec={s}, {d}x{d}, duration={d:.2}s", .{
+            mkv_result.tracks.len,
+            video_count,
+            audio_count,
+            primary_video_codec,
+            primary_video_w,
+            primary_video_h,
+            mkv_result.info.durationSeconds(),
+        });
     } else if (evaluation.verdict == .flagged) {
-        ctx.logWarn(evaluation.flags_csv);
+        ctx.logWarnFmt("MKV triage FLAGGED: {s}", .{evaluation.flags_csv});
     } else {
-        ctx.logError(evaluation.flags_csv);
+        ctx.logErrorFmt("MKV triage REJECTED/DROP: {s}", .{evaluation.flags_csv});
     }
 
     return .ok;

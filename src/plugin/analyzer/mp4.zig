@@ -185,11 +185,17 @@ pub fn runProbeMp4(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
     }
 
     if (evaluation.verdict == .pass) {
-        ctx.logInfo("triage/probe_mp4: PASS");
+        ctx.logInfoFmt("Passed MP4 triage: {d} tracks ({d} video, {d} audio), brand={s}, unreferenced slack={d} bytes", .{
+            mp4_result.tracks.len,
+            video_count,
+            audio_count,
+            &brand_buf,
+            mp4_result.unreferenced_mdat_slack,
+        });
     } else if (evaluation.verdict == .flagged) {
-        ctx.logWarn(evaluation.flags_csv);
+        ctx.logWarnFmt("MP4 triage FLAGGED: {s}", .{evaluation.flags_csv});
     } else {
-        ctx.logError(evaluation.flags_csv);
+        ctx.logErrorFmt("MP4 triage REJECTED/DROP: {s}", .{evaluation.flags_csv});
     }
 
     return .ok;

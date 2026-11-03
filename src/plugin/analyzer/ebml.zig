@@ -204,11 +204,17 @@ pub fn runProbeEbml(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
     }
 
     if (evaluation.verdict == .pass) {
-        ctx.logInfo("triage/probe_ebml: PASS");
+        ctx.logInfoFmt("Passed EBML structural triage: {d} elements, doctype={s} v{d}, {d} clusters ({d} bytes)", .{
+            evaluation.element_count,
+            evaluation.doc_type,
+            evaluation.doc_type_version,
+            evaluation.cluster_count,
+            evaluation.total_cluster_bytes,
+        });
     } else if (evaluation.verdict == .flagged) {
-        ctx.logWarn(evaluation.flags_csv);
+        ctx.logWarnFmt("EBML structural triage FLAGGED: {s}", .{evaluation.flags_csv});
     } else {
-        ctx.logError(evaluation.flags_csv);
+        ctx.logErrorFmt("EBML structural triage REJECTED/DROP: {s}", .{evaluation.flags_csv});
     }
 
     return .ok;

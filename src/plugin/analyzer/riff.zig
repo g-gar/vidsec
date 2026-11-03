@@ -177,11 +177,16 @@ pub fn runProbeRiff(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
     }
 
     if (evaluation.verdict == .pass) {
-        ctx.logInfo("triage/probe_riff: PASS");
+        ctx.logInfoFmt("Passed RIFF structural triage: {d} chunks, form={s}, root_size={d}, movi={d} bytes", .{
+            parse_result.chunks.len,
+            &parse_result.form_type.bytes,
+            parse_result.root_size,
+            parse_result.movi_bytes,
+        });
     } else if (evaluation.verdict == .flagged) {
-        ctx.logWarn(evaluation.flags_csv);
+        ctx.logWarnFmt("RIFF structural triage FLAGGED: {s}", .{evaluation.flags_csv});
     } else {
-        ctx.logError(evaluation.flags_csv);
+        ctx.logErrorFmt("RIFF structural triage REJECTED/DROP: {s}", .{evaluation.flags_csv});
     }
 
     return .ok;
