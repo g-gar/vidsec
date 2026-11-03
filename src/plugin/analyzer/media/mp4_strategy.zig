@@ -1,5 +1,6 @@
 const std = @import("std");
 const abi = @import("vidsec_abi");
+const ir = @import("vidsec_ir");
 const strategy_mod = @import("strategy.zig");
 const MediaLoweringStrategy = strategy_mod.MediaLoweringStrategy;
 
@@ -34,18 +35,16 @@ pub const Mp4MediaStrategy = struct {
             const width = if (mp4_row.getField("width")) |v| v.asInt() orelse 0 else 0;
             const height = if (mp4_row.getField("height")) |v| v.asInt() orelse 0 else 0;
 
-            const fields = [_]abi.NamedField_ABI{
-                abi.NamedField_ABI.init("config_id", abi.Value_ABI.fromInt(config_counter.*)),
-                abi.NamedField_ABI.init("track_id", abi.Value_ABI.fromInt(track_id)),
-                abi.NamedField_ABI.init("codec_tag", abi.Value_ABI.fromText(codec_fourcc)),
-                abi.NamedField_ABI.init("container_width", abi.Value_ABI.fromInt(width)),
-                abi.NamedField_ABI.init("container_height", abi.Value_ABI.fromInt(height)),
-                abi.NamedField_ABI.init("bitstream_width", abi.Value_ABI.fromInt(width)),
-                abi.NamedField_ABI.init("bitstream_height", abi.Value_ABI.fromInt(height)),
-                abi.NamedField_ABI.init("is_mismatch", abi.Value_ABI.fromBool(false)),
-            };
-
-            try ctx.emitRow("ir_codec_configs", &fields);
+            try ir.emitIrCodecConfig(ctx, .{
+                .config_id = config_counter.*,
+                .track_id = track_id,
+                .codec_tag = codec_fourcc,
+                .container_width = width,
+                .container_height = height,
+                .bitstream_width = width,
+                .bitstream_height = height,
+                .is_mismatch = false,
+            });
             config_counter.* += 1;
         }
     }

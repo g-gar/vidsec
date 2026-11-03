@@ -381,3 +381,37 @@ test "ABI SDK: injectInputs auto-injects struct fields with defaults and convers
     try std.testing.expectEqual(@as(?u32, null), inputs.maybe_slack);
     try std.testing.expectEqual(@as(u64, 2048), inputs.stream.len());
 }
+
+test "ABI SDK: definePureTask auto-injects Inputs and auto-emits Outputs without TaskContext" {
+    const In = struct {
+        file_size: u64,
+        brand: []const u8 = "isom",
+    };
+    const Out = struct {
+        track_count: u32,
+        is_clean: bool,
+    };
+
+    const out_fields = abi.computeOutputFields(Out);
+    try std.testing.expectEqual(@as(usize, 2), out_fields.len);
+    try std.testing.expectEqualStrings("track_count", std.mem.span(out_fields[0]));
+    try std.testing.expectEqualStrings("is_clean", std.mem.span(out_fields[1]));
+
+    const MyTask = struct {
+        fn run(inputs: In) !Out {
+            return .{
+                .track_count = @intCast(inputs.file_size / 1000),
+                .is_clean = std.mem.eql(u8, inputs.brand, "isom"),
+            };
+        }
+    };
+
+    const desc = abi.definePureTask(In, Out, .{
+        .name = "my_pure_task",
+        .run = &MyTask.run,
+    });
+    try std.testing.expectEqualStrings("my_pure_task", desc.nameSlice());
+    try std.testing.expectEqual(@as(usize, 1), desc.requiredParams().len);
+    try std.testing.expectEqualStrings("file_size", std.mem.span(desc.requiredParams()[0]));
+    try std.testing.expectEqual(@as(usize, 2), desc.outputFields().len);
+}

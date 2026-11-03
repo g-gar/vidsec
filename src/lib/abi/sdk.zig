@@ -32,3 +32,7 @@ pub const computeRequiredParams = sdk_mod.computeRequiredParams;
 pub const InputInjectorError = sdk_mod.InputInjectorError;
 pub const BoundTaskSpec = sdk_mod.BoundTaskSpec;
 pub const defineBoundTask = sdk_mod.defineBoundTask;
+pub const Logger = sdk_mod.Logger;
+pub const PureTaskSpec = sdk_mod.PureTaskSpec;
+pub const computeOutputFields = sdk_mod.computeOutputFields;
+pub const definePureTask = sdk_mod.definePureTask;

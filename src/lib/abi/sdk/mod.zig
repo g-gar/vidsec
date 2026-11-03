@@ -7,6 +7,9 @@ pub const define_manifest = @import("define_manifest.zig");
 pub const input_injector = @import("input_injector.zig");
 pub const bound_task_spec = @import("bound_task_spec.zig");
 pub const define_bound_task = @import("define_bound_task.zig");
+pub const logger = @import("logger.zig");
+pub const pure_task_spec = @import("pure_task_spec.zig");
+pub const define_pure_task = @import("define_pure_task.zig");
 
 pub const SdkError = sdk_error.SdkError;
 pub const mapHostError = map_host_error.mapHostError;
@@ -19,3 +22,7 @@ pub const computeRequiredParams = input_injector.computeRequiredParams;
 pub const InputInjectorError = input_injector.InputInjectorError;
 pub const BoundTaskSpec = bound_task_spec.BoundTaskSpec;
 pub const defineBoundTask = define_bound_task.defineBoundTask;
+pub const Logger = logger.Logger;
+pub const PureTaskSpec = pure_task_spec.PureTaskSpec;
+pub const computeOutputFields = define_pure_task.computeOutputFields;
+pub const definePureTask = define_pure_task.definePureTask;

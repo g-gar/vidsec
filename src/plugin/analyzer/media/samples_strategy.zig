@@ -1,5 +1,6 @@
 const std = @import("std");
 const abi = @import("vidsec_abi");
+const ir = @import("vidsec_ir");
 const strategy_mod = @import("strategy.zig");
 const SampleLoweringStrategy = strategy_mod.SampleLoweringStrategy;
 
@@ -35,17 +36,15 @@ pub const DefaultSampleStrategy = struct {
             const byte_size = if (sample_row.getField("byte_size")) |v| v.asInt() orelse 0 else 0;
             const end_offset = target_offset + byte_size;
 
-            const fields = [_]abi.NamedField_ABI{
-                abi.NamedField_ABI.init("extent_id", abi.Value_ABI.fromInt(extent_id)),
-                abi.NamedField_ABI.init("track_id", abi.Value_ABI.fromInt(track_id)),
-                abi.NamedField_ABI.init("sample_index", abi.Value_ABI.fromInt(sample_index)),
-                abi.NamedField_ABI.init("source_tag", abi.Value_ABI.fromText(source_tag)),
-                abi.NamedField_ABI.init("target_offset", abi.Value_ABI.fromInt(target_offset)),
-                abi.NamedField_ABI.init("byte_size", abi.Value_ABI.fromInt(byte_size)),
-                abi.NamedField_ABI.init("end_offset", abi.Value_ABI.fromInt(end_offset)),
-            };
-
-            try ctx.emitRow("ir_sample_extents", &fields);
+            try ir.emitIrSampleExtent(ctx, .{
+                .extent_id = extent_id,
+                .track_id = track_id,
+                .sample_index = sample_index,
+                .source_tag = source_tag,
+                .target_offset = @intCast(@max(0, target_offset)),
+                .byte_size = @intCast(@max(0, byte_size)),
+                .end_offset = @intCast(@max(0, end_offset)),
+            });
             extent_id += 1;
         }
     }

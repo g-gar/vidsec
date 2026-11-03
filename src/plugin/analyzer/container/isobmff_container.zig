@@ -40,30 +40,26 @@ pub fn runLowerIsobmffContainer(
             try common.emitOverflowFinding(ctx, fourcc, header_offset, effective_end_offset, file_size);
         }
 
-        const fields = [_]abi.NamedField_ABI{
-            abi.NamedField_ABI.init("region_id", abi.Value_ABI.fromInt(box_id)),
-            abi.NamedField_ABI.init("parent_region_id", if (maybe_parent) |p| abi.Value_ABI.fromInt(p) else abi.Value_ABI.nullVal()),
-            abi.NamedField_ABI.init("tag_name", abi.Value_ABI.fromText(fourcc)),
-            abi.NamedField_ABI.init("role", abi.Value_ABI.fromText(role)),
-            abi.NamedField_ABI.init("header_offset", abi.Value_ABI.fromInt(header_offset)),
-            abi.NamedField_ABI.init("payload_offset", abi.Value_ABI.fromInt(payload_offset)),
-            abi.NamedField_ABI.init("effective_end_offset", abi.Value_ABI.fromInt(effective_end_offset)),
-            abi.NamedField_ABI.init("is_truncated_or_overflow", abi.Value_ABI.fromBool(is_truncated_or_overflow)),
-        };
-
-        try ctx.emitRow("ir_regions", &fields);
+        try ir.emitIrRegion(ctx, .{
+            .region_id = box_id,
+            .parent_region_id = maybe_parent,
+            .tag_name = fourcc,
+            .role = role,
+            .header_offset = @intCast(@max(0, header_offset)),
+            .payload_offset = @intCast(@max(0, payload_offset)),
+            .effective_end_offset = @intCast(@max(0, effective_end_offset)),
+            .is_truncated_or_overflow = is_truncated_or_overflow,
+        });
         lowered_count += 1;
     }
 
-    const meta_fields = [_]abi.NamedField_ABI{
-        abi.NamedField_ABI.init("file_size", abi.Value_ABI.fromInt(file_size)),
-        abi.NamedField_ABI.init("detected_format", abi.Value_ABI.fromInt(ir.ContainerFormat.isobmff.toInt())),
-        abi.NamedField_ABI.init("true_magic", abi.Value_ABI.fromInt(inputs.true_magic_kind)),
-        abi.NamedField_ABI.init("true_magic_name", abi.Value_ABI.fromText(inputs.true_magic_name)),
-        abi.NamedField_ABI.init("highest_root_end", abi.Value_ABI.fromInt(highest_root_end)),
-    };
-
-    try ctx.emitRow("container_metadata", &meta_fields);
+    try ir.emitContainerMetadata(ctx, .{
+        .file_size = @intCast(@max(0, file_size)),
+        .detected_format = ir.ContainerFormat.isobmff.toInt(),
+        .true_magic = inputs.true_magic_kind,
+        .true_magic_name = inputs.true_magic_name,
+        .highest_root_end = @intCast(@max(0, highest_root_end)),
+    });
 
     ctx.logInfoFmt("Consolidated IR container (ISOBMFF): format={s}, regions={d}, file_size={d}, highest_root_end={d}", .{
         inputs.true_magic_name,
