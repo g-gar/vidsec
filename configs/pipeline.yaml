@@ -30,16 +30,25 @@ pipelines:
     steps:
       - id: stage0_probe_file
         uses: analyzer/probe_file
-        input:
-          stream:
-            from: file
         params:
           min_file_size_bytes: 8
           max_file_size_mb: 4096
           min_mid_entropy: 5.5
           strict_extension: true
-        persist:
-          db: file_triage
+        outputs:
+          into: file_triage
+          fields:
+            file_size: { into: db }
+            identified_format: { into: db }
+            mime_type: { into: db }
+            true_magic_kind: { into: db }
+            true_magic_name: { into: db }
+            detected_family: { into: db }
+            exceeds_size_limit: { into: db }
+            mid_entropy: { into: db }
+            zip_eocd_offset: { into: db }
+            verdict: { into: db }
+            flags_csv: { into: db }
 
       - router: dispatch_after_triage
         cases:
@@ -62,9 +71,6 @@ pipelines:
     steps:
       - id: isobmff_probe_and_expand
         uses: analyzer/probe_isobmff
-        input:
-          stream:
-            from: file
         params:
           emit_boxes: true
           allow_gaps: false
@@ -72,8 +78,19 @@ pipelines:
           allow_trailing_data: false
           max_depth: 8
           strict_order: true
-        persist:
-          db: isobmff_triage
+        outputs:
+          into: isobmff_triage
+          fields:
+            box_count: { into: db }
+            root_box_count: { into: db }
+            max_depth: { into: db }
+            mdat_count: { into: db }
+            total_mdat_bytes: { into: db }
+            trailing_slack_bytes: { into: db }
+            has_ftyp: { into: db }
+            has_moov: { into: db }
+            verdict: { into: db }
+            flags_csv: { into: db }
 
       - router: dispatch_after_isobmff_triage
         cases:
@@ -86,9 +103,6 @@ pipelines:
     steps:
       - id: mp4_probe_and_triage
         uses: analyzer/probe_mp4
-        input:
-          stream:
-            from: file
         inputs:
           file_size: stage0_probe_file.file_size
           isobmff_box_count:
@@ -96,8 +110,21 @@ pipelines:
             default: 0
         params:
           emit_tracks: true
-        persist:
-          db: mp4_triage
+        outputs:
+          into: mp4_triage
+          fields:
+            track_count: { into: db }
+            video_track_count: { into: db }
+            audio_track_count: { into: db }
+            major_brand: { into: db }
+            video_codec: { into: db }
+            video_width: { into: db }
+            video_height: { into: db }
+            total_samples: { into: db }
+            total_sample_bytes: { into: db }
+            unreferenced_mdat_slack: { into: db }
+            verdict: { into: db }
+            flags_csv: { into: db }
 
       - router: dispatch_after_mp4_triage
         cases:
@@ -111,22 +138,22 @@ pipelines:
       - id: lower_container_to_ir
         uses: analyzer/lower_isobmff_container
         input:
-          stream:
-            from: file
           boxes:
             table: isobmff_boxes
         inputs:
           file_size: stage0_probe_file.file_size
           true_magic_kind: stage0_probe_file.true_magic_kind
           true_magic_name: stage0_probe_file.true_magic_name
-        persist:
-          db: container_metadata
+        outputs:
+          into: [container_metadata, ir_regions, audit_findings]
 
       - id: lower_media_to_ir
         uses: analyzer/lower_mp4_media
         input:
           tracks:
             table: mp4_tracks
+        outputs:
+          target: memory
 
       - router: dispatch_after_mp4_lowering
         cases:
@@ -139,14 +166,22 @@ pipelines:
     steps:
       - id: ebml_probe_and_expand
         uses: analyzer/probe_ebml
-        input:
-          stream:
-            from: file
         params:
           emit_elements: true
           recurse_clusters: false
-        persist:
-          db: ebml_triage
+        outputs:
+          into: ebml_triage
+          fields:
+            element_count: { into: db }
+            doc_type: { into: db }
+            doc_type_version: { into: db }
+            has_ebml_header: { into: db }
+            has_segment: { into: db }
+            cluster_count: { into: db }
+            total_cluster_bytes: { into: db }
+            trailing_slack_bytes: { into: db }
+            verdict: { into: db }
+            flags_csv: { into: db }
 
       - router: dispatch_after_ebml_triage
         cases:
@@ -159,15 +194,24 @@ pipelines:
     steps:
       - id: mkv_probe_and_triage
         uses: analyzer/probe_mkv
-        input:
-          stream:
-            from: file
         inputs:
           file_size: stage0_probe_file.file_size
         params:
           emit_tracks: true
-        persist:
-          db: mkv_triage
+        outputs:
+          into: mkv_triage
+          fields:
+            track_count: { into: db }
+            video_track_count: { into: db }
+            audio_track_count: { into: db }
+            video_codec_id: { into: db }
+            video_width: { into: db }
+            video_height: { into: db }
+            duration_seconds: { into: db }
+            cluster_count: { into: db }
+            unreferenced_cluster_slack: { into: db }
+            verdict: { into: db }
+            flags_csv: { into: db }
 
       - router: dispatch_after_mkv_triage
         cases:
@@ -181,22 +225,22 @@ pipelines:
       - id: lower_container_to_ir
         uses: analyzer/lower_ebml_container
         input:
-          stream:
-            from: file
           elements:
             table: ebml_elements
         inputs:
           file_size: stage0_probe_file.file_size
           true_magic_kind: stage0_probe_file.true_magic_kind
           true_magic_name: stage0_probe_file.true_magic_name
-        persist:
-          db: container_metadata
+        outputs:
+          into: [container_metadata, ir_regions, audit_findings]
 
       - id: lower_media_to_ir
         uses: analyzer/lower_mkv_media
         input:
           tracks:
             table: mkv_tracks
+        outputs:
+          target: memory
 
       - router: dispatch_after_mkv_lowering
         cases:
@@ -209,14 +253,20 @@ pipelines:
     steps:
       - id: riff_probe_and_expand
         uses: analyzer/probe_riff
-        input:
-          stream:
-            from: file
         params:
           emit_chunks: true
           recurse_movi: false
-        persist:
-          db: riff_triage
+        outputs:
+          into: riff_triage
+          fields:
+            chunk_count: { into: db }
+            form_type: { into: db }
+            root_size: { into: db }
+            movi_bytes: { into: db }
+            junk_bytes: { into: db }
+            trailing_slack_bytes: { into: db }
+            verdict: { into: db }
+            flags_csv: { into: db }
 
       - router: dispatch_after_riff_triage
         cases:
@@ -230,16 +280,14 @@ pipelines:
       - id: lower_container_to_ir
         uses: analyzer/lower_riff_container
         input:
-          stream:
-            from: file
           chunks:
             table: riff_chunks
         inputs:
           file_size: stage0_probe_file.file_size
           true_magic_kind: stage0_probe_file.true_magic_kind
           true_magic_name: stage0_probe_file.true_magic_name
-        persist:
-          db: container_metadata
+        outputs:
+          into: [container_metadata, ir_regions, audit_findings]
 
       - router: dispatch_after_riff_lowering
         cases:
@@ -256,8 +304,6 @@ pipelines:
       - id: analyze_topology
         uses: analyzer/analyze_topology
         input:
-          stream:
-            from: file
           regions:
             table: ir_regions
         inputs:
@@ -267,34 +313,30 @@ pipelines:
         params:
           allow_trailing_slack: false
           max_trailing_slack_bytes: 0
-        persist:
-          db: audit_findings
+        outputs:
+          into: audit_findings
 
       - id: scan_entropy
         uses: analyzer/scan_entropy
         input:
-          stream:
-            from: file
           slack:
             table: ir_unreferenced_slack
         inputs:
           file_size: stage0_probe_file.file_size
         params:
           min_entropy: 7.2
-        persist:
-          db: audit_findings
+        outputs:
+          into: audit_findings
 
       - id: check_inconsistencies
         uses: analyzer/check_inconsistencies
         input:
-          stream:
-            from: file
           configs:
             table: ir_codec_configs
           extents:
             table: ir_sample_extents
-        persist:
-          db: audit_findings
+        outputs:
+          into: audit_findings
 
       - router: dispatch_after_forensics
         cases:
@@ -323,8 +365,8 @@ pipelines:
                  0.0 AS measured_value,
                  'Format family not supported for deep triage: ' || detected_family AS message
           FROM file_triage
-        persist:
-          db: audit_findings
+        outputs:
+          into: audit_findings
 
   quarantine_flow:
     steps:
@@ -338,5 +380,5 @@ pipelines:
                  mid_entropy AS measured_value,
                  'File rejected at Stage 0 Triage (' || flags_csv || ')' AS message
           FROM file_triage
-        persist:
-          db: audit_findings
+        outputs:
+          into: audit_findings

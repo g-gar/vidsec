@@ -464,3 +464,113 @@ test "Router: In-memory condition evaluation without SQLite roundtrips" {
     const cond_malicious = "malicious_probe.verdict == 'DROP' or malicious_probe.true_magic_kind >= 10 or malicious_probe.exceeds_size_limit == 1";
     try std.testing.expect(pipeline.router.evaluateCondition(allocator, cond_malicious, &resolver));
 }
+
+test "Pipeline: Declarative outputs with field-level routing into db and memory" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const pipeline_yaml =
+        \\version: 2
+        \\storages:
+        \\  db:
+        \\    type: sqlite
+        \\    schema: "./configs/schemas.yaml"
+        \\    path: "./vidsec_state.db"
+        \\
+        \\modules:
+        \\  analyzer:
+        \\    path: "./zig-out/lib/libanalyzer.so"
+        \\
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: stage0_probe
+        \\        uses: analyzer/probe_file
+        \\        params:
+        \\          min_file_size_bytes: 8
+        \\        outputs:
+        \\          into: file_triage
+        \\          fields:
+        \\            verdict:
+        \\              into: db
+        \\            file_size:
+        \\              into: db
+        \\            raw_entropy:
+        \\              into: memory
+        \\            calculated_bitrate:
+        \\              into: db
+        \\              as: bitrate_kbps
+        \\              transform: round
+        \\              cast: int
+        \\
+        \\      - id: lower_pure_memory
+        \\        uses: analyzer/lower_mp4_media
+        \\        outputs:
+        \\          target: memory
+    ;
+
+    const config = try vidsec.yaml.PipelineConfig.parse(arena, pipeline_yaml, null);
+    const main_steps = config.pipelines.get("main").?.steps;
+    try std.testing.expectEqual(@as(usize, 2), main_steps.len);
+
+    const step1 = main_steps[0].task;
+    try std.testing.expectEqualStrings("stage0_probe", step1.name);
+    try std.testing.expect(step1.output != null);
+    try std.testing.expectEqualStrings("file_triage", step1.output.?.into.?);
+
+    const fs = step1.output.?.field_specs;
+    try std.testing.expectEqual(@as(usize, 4), fs.count());
+
+    const v_spec = fs.get("verdict").?;
+    try std.testing.expectEqual(pipeline.field_router.field_target.TargetDestination.repo, v_spec.target);
+
+    const raw_spec = fs.get("raw_entropy").?;
+    try std.testing.expectEqual(pipeline.field_router.field_target.TargetDestination.memory, raw_spec.target);
+
+    const br_spec = fs.get("calculated_bitrate").?;
+    try std.testing.expectEqual(pipeline.field_router.field_target.TargetDestination.repo, br_spec.target);
+    try std.testing.expectEqualStrings("bitrate_kbps", br_spec.as_name.?);
+    try std.testing.expectEqual(pipeline.field_router.field_transform.FieldTransform.round, br_spec.transform);
+    try std.testing.expectEqual(pipeline.field_router.field_cast.FieldCast.int, br_spec.cast);
+
+    const step2 = main_steps[1].task;
+    try std.testing.expectEqualStrings("lower_pure_memory", step2.name);
+    try std.testing.expect(step2.output != null);
+    try std.testing.expectEqual(pipeline.field_router.field_target.TargetDestination.memory, step2.output.?.target_dest.?);
+}
+
+test "Pipeline: Declarative multi-table outputs with sequence syntax" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const pipeline_yaml =
+        \\version: 2
+        \\engine:
+        \\  schemas: ./configs/schemas.yaml
+        \\modules:
+        \\  analyzer:
+        \\    path: ./zig-out/lib/libanalyzer.so
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: lower_container
+        \\        uses: analyzer/lower_isobmff_container
+        \\        outputs:
+        \\          into: [container_metadata, ir_regions, audit_findings]
+    ;
+
+    const config = try vidsec.yaml.PipelineConfig.parse(arena, pipeline_yaml, null);
+    const main_steps = config.pipelines.get("main").?.steps;
+    try std.testing.expectEqual(@as(usize, 1), main_steps.len);
+
+    const step = main_steps[0].task;
+    try std.testing.expect(step.output != null);
+    try std.testing.expectEqualStrings("container_metadata", step.output.?.into.?);
+    try std.testing.expect(step.output.?.tables != null);
+    try std.testing.expectEqual(@as(usize, 3), step.output.?.tables.?.len);
+    try std.testing.expectEqualStrings("container_metadata", step.output.?.tables.?[0]);
+    try std.testing.expectEqualStrings("ir_regions", step.output.?.tables.?[1]);
+    try std.testing.expectEqualStrings("audit_findings", step.output.?.tables.?[2]);
+}

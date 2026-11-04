@@ -155,9 +155,11 @@ pub const TaskStep = struct {
             params = try yaml.parseFromNode(yaml.Map(ParamValue), arena, p_node, options);
         }
 
-        // 7. Resolve output / persist
+        // 7. Resolve outputs / output / persist
         var output: ?OutputSpec = null;
-        if (node.get("output")) |out_node| {
+        if (node.get("outputs")) |out_node| {
+            output = try yaml.parseFromNode(OutputSpec, arena, out_node, options);
+        } else if (node.get("output")) |out_node| {
             output = try yaml.parseFromNode(OutputSpec, arena, out_node, options);
         } else if (node.get("persist")) |p_node| {
             if (output_spec.extractPersistTable(arena, p_node)) |tbl| {

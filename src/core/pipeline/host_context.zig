@@ -58,7 +58,7 @@ pub const HostExecutionContext = struct {
     artifacts: *ArtifactStore,
     tracer: *ExecutionTracer,
 
-    primary_stream_source: ?[]const u8 = null,
+    primary_stream_source: ?[]const u8 = "file",
     cursors: std.StringHashMapUnmanaged(RecordCursor) = .{},
     field_router: ?FieldRouter = null,
     single_sink: ?PreparedSink = null,
@@ -148,6 +148,12 @@ pub const HostExecutionContext = struct {
         const in_spec = self.step_spec.input orelse return;
         const temp = self.arena.allocator();
 
+        const has_windows = in_spec.get("windows") != null;
+        const has_stream = in_spec.get("stream") != null;
+        if (has_windows and !has_stream) {
+            self.primary_stream_source = null;
+        }
+
         for (in_spec.entries) |entry| {
             const ch_name = entry.key;
             const ch_spec = entry.value;
@@ -209,10 +215,23 @@ pub const HostExecutionContext = struct {
 
         self.field_router = FieldRouter.init(self.allocator, default_tbl);
 
+        var iter = out_spec.field_specs.iterator();
+        while (iter.next()) |entry| {
+            try self.field_router.?.addFieldSpec(entry.value_ptr.*);
+        }
+
         // If target destination is memory only, do not prepare any SQLite sinks
         if (out_spec.target_dest) |dest| {
             if (dest == .memory) {
                 return;
+            }
+        }
+
+        if (out_spec.tables) |tbls| {
+            for (tbls) |tbl| {
+                if (self.db_runtime.prepareTableSink(self.allocator, .{ .table = tbl })) |sink| {
+                    try self.domain_sinks.put(self.allocator, sink.sink_spec.table_name, sink);
+                } else |_| {}
             }
         }
 
@@ -237,14 +256,6 @@ pub const HostExecutionContext = struct {
                         .stmt = stmt,
                     });
                 }
-
-                // If not already in domain, prepare universal audit_findings sink
-                // so forensic analyzers can emit security findings.
-                if (!self.domain_sinks.contains("audit_findings")) {
-                    if (self.db_runtime.prepareTableSink(self.allocator, .{ .table = "audit_findings" })) |audit_sink| {
-                        try self.domain_sinks.put(self.allocator, "audit_findings", audit_sink);
-                    } else |_| {}
-                }
             },
         }
     }
@@ -258,6 +269,35 @@ pub const HostExecutionContext = struct {
             self.staged_artifact = null;
             try self.artifacts.putArtifact(artifact_id, staged);
         }
+    }
+
+    pub fn getOrPrepareSink(self: *HostExecutionContext, table_name: []const u8) ?*PreparedSink {
+        if (self.single_sink) |*sink| {
+            if (std.mem.eql(u8, sink.sink_spec.table_name, table_name)) {
+                return sink;
+            }
+        }
+        if (self.domain_sinks.getPtr(table_name)) |sink| {
+            return sink;
+        }
+        if (self.step_spec.output) |out_spec| {
+            if (out_spec.target_dest) |dest| {
+                if (dest == .memory) return null;
+            }
+        }
+        if (self.db_runtime.catalog.getTable(table_name) != null) {
+            if (self.db_runtime.prepareTableSink(self.allocator, .{ .table = table_name })) |sink| {
+                const key = sink.sink_spec.table_name;
+                self.domain_sinks.put(self.allocator, key, sink) catch {
+                    var s = sink;
+                    self.freeSinkSpec(s.sink_spec);
+                    s.deinit();
+                    return null;
+                };
+                return self.domain_sinks.getPtr(key);
+            } else |_| {}
+        }
+        return null;
     }
 
     /// Constructs the C-ABI `TaskContext_ABI` pointing to `self` and `vtable`.
@@ -415,37 +455,31 @@ pub const HostExecutionContext = struct {
         const target_tbl = ch_slice orelse if (self.single_sink) |*s| s.sink_spec.table_name else "default";
 
         // Route to in-memory repository for zero-copy downstream pipeline consumption
+        var mem_items: []const NamedValue = self.emit_scratch.items;
+        var repo_items: []const NamedValue = self.emit_scratch.items;
+
+        var route_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer route_arena.deinit();
+
         if (self.field_router) |*router| {
-            router.dispatchRecordToTable(
-                target_tbl,
-                self.emit_scratch.items,
-                self.memory_repo.storageRepository(),
-                null,
-            ) catch return .db_constraint_error;
-        } else {
-            self.memory_repo.saveRecord(target_tbl, self.emit_scratch.items) catch return .db_constraint_error;
+            if (router.field_specs.count() > 0) {
+                const routed = router.routeRecord(route_arena.allocator(), self.emit_scratch.items) catch return .db_constraint_error;
+                mem_items = routed.mem;
+                repo_items = routed.repo;
+            }
+        }
+
+        if (mem_items.len > 0) {
+            self.memory_repo.saveRecord(target_tbl, mem_items) catch return .db_constraint_error;
         }
 
         // Persist to relational sinks if configured
-        if (self.single_sink) |*sink| {
-            if (ch_slice == null or std.mem.eql(u8, ch_slice.?, sink.sink_spec.table_name)) {
-                sink.emitRow(self.emit_scratch.items) catch {
+        if (repo_items.len > 0) {
+            if (self.getOrPrepareSink(target_tbl)) |sink| {
+                sink.emitRow(repo_items) catch {
                     self.had_db_error = true;
                     return .db_constraint_error;
                 };
-            }
-            self.rows_emitted += 1;
-            return .ok;
-        }
-
-        if (ch_slice) |ch| {
-            if (self.domain_sinks.getPtr(ch)) |sink| {
-                sink.emitRow(self.emit_scratch.items) catch {
-                    self.had_db_error = true;
-                    return .db_constraint_error;
-                };
-                self.rows_emitted += 1;
-                return .ok;
             }
         }
 
@@ -456,7 +490,7 @@ pub const HostExecutionContext = struct {
     fn resolveStreamOrWindowSource(self: *const HostExecutionContext) ?[]const u8 {
         if (self.primary_stream_source) |src| return src;
         if (self.cursors.getPtr("windows")) |c| return c.streamSource();
-        return null;
+        return "file";
     }
 
     fn ensureStagedArtifactClone(self: *HostExecutionContext) HostError_ABI {

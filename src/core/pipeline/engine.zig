@@ -162,8 +162,17 @@ pub const PipelineEngine = struct {
                             }
                         }
 
-                        // 2. Verify all plugin fields referenced in `output.map` or `output.fields` are declared by the plugin task
+                        // 2. Verify all plugin fields referenced in `output.map`, `output.fields`, or field_specs are declared by the plugin task
                         if (t_step.output) |out_spec| {
+                            var fs_iter = out_spec.field_specs.iterator();
+                            while (fs_iter.next()) |entry| {
+                                if (task_desc.outputFields().len > 0) {
+                                    if (!task_desc.declaresOutputField(entry.key_ptr.*)) {
+                                        return error.UndeclaredPluginOutputField;
+                                    }
+                                }
+                            }
+
                             if (out_spec.target()) |out_target| {
                                 switch (out_target) {
                                     .schema_domain => {},

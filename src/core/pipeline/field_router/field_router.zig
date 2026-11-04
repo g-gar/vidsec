@@ -28,30 +28,17 @@ pub const FieldRouter = struct {
         try self.field_specs.put(self.allocator, spec.name, spec);
     }
 
-    /// Processes an emitted record and routes its projected fields to memory and/or persistent repositories using default_table.
-    pub fn dispatchRecord(
+    pub const RoutedRecord = struct {
+        mem: []const NamedValue,
+        repo: []const NamedValue,
+    };
+
+    /// Evaluates and partitions fields into memory and repo collections.
+    pub fn routeRecord(
         self: *const FieldRouter,
+        arena: Allocator,
         fields: []const NamedValue,
-        maybe_memory_repo: ?StorageRepository,
-        maybe_storage_repo: ?StorageRepository,
-    ) !void {
-        return self.dispatchRecordToTable(self.default_table, fields, maybe_memory_repo, maybe_storage_repo);
-    }
-
-    /// Processes an emitted record and routes its projected fields to memory and/or persistent repositories targeting a specific table/channel.
-    pub fn dispatchRecordToTable(
-        self: *const FieldRouter,
-        target_table: []const u8,
-        fields: []const NamedValue,
-        maybe_memory_repo: ?StorageRepository,
-        maybe_storage_repo: ?StorageRepository,
-    ) !void {
-        const table = if (target_table.len > 0) target_table else self.default_table;
-
-        var arena_state = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena_state.deinit();
-        const arena = arena_state.allocator();
-
+    ) !RoutedRecord {
         var mem_fields: std.ArrayListUnmanaged(NamedValue) = .empty;
         var repo_fields: std.ArrayListUnmanaged(NamedValue) = .empty;
 
@@ -83,17 +70,49 @@ pub const FieldRouter = struct {
             }
         }
 
+        return .{
+            .mem = mem_fields.items,
+            .repo = repo_fields.items,
+        };
+    }
+
+    /// Processes an emitted record and routes its projected fields to memory and/or persistent repositories using default_table.
+    pub fn dispatchRecord(
+        self: *const FieldRouter,
+        fields: []const NamedValue,
+        maybe_memory_repo: ?StorageRepository,
+        maybe_storage_repo: ?StorageRepository,
+    ) !void {
+        return self.dispatchRecordToTable(self.default_table, fields, maybe_memory_repo, maybe_storage_repo);
+    }
+
+    /// Processes an emitted record and routes its projected fields to memory and/or persistent repositories targeting a specific table/channel.
+    pub fn dispatchRecordToTable(
+        self: *const FieldRouter,
+        target_table: []const u8,
+        fields: []const NamedValue,
+        maybe_memory_repo: ?StorageRepository,
+        maybe_storage_repo: ?StorageRepository,
+    ) !void {
+        const table = if (target_table.len > 0) target_table else self.default_table;
+
+        var arena_state = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+
+        const routed = try self.routeRecord(arena, fields);
+
         // Dispatch to Memory Repository if requested and available
         if (maybe_memory_repo) |mem_repo| {
-            if (mem_fields.items.len > 0) {
-                try mem_repo.saveRecord(table, mem_fields.items);
+            if (routed.mem.len > 0) {
+                try mem_repo.saveRecord(table, routed.mem);
             }
         }
 
         // Dispatch to Persistent Storage Repository if requested and available
         if (maybe_storage_repo) |storage_repo| {
-            if (repo_fields.items.len > 0) {
-                try storage_repo.saveRecord(table, repo_fields.items);
+            if (routed.repo.len > 0) {
+                try storage_repo.saveRecord(table, routed.repo);
             }
         }
     }
