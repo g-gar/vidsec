@@ -14,12 +14,16 @@ pub const merge = algebra.merge;
 pub const zip = algebra.zip;
 pub const join = algebra.join;
 pub const slice = algebra.slice;
+pub const slicePayload = algebra.slicePayload;
+pub const mergePayloads = algebra.mergePayloads;
 pub const Pair = algebra.Pair;
 pub const Joined = algebra.Joined;
 
 pub const predicate = @import("predicate.zig");
 pub const evaluatePredicate = predicate.evaluatePredicate;
+pub const evaluatePredicateHandle = predicate.evaluatePredicateHandle;
 pub const filterStream = predicate.filterStream;
+pub const filterPayload = predicate.filterPayload;
 
 pub const parallel = @import("parallel.zig");
 pub const parallelFor = parallel.parallelFor;

@@ -74,6 +74,54 @@ pub const PipelineEngine = struct {
         return summary;
     }
 
+    fn resolveStreamExpr(
+        self: *PipelineEngine,
+        expr: ast_mod.InboundStreamExpr,
+        active_input: PayloadHandle,
+        outputs: *const std.StringHashMapUnmanaged(PayloadHandle),
+    ) anyerror!PayloadHandle {
+        switch (expr.op) {
+            .none => {
+                if (expr.stream_ref) |ref| {
+                    if (std.mem.eql(u8, ref, "stream") or std.mem.eql(u8, ref, "file")) {
+                        return active_input;
+                    }
+                    if (outputs.get(ref)) |prev_out| {
+                        return prev_out;
+                    }
+                    if (self.repos.get(ref)) |repo| {
+                        if (repo.readPayload(ref)) |payload| {
+                            return payload;
+                        }
+                    }
+                }
+                return active_input;
+            },
+            .slice => {
+                var target = active_input;
+                if (expr.sub_streams.len > 0) {
+                    target = try self.resolveStreamExpr(expr.sub_streams[0], active_input, outputs);
+                }
+                return dataflow.algebra.slicePayload(target, expr.slice_offset, expr.slice_count);
+            },
+            .merge => {
+                if (expr.sub_streams.len == 0) return active_input;
+                var sub_payloads = try self.allocator.alloc(PayloadHandle, expr.sub_streams.len);
+                defer self.allocator.free(sub_payloads);
+                for (expr.sub_streams, 0..) |sub_expr, i| {
+                    sub_payloads[i] = try self.resolveStreamExpr(sub_expr, active_input, outputs);
+                }
+                return try dataflow.algebra.mergePayloads(self.allocator, sub_payloads);
+            },
+            .zip, .join => {
+                if (expr.sub_streams.len > 0) {
+                    return try self.resolveStreamExpr(expr.sub_streams[0], active_input, outputs);
+                }
+                return active_input;
+            },
+        }
+    }
+
     fn executeSubPipeline(
         self: *PipelineEngine,
         name: []const u8,
@@ -91,17 +139,15 @@ pub const PipelineEngine = struct {
 
             switch (step) {
                 .task => |task_spec| {
-                    // Resolve input stream
+                    // Resolve input stream expression via Dataflow algebra
                     var step_input = current_input;
-                    if (task_spec.inputs.len == 1) {
-                        const in_expr = task_spec.inputs[0].expr;
-                        if (in_expr.stream_ref) |ref| {
-                            if (!std.mem.eql(u8, ref, "stream") and !std.mem.eql(u8, ref, "file")) {
-                                if (outputs.get(ref)) |prev_out| {
-                                    step_input = prev_out;
-                                }
-                            }
-                        }
+                    if (task_spec.inputs.len > 0) {
+                        step_input = try self.resolveStreamExpr(task_spec.inputs[0].expr, current_input, outputs);
+                    }
+
+                    // Apply step-level declarative predicate filter if configured
+                    if (task_spec.where_filter) |filter_expr| {
+                        step_input = try dataflow.predicate.filterPayload(self.allocator, step_input, filter_expr);
                     }
 
                     // Resolve task descriptor from module registry
@@ -147,15 +193,28 @@ pub const PipelineEngine = struct {
                         return error.TaskExecutionFailed;
                     }
 
-                    // Store output
+                    // Store output by task ID
                     try outputs.put(self.allocator, task_spec.id, task_output);
                     current_input = task_output;
 
-                    // Route to declared output datasources
+                    // Route to declared output channels and datasources
                     for (task_spec.outputs) |out_ch| {
-                        if (self.repos.get(out_ch.datasource)) |repo| {
-                            try repo.writePayload(out_ch.name, task_output);
+                        var channel_payload = task_output;
+
+                        // Apply channel-specific filter if present
+                        if (out_ch.filter) |flt| {
+                            channel_payload = try dataflow.predicate.filterPayload(self.allocator, channel_payload, flt);
                         }
+
+                        // Write to repository
+                        if (self.repos.get(out_ch.datasource)) |repo| {
+                            try repo.writePayload(out_ch.name, channel_payload);
+                        }
+
+                        // Save channel output under channel name and scoped step_id.channel_name
+                        try outputs.put(self.allocator, out_ch.name, channel_payload);
+                        const scoped_name = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ task_spec.id, out_ch.name });
+                        try outputs.put(self.allocator, scoped_name, channel_payload);
                     }
 
                     summary.steps_executed += 1;

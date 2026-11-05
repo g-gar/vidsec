@@ -124,3 +124,86 @@ pub fn slice(comptime T: type, items: []const T, offset: usize, count: usize) []
     const end = @min(offset + count, items.len);
     return items[offset..end];
 }
+
+/// Zero-copy slice of a type-erased `PayloadHandle` stream without dynamic allocations.
+pub fn slicePayload(payload: types.PayloadHandle, offset: usize, count: usize) types.PayloadHandle {
+    if (!payload.is_stream or payload.len == 0 or offset >= payload.len or payload.element_size == 0) {
+        return .{
+            .ptr = payload.ptr,
+            .len = 0,
+            .is_stream = payload.is_stream,
+            .type_name = payload.type_name,
+            .element_size = payload.element_size,
+            .element_align = payload.element_align,
+            .reflect_fn = payload.reflect_fn,
+            .reflect_abi_fn = payload.reflect_abi_fn,
+        };
+    }
+    const end = @min(offset + count, payload.len);
+    const new_len = end - offset;
+    const byte_offset = offset * payload.element_size;
+    const base_bytes: [*]const u8 = @ptrCast(payload.ptr);
+    const new_ptr: *const anyopaque = @ptrCast(base_bytes + byte_offset);
+
+    return .{
+        .ptr = new_ptr,
+        .len = new_len,
+        .is_stream = true,
+        .type_name = payload.type_name,
+        .element_size = payload.element_size,
+        .element_align = payload.element_align,
+        .reflect_fn = payload.reflect_fn,
+        .reflect_abi_fn = payload.reflect_abi_fn,
+    };
+}
+
+/// Merges multiple compatible type-erased `PayloadHandle` streams into a single contiguous buffer.
+pub fn mergePayloads(allocator: Allocator, payloads: []const types.PayloadHandle) Allocator.Error!types.PayloadHandle {
+    if (payloads.len == 0) {
+        return .{
+            .ptr = &{},
+            .len = 0,
+            .is_stream = true,
+            .type_name = "unknown",
+            .element_size = 0,
+            .element_align = 1,
+        };
+    }
+    if (payloads.len == 1) return payloads[0];
+
+    const first = payloads[0];
+    const elem_size = first.element_size;
+    const elem_align = first.element_align;
+
+    var total_len: usize = 0;
+    for (payloads) |p| {
+        total_len += p.len;
+    }
+
+    if (total_len == 0 or elem_size == 0) return first;
+
+    const total_bytes = total_len * elem_size;
+    const raw_buf = try allocator.alignedAlloc(u8, .@"16", total_bytes);
+    errdefer allocator.free(raw_buf);
+
+    var byte_offset: usize = 0;
+    for (payloads) |p| {
+        if (p.len > 0 and p.element_size == elem_size) {
+            const p_bytes = p.len * elem_size;
+            const src: [*]const u8 = @ptrCast(p.ptr);
+            @memcpy(raw_buf[byte_offset .. byte_offset + p_bytes], src[0..p_bytes]);
+            byte_offset += p_bytes;
+        }
+    }
+
+    return .{
+        .ptr = @ptrCast(raw_buf.ptr),
+        .len = total_len,
+        .is_stream = true,
+        .type_name = first.type_name,
+        .element_size = elem_size,
+        .element_align = elem_align,
+        .reflect_fn = first.reflect_fn,
+        .reflect_abi_fn = first.reflect_abi_fn,
+    };
+}

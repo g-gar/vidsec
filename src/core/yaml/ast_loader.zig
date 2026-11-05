@@ -94,6 +94,30 @@ pub fn parseInboundStreamExpr(alloc: Allocator, raw: []const u8) !InboundStreamE
                 .join_key = key,
             };
         }
+    } else if (std.mem.startsWith(u8, trimmed, "slice(") and std.mem.endsWith(u8, trimmed, ")")) {
+        const inner = trimmed[6 .. trimmed.len - 1];
+        var list: std.ArrayListUnmanaged([]const u8) = .empty;
+        var it = std.mem.splitScalar(u8, inner, ',');
+        while (it.next()) |part| {
+            const part_trimmed = std.mem.trim(u8, part, " \t\r\n");
+            if (part_trimmed.len > 0) {
+                try list.append(alloc, part_trimmed);
+            }
+        }
+        const parts = list.items;
+        if (parts.len >= 1) {
+            const stream_target = parts[0];
+            const offset: usize = if (parts.len >= 2) std.fmt.parseInt(usize, parts[1], 10) catch 0 else 0;
+            const count: usize = if (parts.len >= 3) std.fmt.parseInt(usize, parts[2], 10) catch 0 else 0;
+            const sub = try alloc.alloc(InboundStreamExpr, 1);
+            sub[0] = InboundStreamExpr.direct(stream_target);
+            return .{
+                .op = .slice,
+                .sub_streams = sub,
+                .slice_offset = offset,
+                .slice_count = count,
+            };
+        }
     }
 
     return InboundStreamExpr.direct(trimmed);

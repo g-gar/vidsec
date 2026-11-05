@@ -348,3 +348,75 @@ fn indexOfCaseInsensitive(haystack: []const u8, needle: []const u8) ?usize {
     }
     return null;
 }
+
+/// Filters a `PayloadHandle` (either stream or scalar) according to declarative boolean expression `predicate_expr`.
+pub fn filterPayload(allocator: Allocator, payload: types.PayloadHandle, predicate_expr: []const u8) Allocator.Error!types.PayloadHandle {
+    const expr_trimmed = std.mem.trim(u8, predicate_expr, " \t\r\n");
+    if (expr_trimmed.len == 0) return payload;
+
+    if (!payload.is_stream or payload.len <= 1) {
+        if (evaluatePredicateHandle(payload, expr_trimmed)) {
+            return payload;
+        } else {
+            return .{
+                .ptr = payload.ptr,
+                .len = 0,
+                .is_stream = payload.is_stream,
+                .type_name = payload.type_name,
+                .element_size = payload.element_size,
+                .element_align = payload.element_align,
+                .reflect_fn = payload.reflect_fn,
+                .reflect_abi_fn = payload.reflect_abi_fn,
+            };
+        }
+    }
+
+    const elem_size = payload.element_size;
+    const elem_align = payload.element_align;
+    const base_bytes: [*]const u8 = @ptrCast(payload.ptr);
+
+    var matched_indices: std.ArrayListUnmanaged(usize) = .empty;
+    defer matched_indices.deinit(allocator);
+
+    for (0..payload.len) |i| {
+        const item_ptr: *const anyopaque = @ptrCast(base_bytes + (i * elem_size));
+        const item_handle = types.PayloadHandle{
+            .ptr = item_ptr,
+            .len = 1,
+            .is_stream = false,
+            .type_name = payload.type_name,
+            .element_size = elem_size,
+            .element_align = elem_align,
+            .reflect_fn = payload.reflect_fn,
+            .reflect_abi_fn = payload.reflect_abi_fn,
+        };
+
+        if (evaluatePredicateHandle(item_handle, expr_trimmed)) {
+            try matched_indices.append(allocator, i);
+        }
+    }
+
+    if (matched_indices.items.len == payload.len) {
+        return payload;
+    }
+
+    const out_buf = try allocator.alignedAlloc(u8, .@"16", matched_indices.items.len * elem_size);
+    errdefer allocator.free(out_buf);
+
+    for (matched_indices.items, 0..) |orig_idx, out_idx| {
+        const src_start = orig_idx * elem_size;
+        const dst_start = out_idx * elem_size;
+        @memcpy(out_buf[dst_start .. dst_start + elem_size], base_bytes[src_start .. src_start + elem_size]);
+    }
+
+    return .{
+        .ptr = @ptrCast(out_buf.ptr),
+        .len = matched_indices.items.len,
+        .is_stream = true,
+        .type_name = payload.type_name,
+        .element_size = elem_size,
+        .element_align = elem_align,
+        .reflect_fn = payload.reflect_fn,
+        .reflect_abi_fn = payload.reflect_abi_fn,
+    };
+}
