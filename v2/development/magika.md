@@ -1,104 +1,105 @@
-# Integración de Google Magika (`libmagika`) en Vidsec
+# Google Magika (`libmagika`) Integration in Vidsec (`v2/development/magika.md`)
 
-## 1. Introducción y Contexto
+## 1. Introduction and Context
 
-**Google Magika** es una herramienta y modelo de *Deep Learning* de código abierto (Apache 2.0) desarrollado por Google en 2024 para la identificación precisa y rápida de tipos de contenido binario y textual. Ha sido adoptado por servicios a gran escala como **VirusTotal**, **Google Drive** y **Gmail** como sustituto y complemento moderno al clásico comando `file` (`libmagic`) de Unix.
+**Google Magika** is an open-source (Apache 2.0) Deep Learning tool and model released by Google in 2024 for high-speed, highly accurate binary and textual content type identification. It has been adopted by large-scale platforms including **VirusTotal**, **Google Drive**, and **Gmail** as a modern replacement and complement to the classic Unix `file` command (`libmagic`).
 
-Este documento analiza en profundidad el funcionamiento de Magika, evalúa las diferencias técnicas respecto a la biblioteca interna `src/lib/magic/` de Vidsec, detalla el valor que aportaría al motor y describe la arquitectura de integración recomendada para no comprometer la compilación autónoma ni las capacidades forenses del framework.
-
----
-
-## 2. Cómo Funciona Magika por Dentro
-
-A diferencia de los LLMs o modelos de visión por computador pesados, Magika fue expresamente diseñado para entornos de producción de altísimo rendimiento:
-
-1. **Modelo Neuronal Ultraligero (~1 MB):**
-   - Red neuronal compacta entrenada para clasificar más de 100 tipos de archivo (`ct_label`).
-   - Exportada a formatos estándar de inferencia (**ONNX** y **TFLite**).
-   - Tiempos de inferencia de **$\sim 5 \text{ ms}$ por archivo** en un único núcleo de CPU convencional (no requiere GPU ni aceleradores hardware).
-
-2. **Muestreo Eficiente de Bloques (*Block Sampling*):**
-   - Magika **no** lee ficheros completos en memoria (lo cual sería inviable para vídeos de varios gigabytes).
-   - Muestrea ventanas fijas de 512 bytes en posiciones estratégicas:
-     - Cabecera inicial (*Head Buffer*).
-     - Centro del archivo (*Midpoint Buffer*).
-     - Pie / Final del archivo (*Tail Buffer*).
-   - Estas ventanas se convierten en un vector de características que alimenta la red neuronal.
-
-3. **Inferencia 100% Local y Offline:**
-   - No realiza llamadas a APIs externas, ni clústeres de Google, ni requiere conexión a Internet.
-   - Núcleo de producción escrito en **Rust** (`libmagika`), con bindings oficiales para C, Python, Go y Node.js.
-
-4. **Estructura del Output:**
-   - `ct_label`: Identificador canónico (e.g., `mp4`, `mkv`, `avi`, `pebin`, `elf`, `zip`, `pdf`, `javascript`).
-   - `score`: Nivel de certidumbre probabilística entre $0.0$ y $1.0$.
-   - `group`: Categoría funcional (`media`, `executable`, `archive`, `code`, `document`).
-   - `mime_type`: Tipo MIME estandarizado (e.g., `video/mp4`).
-   - `description`: Nombre descriptivo legible.
+This document provides an in-depth technical analysis of Magika's internal mechanics, evaluates differences relative to Vidsec's native `src/lib/magic/` engine, highlights the architectural advantages it brings to Vidsec, and specifies the recommended integration model to maintain autonomous zero-dependency compilation alongside surgical forensic capabilities.
 
 ---
 
-## 3. Comparativa: `libmagika` vs. `vidsec_magic` (Zig Nativo)
+## 2. Internal Mechanics of Google Magika
 
-| Dimensión | `libmagika` (Google / VirusTotal) | `vidsec_magic` (Nativo en Vidsec) |
+Unlike Large Language Models (LLMs) or heavyweight computer vision pipelines, Magika was engineered specifically for ultra-high-throughput production environments:
+
+1. **Ultralight Neural Network (~1 MB):**
+   - Compact neural network trained to classify over 100 file types (`ct_label`).
+   - Exported to standard inference runtimes (**ONNX** and **TFLite**).
+   - Inference latency of **$\sim 5 \text{ ms}$ per file** on a single standard CPU core (requires no GPU or dedicated hardware accelerators).
+
+2. **Efficient Block Sampling:**
+   - Magika **does not** read entire files into RAM (which would be prohibitive for multi-gigabyte video streams).
+   - It samples 512-byte windows at strategic positions:
+     - Initial file header (*Head Buffer*).
+     - Exact midpoint (*Midpoint Buffer*).
+     - Trailing file footer (*Tail Buffer*).
+   - These windows are vectorized into features fed directly to the model.
+
+3. **100% Local and Offline Inference:**
+   - Executes strictly local inference without external API calls or network connectivity.
+   - Core production engine written in **Rust** (`libmagika`), offering official bindings for C, Python, Go, and Node.js.
+
+4. **Output Structure:**
+   - `ct_label`: Canonical content identifier (e.g., `mp4`, `mkv`, `avi`, `pebin`, `elf`, `zip`, `pdf`, `javascript`).
+   - `score`: Confidence probability metric between $0.0$ and $1.0$.
+   - `group`: Functional classification group (`media`, `executable`, `archive`, `code`, `document`).
+   - `mime_type`: Standardized MIME type (e.g., `video/mp4`).
+   - `description`: Human-readable format description.
+
+---
+
+## 3. Comparative Analysis: `libmagika` vs. `vidsec_magic` (Native Zig)
+
+| Dimension | `libmagika` (Google / VirusTotal) | `vidsec_magic` (Native Zig in Vidsec) |
 | :--- | :--- | :--- |
-| **Enfoque** | **Clasificador probabilístico global.** Determina qué parece ser el archivo en su conjunto. | **Escáner forense determinista por offsets.** Inspecciona bytes exactos y valida firmas estructurales. |
-| **Detección de Políglotas** | ⚠️ **Limitado:** Asigna un único label predominante (o reduce el `score`). No puede aislar cargas embebidas. | ✅ **Excelente:** Escanea activamente el *Tail Buffer* (`scanTailArchives`) buscando cabeceras `ZIP EOCD`, `RAR` o `7z` ocultas tras el vídeo. |
-| **Caza de Ejecutables Ocultos** | ⚠️ Solo si la muestra globalmente se comporta como ejecutable. | ✅ `scanHeadExecutables` detecta stubs `MZ`, `ELF`, Mach-O o scripts insertados antes o entre átomos. |
-| **Ubicación de Offsets** | ❌ No reporta rangos (`file_offset`, `byte_length`). | ✅ Localiza con precisión milimétrica el offset de cada anomalía para alimentar `audit_findings`. |
-| **Consumo de Memoria** | $\approx 20\text{--}50 \text{ MB}$ de RSS para instanciar el runtime ONNX y los tensores. | **0 bytes en heap** (evaluación estática en registros y stack, buffer bound de $\le 128 \text{ KB}$). |
-| **Cadena de Compilación** | Requiere toolchain de **Rust** (`cargo`), runtime ONNX (`ort`/`tract`) y bindings C. | **100% Zig nativo**, compila en $\sim 200 \text{ ms}$ y cross-compila a cualquier SO sin dependencias externas. |
+| **Architectural Focus** | **Global probabilistic classifier.** Predicts what the file resembles overall. | **Deterministic offset-based forensic scanner.** Inspects exact byte signatures and structural contracts. |
+| **Polyglot File Detection** | ⚠️ **Limited:** Assigns a single predominant label (or lowers confidence `score`). Cannot isolate embedded sub-payloads. | ✅ **Excellent:** Actively scans the *Tail Buffer* (`scanTailArchives`) for appended `ZIP EOCD`, `RAR`, or `7z` headers following media streams. |
+| **Hidden Executable Detection** | ⚠️ Only triggered if the overall payload globally resembles an executable. | ✅ `scanHeadExecutables` detects `MZ`, `ELF`, Mach-O stubs, or script headers injected before or between container atoms. |
+| **Offset Reporting** | ❌ Does not report spatial byte ranges (`file_offset`, `byte_length`). | ✅ Pinpoints the exact byte offset and length of every anomaly to populate `audit_findings`. |
+| **Memory Footprint** | $\approx 20\text{--}50 \text{ MB}$ RSS to initialize the ONNX runtime and tensors. | **0 heap bytes** (static stack-and-register execution, bounded buffer $\le 128 \text{ KB}$). |
+| **Build Toolchain** | Requires **Rust** toolchain (`cargo`), ONNX runtime (`ort`/`tract`), and C bindings. | **100% native Zig**, builds in $\sim 200 \text{ ms}$ and cross-compiles to any OS target without external dependencies. |
 
 ---
 
-## 4. ¿Qué Aportaría `libmagika` a Vidsec?
+## 4. Architectural Value of `libmagika` for Vidsec
 
-La integración de Magika aportaría cuatro ventajas estratégicas de primer nivel:
+Integrating Magika into the Vidsec pipeline provides four distinct strategic capabilities:
 
-### A. Detección de Disfraz / Spoofing de Cabeceras (*Anti-Evasion*)
-Un atacante sofisticado puede forjar los primeros 16 bytes de un binario malicioso para que contengan `00 00 00 20 66 74 79 70 69 73 6F 6D` (cabecera MP4 `ftyp`), pero el resto del contenido es un ejecutable PE/ELF o un script ofuscado.
-- Un parser básico de firmas podría caer en la trampa en Stage 0.
-- **Magika detectará la discordancia:** la red neuronal evaluará el contexto y asignará `ct_label: pebin` (o un `score` inferior a $0.50$), levantando inmediatamente una alerta crítica de engaño de cabecera.
+### A. Anti-Evasion and Header Spoofing Detection
+Sophisticated adversaries may forge the initial 16 bytes of an executable to match an MP4 header (`00 00 00 20 66 74 79 70 69 73 6F 6D`), while appending a packed PE/ELF binary or obfuscated script.
+* A basic signature scanner might pass the file at Stage 0 based solely on magic bytes.
+* **Magika detects the contextual dissonance:** its neural network evaluates the whole sample structure, flags `ct_label: pebin` (or confidence $< 0.50$), and immediately raises a critical header-spoofing alarm.
 
-### B. Validación Cruzada Dual (*Dual-Engine Verification*)
-La correlación entre ambos motores permite definir reglas de confianza extremadamente robustas en `pipeline.yaml`:
-$$\text{Confianza Alta} \iff (\text{vidsec\_magic} = \text{ISOBMFF}) \land (\text{magika.ct\_label} = \text{"mp4"}) \land (\text{magika.score} \ge 0.95)$$
-Si ambos discrepan:
-- Se fuerza el enrutado hacia pipelines de cuarentena profunda o análisis forense exhaustivo (`quarantine_sandbox`).
+### B. Dual-Engine Verification
+Correlating both analytical engines enables high-confidence gatekeeping rules within `pipeline.yaml`:
+$$\text{High Confidence} \iff (\text{vidsec\_magic} = \text{ISOBMFF}) \land (\text{magika.ct\_label} = \text{"mp4"}) \land (\text{magika.score} \ge 0.95)$$
 
-### C. Clasificación Rica de Adjuntos y Slack Data (`ir_attachments`)
-Contenedores como MKV (`EBML`) permiten adjuntar archivos arbitrarios (fuentes TTF, imágenes, subtítulos o ficheros binarios).
-- Actualmente `vidsec_magic` tiene firmas hardcodeadas para ciertos formatos.
-- Magika puede identificar instantáneamente cualquiera de los más de 100 formatos soportados para cualquier payload tallado (*carved payload*) sin necesidad de inflar el código en Zig con firmas binarias artesanales.
+When the two engines disagree:
+* The router diverts execution into deep quarantine or comprehensive sandbox forensics (`quarantine_sandbox`).
 
-### D. Alineación con Estándares de la Industria (VirusTotal)
-Generar informes de auditoría (`v_findings_report`, PDF, LaTeX) que incluyan el campo canónico de **Magika** tal cual lo expone VirusTotal aporta credibilidad técnica inmediata ante equipos SOC (*Security Operations Center*) y analistas forenses.
+### C. Rich Classification of Carved Slack and Attachments (`ir_attachments`)
+Modern containers (such as MKV / `EBML`) permit embedding arbitrary binary attachments (TTF fonts, cover images, subtitles, or binary executables).
+* `vidsec_magic` relies on hardcoded signatures for common media sub-types.
+* Magika instantly identifies carved slack data and attachments across 100+ formats without bloating Zig source code with handcrafted signature tables.
+
+### D. Alignment with Industry Standards (VirusTotal)
+Generating audit reports (PDF/LaTeX, `v_findings_report`) that expose canonical **Magika** fields identical to VirusTotal output establishes immediate technical credibility with Security Operations Center (SOC) teams and forensic analysts.
 
 ---
 
-## 5. Arquitectura de Integración Propuesta
+## 5. Proposed Integration Architecture
 
-Para **no romper la pureza de compilación de Zig** ni perder las capacidades forenses por offsets, la integración se estructura en dos fases:
+To preserve Vidsec's **self-contained zero-dependency build purity** while retaining granular forensic offset detection, integration follows a decoupled two-phase model:
 
 ```
-[ Archivo de Vídeo ]
+[ Input Video File ]
          │
-         ├───► [ Stage 0: vidsec_magic (Zig nativo) ] ──────────► file_triage (Offsets, Polyglots, Fast Reject)
+         ├───► [ Stage 0: vidsec_magic (Native Zig) ] ──────────► file_triage (Offsets, Polyglots, Fast Reject)
          │
-         └───► [ Plugin Opcional: vidsec_magika (C-ABI) ] ──────► magika_triage (ct_label, score, group)
+         └───► [ Optional Plugin: vidsec_magika (C-ABI) ] ──────► magika_triage (ct_label, score, group)
                                                                         │
                                                                         ▼
-                                                   [ Router: Correlación Dual en SQLite ]
+                                                   [ Router: Dual Correlation in Memory / SQLite ]
 ```
 
-### Fase 1: Alineación de Esquema y Contratos ABI
-1. Actualizar el esquema de `file_triage` para adoptar la nomenclatura estándar:
-   - `magika_label: text` (ej: `'mp4'`, `'mkv'`, `'pebin'`).
-   - `magika_score: real` (confianza de $0.0$ a $1.0$).
-   - `magika_group: text` (ej: `'media'`, `'executable'`).
-2. Si Magika no está activo, `vidsec_magic` puebla estos campos con sus equivalentes canónicos y `score = 1.0` (heurístico).
+### Phase 1: Schema and Contract Alignment
+1. Standardize `file_triage` schema attributes:
+   - `magika_label: text` (e.g. `'mp4'`, `'mkv'`, `'pebin'`).
+   - `magika_score: real` (confidence score from $0.0$ to $1.0$).
+   - `magika_group: text` (e.g. `'media'`, `'executable'`).
+2. When Magika is inactive, `vidsec_magic` populates these fields with canonical equivalents and synthetic confidence `score = 1.0`.
 
-### Fase 2: Plugin C-ABI Dinámico (`vidsec_magika.so`)
-1. Implementar un plugin C-ABI desacoplado del binario principal.
-2. El plugin puede compilarse opcionalmente mediante la librería C de `libmagika` o ejecutar mediante subproceso el binario CLI `magika <file> --json`.
-3. El Host de Vidsec carga dinámicamente el plugin si la directiva en `pipeline.yaml` lo solicita, preservando el binario `vidsec` 100% autosuficiente para despliegues ligeros.
+### Phase 2: Decoupled Dynamic C-ABI Plugin (`vidsec_magika.so`)
+1. Implement a standalone C-ABI plugin isolated from the primary Vidsec binary.
+2. The plugin can compile optionally against `libmagika` C bindings or execute the standalone CLI subprocess `magika <file> --json`.
+3. The Vidsec Host dynamically loads the plugin only when declared in `pipeline.yaml`, maintaining a 100% autonomous core binary for lightweight and embedded deployments.

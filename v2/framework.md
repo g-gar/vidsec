@@ -1,29 +1,29 @@
-# Especificación del Framework Core (`vidsec v2`)
+# Core Framework Specification (`vidsec v2`)
 
-## 1. Visión y Principios Arquitectónicos
+## 1. Architectural Vision and Principles
 
-En `vidsec v2`, el sistema se divide estrictamente en dos planos desacoplados:
-1. **El Framework Core (Host Runtime):** Es el único propietario del estado, de la base de datos **SQLite3**, del sistema de ficheros, de la validación de esquemas (`schema.sql`) y del flujo de ejecución declarativo (`pipeline.yaml` + `.env`).
-2. **Los Plugins de Tareas (`.so` cargados vía C-ABI):** Son librerías dinámicas de cómputo **100% libres de SQL y agnósticas del sistema subyacente**. No enlazan `libsqlite3`, no reciben punteros `*sqlite3` y no abren rutas del sistema de ficheros directamente.
+In `vidsec v2`, the architecture is strictly decoupled into two distinct planes:
+1. **The Framework Core (Host Runtime):** The sole owner of execution state, the embedded **SQLite3** database, filesystem storage, schema validation (`schema.sql` / `schemas.yaml`), and declarative orchestration (`pipeline.yaml` + `.env`).
+2. **Task Module Plugins (`.so` loaded via C-ABI):** Pure dynamic computation libraries that are **100% SQL-free and agnostic of the underlying operating system**. They do not link against `libsqlite3`, never receive `*sqlite3` pointers, and never open filesystem paths directly.
 
 ```mermaid
 flowchart TB
-    subgraph TrustBoundary ["Autoridad de Confianza (Configuración Declarativa)"]
-        ENV[".env (Límites, Rutas, Credenciales)"]
-        SCHEMAS["schemas.yaml (Catálogo de Esquemas y Tablas Tipadas)"]
+    subgraph TrustBoundary ["Trust Boundary (Declarative Configuration)"]
+        ENV[".env (Quotas, Paths, Credentials)"]
+        SCHEMAS["schemas.yaml (Domain Schema Catalog & Typed Tables)"]
         YAML["pipeline.yaml (Modules + Sub-pipelines + Input/Output Maps + Routers)"]
     end
 
-    subgraph Host ["Framework Core (Binario Principal `vidsec`)"]
-        Parser["Parser YAML + Generador DDL (schemas.yaml -> SQLite) + Validador Pre-Flight"]
-        Router["Motor de Flujo y SQL Router (cases / when / goto)"]
-        SqlRule["Ejecutor Nativo `use: sql_rule`"]
+    subgraph Host ["Framework Core (Vidsec Main Host Binary)"]
+        Parser["YAML Parser + DDL Generator (schemas.yaml -> SQLite) + Pre-Flight Validator"]
+        Router["Control Flow & SQL Router (cases / when / goto)"]
+        SqlRule["Native Executor `use: sql_rule`"]
         DB[("SQLite3 Engine\n(Prepared Stmts + Savepoints)")]
-        FS["Gestor de Ficheros Seguro\n(SafeCursor + Managed Artifacts)"]
+        FS["Secure File Manager\n(SafeCursor + Managed Artifacts)"]
         HostAPI["Host API VTable\n(Lazy Input Cursors + Output Sink)"]
     end
 
-    subgraph Plugins ["Catálogo de Módulos Dinámicos (.so vía C-ABI, Cero SQL)"]
+    subgraph Plugins ["Dynamic Module Catalog (.so via C-ABI, Zero SQL)"]
         ModIR["libm1_ir.so\n(Task: build_ir)"]
         ModDeep["libm3_deep.so\n(Tasks: extract_samples, extract_codecs...)"]
         ModEntropy["libfn_entropy.so\n(Task: entropy_scan)"]
@@ -40,21 +40,21 @@ flowchart TB
     HostAPI --> FS
 ```
 
-### Ventajas Clave frente a `v1`
-- **Cero SQL en los Plugins:** Ningún plugin concatena ni ejecuta SQL. El Host ejecuta las consultas de entrada (`ranges_sql`, `sql`) y entrega los datos **poco a poco de forma *lazy*** (mediante iteradores *pull* sobre `sqlite3_step()`). Al emitir resultados (`emit_row`), el Host aplica el mapeo (`output.map` / `output.tables`) e inserta en SQLite usando sentencias preparadas dentro de una transacción.
-- **Sin enlace compartido de `libsqlite3.so` en plugins:** Al no cruzar el puntero `*sqlite3` la frontera `dlopen`, desaparece el riesgo de corrupción de mutexes o asignadores globales de SQLite.
-- **Reutilización pura desde `pipeline.yaml`:** Una misma función en Zig (como `entropy_scan`) sirve para auditar *padding* (`R07`), *overlays* (`R02`) o *slack space* (`R08`) cambiando únicamente la consulta `ranges_sql` y el `output.map` en el YAML.
-- **Reglas relacionales sin código nativo (`use: sql_rule`):** Cualquier comprobación expresable como un `SELECT` sobre el IR (`R01`, `R03`, `R04`, `R05`, `R06`, `R09`, `R10`) la ejecuta directamente el motor sin necesidad de compilar un plugin `.so`.
+### Key Architectural Advantages over `v1`:
+* **Zero SQL in Plugins:** No plugin constructs or executes SQL statements. The Host executes input queries (`ranges_sql`, `sql`) and feeds records **lazily element-by-element** (via pull iterators wrapping `sqlite3_step()`). Upon emitting results (`emit_row`), the Host applies output mappings (`output.map` / `output.tables`) and inserts into SQLite using prepared statements inside a transaction savepoint.
+* **No Shared `libsqlite3.so` Linkage in Plugins:** Because the `*sqlite3` pointer never crosses the `dlopen` ABI boundary, mutex corruption and global SQLite allocator clashes are physically eliminated.
+* **Pure Reusability via `pipeline.yaml`:** A single native Zig function (such as `entropy_scan`) can audit padding (`R07`), container overlays (`R02`), or file slack space (`R08`) simply by altering the input `ranges_sql` query and `output.map` in YAML.
+* **Relational Rules without Native Code (`use: sql_rule`):** Any integrity or forensic check expressible as a `SELECT` query over the IR (`R01`, `R03`, `R04`, `R05`, `R06`, `R09`, `R10`) executes natively inside the engine without compiling a dedicated `.so` plugin.
 
 ---
 
-## 2. Especificación Declarativa (`schemas.yaml`, `pipeline.yaml` y `.env`)
+## 2. Declarative Specification (`schemas.yaml`, `pipeline.yaml`, and `.env`)
 
-### 2.1. Catálogo de Esquemas Reutilizables (`schemas.yaml`)
-En lugar de mantener ficheros `.sql` manuales o acoplar las tablas en el código de los plugins, `schemas.yaml` declara los **esquemas de dominio** (`ir_core`, `ir_deep`, `audit`, etc.) usando **únicamente los 5 tipos primitivos de la C-ABI**, que tienen correspondencia 1:1 directa con SQLite (`STRICT`):
+### 2.1. Domain Schema Catalog (`schemas.yaml`)
+Rather than maintaining raw `.sql` files or hardcoding table structures inside plugins, `schemas.yaml` declares **domain entity schemas** (`ir_core`, `ir_deep`, `audit`, etc.) using **exclusively the 5 primitive C-ABI types**, which map 1:1 to SQLite (`STRICT` mode):
 - `int64` $\rightarrow$ `INTEGER`
 - `float64` $\rightarrow$ `REAL`
-- `bool` $\rightarrow$ `INTEGER` (`0` o `1`)
+- `bool` $\rightarrow$ `INTEGER` (`0` or `1`)
 - `text` $\rightarrow$ `TEXT`
 - `blob` $\rightarrow$ `BLOB`
 
@@ -96,13 +96,13 @@ schemas:
       indexes: [rule_id, severity]
 ```
 
-### 2.2. Interpolación de `.env` y Cabecera de `pipeline.yaml`
-El archivo `pipeline.yaml` referencia `schemas.yaml` y permite interpolar variables de entorno o del archivo `.env` mediante la sintaxis `${VAR}` o `${VAR:-valor_por_defecto}`:
+### 2.2. Environment Interpolation and `pipeline.yaml` Header
+`pipeline.yaml` references `schemas.yaml` and supports environment variable interpolation using `${VAR}` or `${VAR:-default}`:
 
 ```yaml
 version: 2
 
-# Configuración global del motor e inyección desde .env
+# Global engine settings and .env injection
 engine:
   schemas: "./configs/schemas.yaml"
   db_mode: "${VIDSEC_DB_MODE:-memory}"          # "memory" | "wal_file"
@@ -112,8 +112,8 @@ engine:
     quarantine: "${VIDSEC_QUARANTINE_DIR:-/var/vidsec/quarantine}"
     work: "${VIDSEC_WORK_DIR:-/tmp/vidsec_work}"
 
-# 1. Catálogo de módulos disponibles (.so)
-# Un módulo puede exponer 1 tarea por defecto o múltiples tareas (invocadas como modulo/tarea)
+# 1. Dynamic module catalog (.so)
+# A module may expose 1 default task or multiple tasks (invoked as module/task)
 modules:
   ir_builder:   { path: "./plugins/libm1_ir.so" }
   deep_extract: { path: "./plugins/libm3_deep.so" }
@@ -122,24 +122,24 @@ modules:
   surgical_cdr: { path: "./plugins/libm4_cdr.so" }
 ```
 
-### 2.3. Gramática de `pipelines`, `task` (Simetría `input.map` / `output.map`) y `router`
-El bloque `pipelines:` define un mapa de sub-pipelines nombrados. La ejecución comienza siempre en el sub-pipeline `main`. Cada entrada dentro de `steps:` es de uno de estos dos tipos:
+### 2.3. Pipeline Grammar: `task` (`input.map` / `output.map` symmetry) and `router`
+The `pipelines:` block defines a dictionary of named sub-pipelines. Execution always starts at sub-pipeline `main`. Each entry in `steps:` is one of two types:
 
-#### A) Paso de Ejecución (`task`)
-Tanto en `input` como en `output`, el usuario puede trabajar a **nivel de esquema completo** (`schema: ir_core`, ideal para transformadores complejos como `ir_builder` o `deep_extract`) o a **nivel de tabla con mapeo explícito (`table`/`into` + `map`)** sin escribir sentencias `SELECT` en los inputs:
-- Cuando un `input` declara `table` + `filter` + `map: { campo_plugin: expr_columna }`, el Framework compila automáticamente la consulta:
-  `SELECT <expr_columna> AS <campo_plugin>, ... FROM <table> WHERE <filter>`.
+#### A) Execution Step (`task`)
+In both `input` and `output`, steps can operate at the **full domain schema level** (`schema: ir_core`, ideal for broad lowering tasks like `ir_builder`) or at the **table mapping level (`table`/`into` + `map`)**:
+* When an `input` declares `table` + `filter` + `map: { plugin_field: col_expr }`, the Framework automatically synthesizes the SQL query:
+  `SELECT <col_expr> AS <plugin_field>, ... FROM <table> WHERE <filter>`.
 
 ```yaml
-      - task: <identificador_unico_del_paso>
+      - task: <step_identifier>
         use: <module_name> | <module_name>/<task_name> | sql_rule
-        # Solo para `use: sql_rule`:
-        query: "<SELECT SQL de solo lectura>"
-        # Entradas gestionadas por el Host (opcional según la tarea):
+        # Only for `use: sql_rule`:
+        query: "<Read-only SQL SELECT>"
+        # Host-managed inputs (optional based on task signature):
         input:
           stream:
             from: file | <artifact_id>
-          # Opción A: Ventanas de bytes mapeadas declarativamente desde una tabla
+          # Option A: Byte windows mapped declaratively from a table
           windows:
             from: file | <artifact_id>
             table: ir_regions
@@ -149,7 +149,7 @@ Tanto en `input` como en `output`, el usuario puede trabajar a **nivel de esquem
               offset: payload_offset
               length: "effective_end_offset - payload_offset"
               tag: tag_name
-          # Opción B: Cursor de filas mapeado declarativamente desde una tabla
+          # Option B: Row cursor mapped declaratively from a table
           <cursor_name>:
             table: audit_findings
             filter: "severity = 2"
@@ -157,30 +157,30 @@ Tanto en `input` como en `output`, el usuario puede trabajar a **nivel de esquem
               rule: rule_id
               offset: file_offset
               detail: message
-        # Parámetros escalares inyectados a la tarea por ABI (opcional):
+        # Scalar parameters injected via ABI (optional):
         params:
           entropy_threshold: 7.2
           quarantine_dir: "${VIDSEC_QUARANTINE_DIR}/rejected"
-        # Reglas de persistencia de salida gestionadas por el Host (opcional):
+        # Output persistence rules managed by the Host (optional):
         output:
-          # Modo 1: Volcado de esquema de dominio completo (ej. `ir_builder` -> `schema: ir_core`)
+          # Mode 1: Domain schema dump (e.g. `ir_builder` -> `schema: ir_core`)
           schema: ir_core
-          # Modo 2: Inserción/Actualización en una tabla destino con proyección `map`
+          # Mode 2: Insert/Upsert into target table with `map` projection
           into: audit_findings
-          mode: insert # "insert" (por defecto) | "upsert" | "update"
-          key: finding_id # Requerido solo si mode == "update" o "upsert"
+          mode: insert # "insert" (default) | "upsert" | "update"
+          key: finding_id # Required only if mode == "update" or "upsert"
           map:
-            rule_id: "'R07'"           # Literal constante (entre comillas simples)
-            file_offset: offset        # Campo `offset` emitido por el plugin en `emit_row`
-            region_tag: tag            # Campo `tag` emitido por el plugin
-            severity: severity         # Campo `severity` emitido por el plugin
-            measured_value: entropy    # Campo `entropy` emitido por el plugin
-          # Si la tarea genera un nuevo fichero limpio o transformado:
+            rule_id: "'R07'"           # Constant literal string
+            file_offset: offset        # Emitted `offset` field
+            region_tag: tag            # Emitted `tag` field
+            severity: severity         # Emitted `severity` field
+            measured_value: entropy    # Emitted `entropy` field
+          # If the task produces a new mutated/clean file:
           artifact: sanitized_video
 ```
 
-#### B) Enrutador Condicional (`router`)
-Evalúa consultas SQL de solo lectura en orden. La primera cláusula `when` cuya consulta devuelva al menos una fila (`sqlite3_step() == SQLITE_ROW`) transfiere el control al sub-pipeline indicado en `goto`. Si ninguna coincide, salta a `default` (o finaliza el pipeline si `default: exit` u omitido).
+#### B) Conditional Router (`router`)
+Evaluates read-only SQL queries sequentially. The first `when` condition returning at least one row (`sqlite3_step() == SQLITE_ROW`) branches execution to `goto`. If none match, execution branches to `default` (or halts if omitted).
 
 ```yaml
       - router: triage_gate
@@ -192,15 +192,15 @@ Evalúa consultas SQL de solo lectura en orden. La primera cláusula `when` cuya
 
 ---
 
-## 3. Modelo de Datos Lazy y Contrato C-ABI (`src/core/plugin_abi.zig`)
+## 3. Lazy Data Model and C-ABI Contract (`src/core/plugin_abi.zig`)
 
-### 3.1. Flujo Lazy (*Pull Input* / *Push Output*) sin sobrecarga en RAM
-Al ser SQLite una base de datos embebida en el mismo proceso, el Framework aprovecha los cursores nativos (`sqlite3_stmt`) para alimentar a los plugins elemento a elemento sin materializar vectores gigantes en memoria:
+### 3.1. Zero-RAM-Blowup Lazy Pipeline (*Pull Input* / *Push Output*)
+Because SQLite is embedded directly within the process, the Framework uses native prepared cursors (`sqlite3_stmt`) to stream records into plugins without materializing multi-gigabyte collections in RAM:
 
 ```mermaid
 sequenceDiagram
     participant Engine as Host Engine (Zig + SQLite)
-    participant Cursor as SafeCursor (Fichero)
+    participant Cursor as SafeCursor (File)
     participant Plugin as Plugin Task (.so)
 
     Engine->>Engine: BEGIN SAVEPOINT task_step;
@@ -208,29 +208,29 @@ sequenceDiagram
     Engine->>Engine: sqlite3_prepare_v2("INSERT INTO audit_findings ...")
     Engine->>Plugin: task.execute(&task_ctx)
 
-    loop Lazy Pull de Ventanas de Bytes
+    loop Lazy Pull of Byte Windows
         Plugin->>Engine: host_api.next_window(ctx, &win)
         Engine->>Engine: sqlite3_step(ranges_stmt) -> (id, offset, length, tag)
-        Engine->>Cursor: Validar std.math.add(offset, length) <= file_size
+        Engine->>Cursor: Validate std.math.add(offset, length) <= file_size
         Engine-->>Plugin: true + WindowView_ABI { id, offset, length, tag }
         Plugin->>Engine: host_api.window_read(ctx, &win, rel_offset, buf, len)
         Engine->>Cursor: readAt(win.offset + rel_offset, buf)
-        Cursor-->>Plugin: bytes leídos de forma segura
+        Cursor-->>Plugin: safely read bytes
         
-        opt Si la ventana supera el umbral (ej. H(X) >= 7.2)
+        opt If window exceeds threshold (e.g. H(X) >= 7.2)
             Plugin->>Engine: host_api.emit_row(ctx, null, &[offset, tag, severity, entropy])
-            Engine->>Engine: Aplica `output.map` -> sqlite3_bind_* + sqlite3_step(insert_stmt)
+            Engine->>Engine: Apply `output.map` -> sqlite3_bind_* + sqlite3_step(insert_stmt)
         end
     end
 
     Plugin->>Engine: host_api.next_window(ctx, &win)
     Engine->>Engine: sqlite3_step(ranges_stmt) == SQLITE_DONE
-    Engine-->>Plugin: false (Fin del cursor)
+    Engine-->>Plugin: false (End of stream)
     Plugin-->>Engine: TaskStatus_ABI.ok
     Engine->>Engine: RELEASE SAVEPOINT task_step;
 ```
 
-### 3.2. Estructuras Exactas de la C-ABI (`callconv(.C)`)
+### 3.2. C-ABI Binary Structures (`callconv(.C)`)
 
 ```zig
 pub const VIDSEC_ABI_VERSION: u32 = 2;
@@ -260,19 +260,19 @@ pub const ValuePayload_ABI = extern union {
     },
 };
 
-/// Valor tipado universal para columnas de entrada, parámetros y campos de salida.
+/// Universal typed value for input columns, parameters, and output fields.
 pub const Value_ABI = extern struct {
     tag: ValueTag_ABI,
     payload: ValuePayload_ABI,
 };
 
-/// Par (nombre_campo, valor) emitido por el plugin o leído de una fila de entrada.
+/// Named field tuple emitted by plugin or returned from an input row cursor.
 pub const NamedField_ABI = extern struct {
     name_ptr: [*:0]const u8,
     value: Value_ABI,
 };
 
-/// Vista de una ventana acotada de bytes producida por `input.windows.ranges_sql`.
+/// View of a bounded byte window produced by `input.windows`.
 pub const WindowView_ABI = extern struct {
     window_id: i64,
     file_offset: u64,
@@ -281,7 +281,7 @@ pub const WindowView_ABI = extern struct {
     tag_len: usize,
 };
 
-/// Vista de una fila producida por un cursor `input.<name>.sql`.
+/// View of a row emitted by `input.<name>.sql`.
 pub const RowView_ABI = extern struct {
     fields_ptr: [*]const NamedField_ABI,
     fields_len: usize,
@@ -299,16 +299,16 @@ pub const HostError_ABI = enum(u32) {
 };
 
 pub const TaskStatus_ABI = enum(u32) {
-    ok = 0,                  // Continúa al siguiente paso tras RELEASE SAVEPOINT
-    recoverable_warning = 1, // Registra advertencia en el trace JSON y continúa
-    halt_pipeline = 2,       // Confirma cambios (RELEASE SAVEPOINT) y detiene limpiamente el pipeline (ej. tras cuarentena)
-    fatal_error = 3,         // Deshace cambios del paso (ROLLBACK TO SAVEPOINT) y aborta la ejecución
+    ok = 0,                  // Advances to next step after RELEASE SAVEPOINT
+    recoverable_warning = 1, // Logs warning in trace JSON and proceeds
+    halt_pipeline = 2,       // Commits changes (RELEASE SAVEPOINT) and cleanly terminates pipeline
+    fatal_error = 3,         // Rolls back step changes (ROLLBACK TO SAVEPOINT) and aborts
 };
 
-/// Tabla de servicios del Host (VTable). El plugin interactúa con el exterior
-/// ÚNICAMENTE invocando estos punteros a función.
+/// Host services Virtual Table (VTable). Plugins interact with the outside world
+/// EXCLUSIVELY by invoking these function pointers.
 pub const HostApiVTable_ABI = extern struct {
-    // --- 1. Entrada de Stream Crudo (`input.stream`) ---
+    // --- 1. Raw Stream Input (`input.stream`) ---
     stream_size: *const fn (ctx: *TaskContext_ABI) callconv(.C) u64,
     stream_read_at: *const fn (
         ctx: *TaskContext_ABI,
@@ -317,7 +317,7 @@ pub const HostApiVTable_ABI = extern struct {
         len: usize,
     ) callconv(.C) HostError_ABI,
 
-    // --- 2. Iterador Lazy de Ventanas (`input.windows`) ---
+    // --- 2. Lazy Window Iterator (`input.windows`) ---
     next_window: *const fn (
         ctx: *TaskContext_ABI,
         out_window: *WindowView_ABI,
@@ -331,25 +331,21 @@ pub const HostApiVTable_ABI = extern struct {
         len: usize,
     ) callconv(.C) HostError_ABI,
 
-    // --- 3. Iterador Lazy de Cursores de Filas (`input.<cursor_name>.sql`) ---
+    // --- 3. Lazy Row Cursor Iterator (`input.<cursor_name>.sql`) ---
     next_row: *const fn (
         ctx: *TaskContext_ABI,
         cursor_name: [*:0]const u8,
         out_row: *RowView_ABI,
     ) callconv(.C) HostError_ABI,
 
-    // --- 4. Parámetros de Tarea (`params:`) ---
+    // --- 4. Task Parameters (`params:`) ---
     get_param: *const fn (
         ctx: *TaskContext_ABI,
         key: [*:0]const u8,
         out_val: *Value_ABI,
     ) callconv(.C) HostError_ABI,
 
-    // --- 5. Sink de Salida de Datos (`output.into` / `output.tables`) ---
-    /// Emite una tupla de campos.
-    /// - Si la tarea escribe en una única tabla (`output.into`), `channel_name` puede ser `null`.
-    /// - Si la tarea escribe en múltiples tablas (`output.tables: [container_metadata, ir_regions]`),
-    ///   `channel_name` indica la tabla/canal destino (ej. "ir_regions").
+    // --- 5. Data Output Sink (`output.into` / `output.tables`) ---
     emit_row: *const fn (
         ctx: *TaskContext_ABI,
         channel_name: ?[*:0]const u8,
@@ -357,9 +353,7 @@ pub const HostApiVTable_ABI = extern struct {
         fields_len: usize,
     ) callconv(.C) HostError_ABI,
 
-    // --- 6. Operaciones Seguras de Fichero para CDR / Cuarentena ---
-    /// Solicita al Host clonar el stream de entrada actual a un artefacto de trabajo mutable
-    /// (usando CoW `FICLONE` si el FS lo soporta) y truncarlo o sobreescribir rangos con ceros.
+    // --- 6. Safe File Operations for CDR / Quarantine ---
     artifact_zero_range: *const fn (
         ctx: *TaskContext_ABI,
         offset: u64,
@@ -371,8 +365,6 @@ pub const HostApiVTable_ABI = extern struct {
         new_size: u64,
     ) callconv(.C) HostError_ABI,
 
-    /// Extrae un rango de bytes del stream de entrada a un fichero gestionado dentro del
-    /// directorio de cuarentena autorizado y devuelve su hash SHA-256 hex (64 bytes).
     carve_to_quarantine: *const fn (
         ctx: *TaskContext_ABI,
         offset: u64,
@@ -381,7 +373,7 @@ pub const HostApiVTable_ABI = extern struct {
         out_sha256_hex: *[64]u8,
     ) callconv(.C) HostError_ABI,
 
-    // --- 7. Observabilidad y Logs ---
+    // --- 7. Observability and Logging ---
     log_event: *const fn (
         ctx: *TaskContext_ABI,
         level: u8, // 0=debug, 1=info, 2=warn, 3=error
@@ -390,32 +382,27 @@ pub const HostApiVTable_ABI = extern struct {
     ) callconv(.C) void,
 };
 
-/// Contexto opaco entregado a cada invocación de tarea.
+/// Opaque context delivered to every task invocation.
 pub const TaskContext_ABI = extern struct {
     abi_version: u32 = VIDSEC_ABI_VERSION,
     opaque_host_state: *anyopaque,
     host: *const HostApiVTable_ABI,
 };
 
-/// Descriptor individual de una tarea dentro de un plugin.
+/// Individual descriptor for a task registered inside a plugin.
 pub const TaskDescriptor_ABI = extern struct {
     task_name: [*:0]const u8,
     description: [*:0]const u8,
-    /// Nombres de los campos que esta tarea puede emitir en `emit_row` (para validación pre-flight).
     output_fields_ptr: ?[*]const [*:0]const u8 = null,
     output_fields_len: usize = 0,
     execute: *const fn (ctx: *TaskContext_ABI) callconv(.C) TaskStatus_ABI,
 };
 
-/// Manifiesto exportado por cada librería `.so` mediante el símbolo `vidsec_module_manifest`.
+/// Manifest symbol exported by each `.so` via `vidsec_module_manifest`.
 pub const ModuleManifest_ABI = extern struct {
     abi_version: u32 = VIDSEC_ABI_VERSION,
     module_name: [*:0]const u8,
     module_version: SemVer_ABI,
-    /// Catálogo de 1..N tareas contenidas en este `.so`.
-    /// Si `tasks_len == 1` (o cuando en el YAML se invoca `use: <module>`),
-    /// el motor selecciona `tasks_ptr[0]` por defecto; si se invoca `use: <module>/<task>`,
-    /// busca el `TaskDescriptor_ABI` cuyo `task_name` coincida.
     tasks_ptr: [*]const TaskDescriptor_ABI,
     tasks_len: usize,
 };
@@ -423,7 +410,7 @@ pub const ModuleManifest_ABI = extern struct {
 
 ---
 
-## 4. Arquitectura Interna del Framework (`classDiagram`)
+## 4. Internal Framework Architecture (`classDiagram`)
 
 ```mermaid
 classDiagram
@@ -503,66 +490,62 @@ classDiagram
     HostExecutionContext --> SqliteRuntime
 ```
 
-### 4.1. Arquitectura Modular de Decodificación YAML (Sin *God Module*)
-Al igual que proyectos como `compose-go` en Docker Compose, el parseo y validación de `.yaml` no reside en un único módulo monolítico, sino que se divide en dos capas independientes con memoria efímera (`ArenaAllocator`):
-1. **Capa Sintáctica (`src/core/yaml/ast.zig` + `env.zig`):**
-   - Parsea cualquier texto YAML a un árbol ligero e inmutable de nodos `YamlNode` (`map`, `seq`, `scalar`) interpolando al vuelo las expresiones `${VAR:-default}` desde `.env`.
-2. **Decodificadores de Dominio Desacoplados (`src/core/yaml/loaders/`):**
-   - `schema_loader.zig`: Consume un `YamlNode` de `schemas.yaml` y construye `SchemaCatalog`.
-   - `module_decl_loader.zig`: Decodifica exclusivamente la sección `modules:`.
-   - `input_loader.zig` y `output_loader.zig`: Decodifican los contratos de `stream`, `windows`, cursores con `map` y salidas opcionales (`output:` puede omitirse en tareas sumidero como `quarantine`).
-   - `step_loader.zig`: Ensambla los pasos `task`, `sql_rule` y `router`.
-   - Una vez validados y compilados los planes en estructuras nativas Zig (`PipelineConfig` + `SchemaCatalog`), el `ArenaAllocator` del AST YAML se libera íntegramente antes de procesar ningún vídeo.
+### 4.1. Modular YAML Decoding Architecture (Avoiding God Modules)
+Following patterns established in Docker Compose (`compose-go`), YAML parsing is split across two decoupled layers operating in ephemeral arena memory:
+1. **Syntactic AST Layer (`src/core/yaml/ast.zig` + `env.zig`):** Parses arbitrary YAML into an immutable `YamlNode` tree while expanding `${VAR:-default}` expressions on the fly.
+2. **Domain Decoders (`src/core/yaml/loaders/`):**
+   - `schema_loader.zig`: Converts schema YAML nodes into `SchemaCatalog`.
+   - `module_decl_loader.zig`: Decodes the `modules:` map.
+   - `input_loader.zig` & `output_loader.zig`: Decodes input streams, windows, cursors, and output routing specs.
+   - `step_loader.zig`: Assembles executable `task`, `sql_rule`, and `router` steps.
+   - Once compiled into native Zig structures (`PipelineConfig` + `SchemaCatalog`), the AST `ArenaAllocator` is freed entirely before video processing begins.
 
 ---
 
-## 5. Garantías de Seguridad del Framework (Validación Pre-Flight y Runtime)
+## 5. Framework Security Guarantees (Pre-Flight and Runtime Validation)
 
-El Framework aplica **cinco barreras de seguridad automáticas** para garantizar que ni un archivo de vídeo malicioso ni un plugin con bugs pueda comprometer el sistema o corromper la base de datos:
+The Framework enforces **five automated security boundaries**:
 
-### 1. Compilación de `schemas.yaml` y Validación en Seco (*Pre-Flight SQL Validation*)
-Antes de abrir ningún archivo multimedia:
-1. El motor parsea `schemas.yaml` (`SchemaCatalog`), traduce los tipos primitivos (`int64`, `float64`, `bool`, `text`, `blob`) y referencias (`ref: tabla.col`) a sentencias `CREATE TABLE ... STRICT;` e inicializa SQLite en memoria o WAL.
-2. Para cada bloque `input` declarativo (`table` + `filter` + `map`), `SchemaCatalog.compileInputSelect` sintetiza la consulta `SELECT <expr> AS <plugin_field> FROM <table> WHERE <filter>` y la compila con `sqlite3_prepare_v2`.
-3. Verifica mediante `sqlite3_stmt_readonly(stmt) == 1` que **ninguna consulta generada de entrada, `sql_rule` o condición `when` de un `router` pueda modificar la base de datos** (impidiendo inyecciones de `DROP`, `DELETE`, `INSERT` o `PRAGMA` dañinos en los filtros).
-4. Pre-compila las sentencias parametrizadas `INSERT INTO <tabla> (...) VALUES (?1, ?2, ...)` (o `UPDATE`/`UPSERT`) correspondientes a los bloques `output.schema` y `output.into` + `output.map` (cuando el paso define `output:`), comprobando que todas las tablas y columnas existan en `schemas.yaml` y que los campos referenciados coincidan con `TaskDescriptor_ABI.output_fields_ptr`.
+### 1. Schema Compilation and Pre-Flight SQL Validation
+Before reading any media file:
+1. Translates `schemas.yaml` into strict SQLite DDL (`CREATE TABLE ... STRICT;`).
+2. Synthesizes input queries (`SELECT <expr> AS <plugin_field> FROM <table> WHERE <filter>`) and validates them using `sqlite3_prepare_v2`.
+3. Verifies via `sqlite3_stmt_readonly(stmt) == 1` that no input query, `sql_rule`, or `router.when` expression can mutate database state (blocking harmful `DROP`, `DELETE`, `INSERT`, or `PRAGMA` injections).
+4. Pre-compiles parameterized mutation statements (`INSERT INTO ... VALUES (...)`), validating all target columns against `schemas.yaml` and checking emitted fields against `TaskDescriptor_ABI.output_fields_ptr`.
 
-### 2. Validación de Grafo Acíclico en Routers (`goto`)
-Durante el *pre-flight*, el motor construye el grafo dirigido de saltos entre sub-pipelines (`router.cases.goto` y `router.default`) y verifica:
-- Que todo destino `goto` o `default` exista en el mapa `pipelines:`.
-- Que **no existan ciclos** en las transiciones entre sub-pipelines (algoritmo DFS con coloreado de nodos `white/gray/black`), garantizando terminación en tiempo finito.
+### 2. Acyclic Router Graph Validation
+During pre-flight validation, constructs the directed graph of sub-pipeline transitions (`router.cases.goto` and `router.default`) and verifies:
+* All destination labels exist within `pipelines:`.
+* **The sub-pipeline graph contains no cycles** (using Depth-First Search with three-color node marking), guaranteeing finite execution termination.
 
-### 3. Aislamiento de Ficheros y Aritmética Segura en `window_read_at`
-- Los plugins no reciben rutas ni descriptores `fd` del sistema operativo.
-- Cuando `next_window` lee `(id, offset, length, tag)` desde la consulta de entrada, el Host comprueba con `std.math.add(u64, offset, length)` que la ventana completa esté dentro de `[0, file_size]`.
-- Cuando el plugin invoca `window_read_at(ctx, &win, rel_offset, dest_ptr, len)`, el Host verifica que `rel_offset + len <= win.byte_length`, haciendo físicamente imposible que una tarea lea un solo byte fuera de las regiones autorizadas por su paso en el YAML.
+### 3. File Isolation and Safe Bounds Arithmetic in `window_read_at`
+* Plugins never hold raw OS file descriptors or path strings.
+* When `next_window` extracts `(id, offset, length, tag)`, the Host checks `std.math.add(u64, offset, length) <= file_size`.
+* When a plugin calls `window_read_at(ctx, &win, rel_offset, dest_ptr, len)`, the Host validates `rel_offset + len <= win.byte_length`, making out-of-bounds reading physically impossible.
 
-### 4. Atomicidad Transaccional por Paso (`SAVEPOINT`) y Tareas sin Output / Cortocircuito
-Cada vez que el motor inicia un paso `task`:
-- Abre un `SAVEPOINT step_<task_name>;` en SQLite.
-- Una tarea puede **no declarar bloque `output:`** si su propósito es actuar como sumidero o efecto lateral controlado (ej. `move_to_quarantine` usando `carve_to_quarantine` y devolviendo `TaskStatus_ABI.halt_pipeline`).
-- Si la tarea devuelve `ok` o `recoverable_warning`, el Host ejecuta `RELEASE SAVEPOINT` y pasa al siguiente paso.
-- Si la tarea devuelve `halt_pipeline`, el Host ejecuta `RELEASE SAVEPOINT` (persistiendo cualquier hallazgo o registro de cuarentena) y detiene limpiamente la ejecución del pipeline actual.
-- Si la tarea devuelve `fatal_error` o se produce un error en el `OutputSink`, el Host ejecuta `ROLLBACK TO SAVEPOINT step_<task_name>;` dejando la base de datos en un estado consistente.
+### 4. Step Transactional Atomicity (`SAVEPOINT`) and Output-Less Tasks
+Every task step executes within an isolated `SAVEPOINT step_<task_name>;`:
+* Tasks with no `output:` block act as controlled sinks (e.g. `quarantine` via `carve_to_quarantine` returning `halt_pipeline`).
+* On `ok` or `recoverable_warning`, the Host executes `RELEASE SAVEPOINT`.
+* On `halt_pipeline`, the Host executes `RELEASE SAVEPOINT` (retaining audit and quarantine records) and halts pipeline execution cleanly.
+* On `fatal_error`, the Host executes `ROLLBACK TO SAVEPOINT`, keeping database state consistent.
 
-### 5. Verificación de Permisos de Módulos `.so`
-Al cargar cada ruta declarada en `modules:`, `ModuleLoader` realiza `fstat` sobre el archivo `.so` y rechaza su carga (`error.InsecureModulePermissions`) si tiene bits de escritura para grupo u otros (`mode & 0o022 != 0`).
+### 5. Plugin Module Permission Verification
+When loading `.so` libraries declared in `modules:`, `ModuleLoader` executes `fstat` and rejects libraries (`error.InsecureModulePermissions`) with group- or world-writable bits (`mode & 0o022 != 0`).
 
 ---
 
-## 6. Observabilidad en Fichero JSON y Control de Ejecución (Runtime / Post-Mortem / GUI)
+## 6. Observability and Interactive Control (Runtime / Post-Mortem / GUI)
 
-Para no sobrecargar ni contaminar la base de datos SQLite del pipeline (que se reserva estrictamente para las tablas de dominio definidas en `schemas.yaml`), toda la telemetría, logging y control de pausas se gestiona fuera de SQLite:
+To avoid polluting or slowing down the pipeline database (which is reserved exclusively for domain tables defined in `schemas.yaml`), logging and telemetry are handled out-of-band:
 
-### 6.1. Trazabilidad y Logging en Fichero Estructurado (`../zig-out/out/trace.jsonl` / `.json`)
-El componente `ExecutionTracer` (`src/core/tracer.zig`) vuelca en un fichero JSON independiente (configurable en `engine.trace_file` o vía CLI `--trace-out <ruta.jsonl>`) cada evento del ciclo de vida:
-- **`step_start` / `step_end`**: Secuencia, sub-pipeline activo, nombre de la tarea, estado devuelto (`TaskStatus_ABI`), duración en microsegundos (`elapsed_us`), número de ventanas/filas leídas en los cursores *lazy* y número de filas emitidas en `emit_row`.
-- **`task_log`**: Mensajes emitidos por los plugins a través de `host.log_event(ctx, level, msg_ptr, msg_len)` con su timestamp y paso asociado.
-- **`router_decision`**: Qué cláusula `when` del `router` devolvió verdadero y a qué sub-pipeline (`goto` o `default`) saltó el motor.
+### 6.1. Structured Trace File (`../zig-out/out/trace.jsonl`)
+The `ExecutionTracer` component (`src/core/tracer.zig`) serializes execution lifecycle events into a separate JSONL file:
+* **`step_start` / `step_end`:** Sequence, sub-pipeline, task name, status (`TaskStatus_ABI`), elapsed microseconds, lazy rows pulled, and rows emitted.
+* **`task_log`:** Messages emitted by plugins via `host.log_event` with associated timestamps.
+* **`router_decision`:** Which `router.when` branch evaluated to true and which sub-pipeline was targeted.
 
-Este fichero JSON permite realizar **análisis post-ejecución** completo para detectar bugs, cuellos de botella o decisiones de enrutamiento inesperadas sin necesidad de consultar SQLite.
-
-### 6.2. Control de Pausa y Ejecución Step-by-Step (Runtime Hooks para Debugger / GUI)
-Los puntos de interrupción (*breakpoints*) y el avance paso a paso **no forman parte del `pipeline.yaml`** (manteniendo el YAML limpio de detalles de depuración), sino que se inyectan en el motor a través de un controlador de ejecución (`DebugController` en `PipelineEngine`):
-- **Durante la ejecución (CLI / GUI):** Una interfaz gráfica o el modo depuración de la CLI (`--step` o `--break-at <task_or_router_name>`) registra un callback en `DebugController`. El motor pausa la ejecución entre pasos (justo tras cerrar el `SAVEPOINT` del paso anterior), permitiendo a la GUI o al desarrollador inspeccionar el fichero de traza JSON y consultar en vivo el estado de las tablas SQLite antes de ordenar `step_next`, `continue` o `abort`.
-- **Análisis Posterior:** Combinando el fichero de traza JSON con el volcado opcional de la base de datos en disco (`db_mode: "wal_file"`), cualquier ejecución puede auditarse a posteriori paso por paso.
+### 6.2. Interactive Step-by-Step Control (Runtime Hooks for Debuggers and GUI)
+Breakpoints and single-stepping are **decoupled from `pipeline.yaml`** and managed dynamically via `DebugController`:
+* **Live Execution (CLI / GUI):** A GUI or `--step` / `--break-at` CLI flag registers callbacks with `DebugController`. The engine pauses execution between steps (immediately after releasing the step savepoint), allowing interactive state inspection before stepping, resuming, or aborting.
+* **Post-Mortem Triage:** Combining the JSONL trace file with WAL snapshots allows full offline time-travel debugging.

@@ -1,16 +1,16 @@
-# Referencia de Configuración Declarativa (`schemas.yaml`, `pipeline.yaml` y `.env`)
+# Declarative Configuration Reference (`schemas.yaml`, `pipeline.yaml`, and `.env`)
 
-Este documento especifica la gramática completa de los archivos de configuración de `vidsec v2`, todas las capacidades expresables desde YAML y la arquitectura modular con la que el motor las decodifica en memoria en Zig evitando un *God Module*.
+This document specifies the complete grammar of configuration files in `vidsec v2`, all capabilities expressible via YAML, and the modular Zig decoding architecture designed to avoid a monolithic *God Module*.
 
 ---
 
-## 1. Interpolación de Variables (`.env`)
+## 1. Environment Variable Interpolation (`.env`)
 
-Antes de interpretar los valores escalares de `pipeline.yaml`, el preprocesador de entorno (`src/core/yaml/env.zig`) resuelve variables procedentes del archivo `.env` o del entorno del proceso:
-- `${NOMBRE_VAR}`: Sustituye por el valor de la variable; falla en *pre-flight* (`error.MissingRequiredEnvVar`) si no está definida.
-- `${NOMBRE_VAR:-valor_por_defecto}`: Sustituye por el valor de la variable o usa `valor_por_defecto` si no está definida.
+Before parsing scalar values in `pipeline.yaml`, the environment preprocessor (`src/core/yaml/env.zig`) resolves variables from `.env` files or the operating system environment:
+* `${VAR_NAME}`: Replaced by the variable value; fails at pre-flight (`error.MissingRequiredEnvVar`) if undefined.
+* `${VAR_NAME:-default_value}`: Replaced by the variable value, or falls back to `default_value` if undefined.
 
-Ejemplo de `.env`:
+Example `.env`:
 ```dotenv
 VIDSEC_DB_MODE=memory
 VIDSEC_DB_TIMEOUT=5000
@@ -21,34 +21,34 @@ VIDSEC_WORK_DIR=/tmp/vidsec_work
 
 ---
 
-## 2. Especificación de `schemas.yaml` (Catálogo de Esquemas de Dominio)
+## 2. Specification of `schemas.yaml` (Domain Schema Catalog)
 
-El archivo `schemas.yaml` define la estructura relacional compartida por las tareas del pipeline. Está diseñado con una **biyección 1:1 con los tipos de la C-ABI (`ValueTag_ABI`) y SQLite `STRICT`**, evitando conversiones complejas de tipos.
+The `schemas.yaml` file defines the shared relational structure consumed by pipeline tasks. It maintains a **1:1 bijection with C-ABI types (`ValueTag_ABI`) and SQLite `STRICT` mode**, eliminating complex runtime type conversions.
 
-### 2.1. Tipos de Columna y Modificadores Soportados
+### 2.1. Supported Column Types and Modifiers
 
-| Tipo en `schemas.yaml` | Tipo en C-ABI (`ValueTag_ABI`) | Tipo en SQLite (`STRICT`) | Descripción |
+| Type in `schemas.yaml` | Type in C-ABI (`ValueTag_ABI`) | Type in SQLite (`STRICT`) | Description |
 | :--- | :--- | :--- | :--- |
-| `int64` | `.int64` (`i64`) | `INTEGER` | Enteros con signo de 64 bits (offsets, tamaños, IDs, severidades). |
-| `float64` | `.float64` (`f64`) | `REAL` | Coma flotante IEEE-754 de 64 bits (entropía, métricas, ratios). |
-| `bool` | `.boolean` (`bool`) | `INTEGER` | Booleano (`0` o `1`, con restricción `CHECK (col IN (0, 1))`). |
-| `text` | `.text` (`[]const u8`) | `TEXT` | Cadena UTF-8 validada. |
-| `blob` | `.blob` (`[]const u8`) | `BLOB` | Secuencia de bytes crudos arbitrarios. |
+| `int64` | `.int64` (`i64`) | `INTEGER` | Signed 64-bit integers (offsets, sizes, IDs, severities). |
+| `float64` | `.float64` (`f64`) | `REAL` | IEEE-754 64-bit floating point (entropy, metrics, ratios). |
+| `bool` | `.boolean` (`bool`) | `INTEGER` | Boolean (`0` or `1`, with `CHECK (col IN (0, 1))`). |
+| `text` | `.text` (`[]const u8`) | `TEXT` | Validated UTF-8 string. |
+| `blob` | `.blob` (`[]const u8`) | `BLOB` | Arbitrary raw byte sequence. |
 
-**Propiedades de cada columna:**
-- `type` *(obligatorio)*: `int64` | `float64` | `bool` | `text` | `blob`.
-- `pk` *(opcional, bool)*: Si es `true`, genera `PRIMARY KEY` (en `int64`, alias de `ROWID` autoincremental en SQLite).
-- `nullable` *(opcional, bool)*: Por defecto `false` (toda columna es `NOT NULL` salvo que se indique `nullable: true`).
-- `default` *(opcional, literal)*: Valor por defecto de la columna (`0`, `false`, `'unknown'`).
-- `ref` *(opcional, `<tabla>.<columna>`)*: Clave foránea simple (`REFERENCES <tabla>(<columna>)`).
+**Column Attributes:**
+* `type` *(mandatory)*: `int64` | `float64` | `bool` | `text` | `blob`.
+* `pk` *(optional, bool)*: If `true`, generates a `PRIMARY KEY` (for `int64`, acts as an autoincrementing `ROWID` alias in SQLite).
+* `nullable` *(optional, bool)*: Defaults to `false` (all columns are `NOT NULL` unless explicitly marked `nullable: true`).
+* `default` *(optional, literal)*: Default value for the column (`0`, `false`, `'unknown'`).
+* `ref` *(optional, `<table_name>.<column_name>`)*: Foreign key reference (`REFERENCES <table>(<column>)`).
 
-### 2.2. Ejemplo Completo de `schemas.yaml`
+### 2.2. Complete `schemas.yaml` Example
 
 ```yaml
 version: 2
 
 schemas:
-  # Dominio 1: Representación Intermedia Estructural (ContainerIR Básico)
+  # Domain 1: Structural Intermediate Representation (Basic ContainerIR)
   ir_core:
     container_metadata:
       columns:
@@ -72,7 +72,7 @@ schemas:
         - role
         - tag_name
 
-  # Dominio 2: Hallazgos de Seguridad y Cuarentena
+  # Domain 2: Forensic Security Findings and Quarantine
   audit:
     audit_findings:
       columns:
@@ -90,11 +90,11 @@ schemas:
 
 ---
 
-## 3. Especificación de `pipeline.yaml`
+## 3. Specification of `pipeline.yaml`
 
-El archivo `pipeline.yaml` se divide en 3 bloques de nivel superior: `engine`, `modules` y `pipelines`.
+The `pipeline.yaml` definition contains three top-level blocks: `engine`, `modules`, and `pipelines`.
 
-### 3.1. Bloque `engine` y Bloque `modules`
+### 3.1. `engine` and `modules` Blocks
 
 ```yaml
 version: 2
@@ -112,22 +112,22 @@ engine:
 modules:
   ir_builder:     { path: "./plugins/libm1_ir.so" }
   deep_extract:   { path: "./plugins/libm3_deep.so" }
-  byte_scanners:  { path: "./plugins/libfn_scanners.so" } # Contiene ej. `entropy_scan` y `sig_scan`
+  byte_scanners:  { path: "./plugins/libfn_scanners.so" } # Houses tasks e.g. `entropy_scan` and `sig_scan`
   quarantine:     { path: "./plugins/libfn_quarantine.so" }
   surgical_cdr:   { path: "./plugins/libm4_cdr.so" }
 ```
 
-**Formas de referenciar un módulo en `use:`:**
-1. `use: sql_rule`: Ejecutor SQL declarativo integrado en el motor (no requiere `.so`).
-2. `use: <module_name>`: Invoca la tarea por defecto (`tasks_ptr[0]`) del módulo `.so` (ej. `use: ir_builder`).
-3. `use: <module_name>/<task_name>`: Invoca una tarea específica dentro de un plugin multi-tarea (ej. `use: byte_scanners/entropy_scan`).
+**Module Reference Syntax in `use:`:**
+1. `use: sql_rule`: Built-in declarative SQL executor (requires no external `.so`).
+2. `use: <module_name>`: Invokes the default task (`tasks_ptr[0]`) from the module `.so` (e.g. `use: ir_builder`).
+3. `use: <module_name>/<task_name>`: Invokes a specific named task from a multi-task module (e.g. `use: byte_scanners/entropy_scan`).
 
 ---
 
-### 3.2. Los 5 Patrones de Paso (`steps`) en `pipelines:`
+### 3.2. Five Canonical Step Patterns (`steps`) in `pipelines:`
 
-#### Patrón 1: Tarea Productora de Esquema Completo (`output.schema`)
-Pensada para constructores de IR (`ir_builder`, `deep_extract`) que emiten registros hacia múltiples tablas de un dominio definido en `schemas.yaml` sin necesidad de mapear columna a columna en `pipeline.yaml`:
+#### Pattern 1: Full Domain Schema Producer (`output.schema`)
+Designed for IR lowering tasks (`ir_builder`, `deep_extract`) that emit records into multiple tables across a domain schema defined in `schemas.yaml` without manual column-by-column mapping:
 
 ```yaml
       - task: build_ir
@@ -138,8 +138,8 @@ Pensada para constructores de IR (`ir_builder`, `deep_extract`) que emiten regis
           schema: ir_core
 ```
 
-#### Patrón 2: Regla Declarativa Pura en SQL (`use: sql_rule`)
-Ejecuta un `SELECT` de solo lectura sobre las tablas existentes y vuelca las filas resultantes en la tabla indicada en `output.into`:
+#### Pattern 2: Pure Declarative SQL Rule (`use: sql_rule`)
+Executes a read-only `SELECT` query across existing tables and inserts the resulting rows into the table specified in `output.into`:
 
 ```yaml
       - task: check_magic_and_bounds
@@ -155,8 +155,8 @@ Ejecuta un `SELECT` de solo lectura sobre las tablas existentes y vuelca las fil
           into: audit_findings
 ```
 
-#### Patrón 3: Tarea Genérica con Mapeo Declarativo Simétrico (`input.map` + `output.map`)
-Permite reutilizar funciones genéricas (como `entropy_scan`) sin escribir SQL en los inputs. El motor traduce `table` + `filter` + `map` en un `SELECT <expr> AS <campo_plugin> FROM <table> WHERE <filter>` y entrega las ventanas de forma *lazy*:
+#### Pattern 3: Generic Task with Symmetric Declarative Mapping (`input.map` + `output.map`)
+Allows re-using generic functions (such as `entropy_scan`) without writing SQL in task inputs. The engine compiles `table` + `filter` + `map` into `SELECT <expr> AS <plugin_field> FROM <table> WHERE <filter>` and delivers windows lazily:
 
 ```yaml
       - task: scan_padding_r07
@@ -176,15 +176,15 @@ Permite reutilizar funciones genéricas (como `entropy_scan`) sin escribir SQL e
         output:
           into: audit_findings
           map:
-            rule_id: "'R07'"           # Literal constante (entre comillas simples)
-            file_offset: offset        # Campo emitido por el plugin
+            rule_id: "'R07'"           # Literal constant string
+            file_offset: offset        # Field emitted by the plugin
             region_tag: tag
             severity: severity
             measured_value: entropy
 ```
 
-#### Patrón 4: Tarea Sumidero sin `output:` (Efecto Lateral / Parada del Pipeline)
-El bloque `output:` es **opcional**. Tareas como `move_to_quarantine` consumen el stream y los hallazgos, extraen el archivo a cuarentena y pueden devolver `TaskStatus_ABI.halt_pipeline` para detener limpiamente el pipeline:
+#### Pattern 4: Output-Less Sink Task (Controlled Side-Effect / Pipeline Halt)
+The `output:` block is **optional**. Tasks such as `move_to_quarantine` consume file streams and findings, carve payloads to disk, and return `TaskStatus_ABI.halt_pipeline` to cleanly stop execution:
 
 ```yaml
       - task: move_to_quarantine
@@ -200,11 +200,11 @@ El bloque `output:` es **opcional**. Tareas como `move_to_quarantine` consumen e
               message: message
         params:
           quarantine_dir: "${VIDSEC_QUARANTINE_DIR}/rejected"
-        # Sin bloque `output:` (o solo registro interno en cuarentena)
+        # No `output:` block (clean terminal sink)
 ```
 
-#### Patrón 5: Enrutador Condicional (`router`)
-Bifurca la ejecución entre sub-pipelines evaluando consultas SQL en orden:
+#### Pattern 5: Conditional Router (`router`)
+Branches execution between sub-pipelines by evaluating SQL conditions sequentially:
 
 ```yaml
       - router: triage_gate
@@ -216,14 +216,14 @@ Bifurca la ejecución entre sub-pipelines evaluando consultas SQL en orden:
 
 ---
 
-## 4. Arquitectura de Decodificación YAML en Zig (Sin *God Module*)
+## 4. Modular YAML Decoding Architecture in Zig (Avoiding God Modules)
 
-Para evitar que el parser de YAML se convierta en un módulo monolítico acoplado a todas las estructuras del motor (al estilo de la separación modular de `compose-go`), la carga se divide en paquetes pequeños con responsabilidad única bajo `src/core/yaml/`:
+Following Docker Compose (`compose-go`) architectural patterns, YAML parsing is split across small, single-responsibility loaders under `src/core/yaml/`:
 
 ```mermaid
 flowchart LR
-    RawYAML["Texto .yaml + .env"] --> Env["1. env.zig\nInterpolación ${VAR}"]
-    Env --> AST["2. ast.zig\nÁrbol Sintáctico Puro (YamlNode)\nsobre ArenaAllocator temporal"]
+    RawYAML[".yaml Text + .env"] --> Env["1. env.zig\nInterpolates ${VAR}"]
+    Env --> AST["2. ast.zig\nPure Syntactic Tree (YamlNode)\non temporary ArenaAllocator"]
 
     AST --> L1["schema_loader.zig\n-> SchemaCatalog"]
     AST --> L2["engine_loader.zig\n-> EngineSettings"]
@@ -235,11 +235,11 @@ flowchart LR
     L4 --> L4C["router_spec.zig\n(cases / when / goto)"]
 ```
 
-| Submódulo Zig (`src/core/yaml/`) | Responsabilidad Única |
+| Zig Submodule (`src/core/yaml/`) | Single Responsibility |
 | :--- | :--- |
-| `env.zig` | Carga `.env` y expande `${VAR}` / `${VAR:-default}` sobre un `ArenaAllocator`. |
-| `ast.zig` | Convierte texto YAML en nodos genéricos `YamlNode` (`map`, `seq`, `scalar`) con línea/columna para mensajes de error claros. No conoce nada del dominio de `vidsec`. |
-| `loaders/schema_loader.zig` | Recorre el `YamlNode` de `schemas.yaml`, valida los 5 tipos primitivos y construye `SchemaCatalog`. |
-| `loaders/input_spec.zig` | Decodifica `input:` (`stream`, `windows`, cursores de tabla con `filter` y `map`) y genera la estructura `InputSpec`. |
-| `loaders/output_spec.zig` | Decodifica `output:` opcional (`schema:` o `into:` + `mode:` + `map:` + `artifact:`). |
-| `loaders/step_loader.zig` | Decodifica cada ítem de `steps:` discriminando si contiene la clave `task:` o `router:`. |
+| `env.zig` | Loads `.env` and expands `${VAR}` / `${VAR:-default}` over an `ArenaAllocator`. |
+| `ast.zig` | Converts raw YAML text into generic `YamlNode` elements (`map`, `seq`, `scalar`) with line/column tracking for compiler-grade error reporting. Free of Vidsec domain knowledge. |
+| `loaders/schema_loader.zig` | Traverses the `schemas.yaml` AST, validates the 5 primitive types, and constructs `SchemaCatalog`. |
+| `loaders/input_spec.zig` | Decodes `input:` (`stream`, `windows`, table cursors with `filter` and `map`) and generates `InputSpec`. |
+| `loaders/output_spec.zig` | Decodes optional `output:` structures (`schema:`, or `into:` + `mode:` + `map:` + `artifact:`). |
+| `loaders/step_loader.zig` | Decodes `steps:` list entries, discriminating between `task:` and `router:` step definitions. |

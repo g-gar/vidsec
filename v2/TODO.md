@@ -1,18 +1,18 @@
-# Hoja de Ruta de Evolución y Casos Avanzados (`vidsec v2 TODO`)
+# Evolution Roadmap and Advanced Cases (`vidsec v2 TODO`)
 
-Este documento recoge funcionalidades deseables y casos borde de diseño que **no forman parte del alcance mínimo inicial del Framework v2**, pero cuya arquitectura ya se ha dejado preparada para incorporarlos sin romper la C-ABI (`VIDSEC_ABI_VERSION = 2`).
+This document records desirable capabilities and architectural edge cases that are **outside the initial minimal scope of Framework v2**, but whose architecture has been proactively prepared to incorporate them without breaking the C-ABI (`VIDSEC_ABI_VERSION = 2`).
 
 ---
 
-## 1. Ejecución Simultánea de Tareas (`Fan-Out / Fan-In`) y Convergencia de Outputs
+## 1. Concurrent Task Execution (`Fan-Out / Fan-In`) and Output Convergence
 
-### Caso de Uso
-Ejecutar varias tareas independientes en paralelo (por ejemplo, lanzar simultáneamente `entropy_scan` sobre regiones de *padding* y `signature_scan` sobre adjuntos, o ejecutar varios extractores de metadatos a la vez) y **juntar sus outputs como entrada de una tarea posterior** (o de un `router`).
+### Use Case
+Execute multiple independent tasks in parallel (e.g., launching `entropy_scan` on padding regions concurrently with `signature_scan` on attachments, or running multiple metadata extractors at once) and **converging their outputs as inputs for a downstream task** (or a `router`).
 
-### Diseño Previsto en `pipeline.yaml`
+### Planned `pipeline.yaml` Specification
 ```yaml
-      # Bloque fan-out: todas las tareas del bloque `parallel` ven el estado SQLite
-      # previo al bloque y se ejecutan concurrentemente en un ThreadPool del Host.
+      # Fan-out block: all tasks within `parallel` observe the SQLite state
+      # prior to the block and execute concurrently on a Host ThreadPool.
       - parallel: heuristic_scanners
         tasks:
           - task: scan_padding_entropy
@@ -39,8 +39,8 @@ Ejecutar varias tareas independientes en paralelo (por ejemplo, lanzar simultán
               into: audit_findings
               map: { rule_id: "'R07_SIG'", file_offset: offset, region_tag: tag, severity: severity, message: sig_name }
 
-      # Fan-in natural: el siguiente paso (task o router) se ejecuta cuando TODAS las ramas
-      # del bloque `parallel` han terminado, leyendo los outputs combinados en `audit_findings`:
+      # Natural Fan-In: the subsequent step (task or router) executes when ALL branches
+      # of the `parallel` block have completed, reading combined outputs in `audit_findings`:
       - task: correlate_heuristics
         use: correlator
         input:
@@ -50,50 +50,60 @@ Ejecutar varias tareas independientes en paralelo (por ejemplo, lanzar simultán
             map: { rule: rule_id, offset: file_offset, severity: severity }
 ```
 
-### Cómo lo soportará el Host sin tocar los Plugins
-Gracias a que en `v2` los plugins **no tienen puntero `*sqlite3`** y solo usan `HostApiVTable_ABI`:
-1. **Lectura concurrente (`next_window` / `next_row`):** En modo `WAL`, cada hilo del bloque `parallel:` abre su propia conexión SQLite de **solo lectura** (`SQLITE_OPEN_READONLY`) y su propio `SafeCursor` (`pread` posicional thread-safe sobre el descriptor del archivo).
-2. **Escritura convergente (`emit_row`):** Las llamadas a `emit_row` desde los hilos de trabajo se encolan en un canal MPSC (*Multi-Producer, Single-Consumer*) hacia el hilo coordinador del Host, que ejecuta los `INSERT` sobre la conexión maestra dentro de la transacción del bloque paralelo.
+### Host Support Architecture (Zero Plugin Modifications)
+Because v2 plugins **hold no direct `*sqlite3` pointer** and interact exclusively via `HostApiVTable_ABI`:
+1. **Concurrent Reading (`next_window` / `next_row`):** Under SQLite `WAL` mode, each thread in a `parallel:` block opens its own **read-only** SQLite connection (`SQLITE_OPEN_READONLY`) and dedicated `SafeCursor` (thread-safe positional `pread` on the file descriptor).
+2. **Convergent Writing (`emit_row`):** Calls to `emit_row` from worker threads queue into an MPSC (*Multi-Producer, Single-Consumer*) channel feeding the Host coordinator thread, which executes `INSERT` statements over the master connection within the parallel block's transaction.
 
 ---
 
-## 2. Depurador Step-by-Step para GUI / CLI y Analizador Post-Ejecución sobre Traza JSON
+## 2. Step-by-Step Interactive Debugger (GUI / CLI) and Post-Mortem Trace Analysis
 
-### Caso de Uso
-Aprovechar el fichero de traza estructurado (`../zig-out/out/trace.jsonl`) y el controlador de ejecución del motor (`DebugController`) para permitir tanto la **inspección en vivo desde una GUI o CLI** como el **análisis post-mortem** de ejecuciones pasadas para cazar bugs sin contaminar el `pipeline.yaml` ni sobrecargar SQLite.
+### Use Case
+Leverage the structured execution trace (`../zig-out/out/trace.jsonl`) and the engine controller (`DebugController`) to support both **live interactive inspection from a GUI or CLI** and **post-mortem triage** of past runs without altering `pipeline.yaml` or adding overhead to SQLite.
 
-### Capacidades Previstas
-- **Control en Vivo (Runtime Hooks para GUI / CLI `--step` o `--break-at <step_name>`):**
-  - Pausa la ejecución entre pasos desde el controlador externo (sin tocar el YAML).
-  - Permite avanzar paso a paso (`step_next`), continuar hasta un paso específico (`continue_until`), consultar el estado actual de las tablas SQLite o abortar la corrida.
-- **Análisis Post-Ejecución (*Time-Travel / Post-Mortem* sobre `../zig-out/out/trace.jsonl`):**
-  - El fichero JSON registra cada transición (`step_start`, `task_log`, `step_end` con duración, filas leídas/emitidas y `router_decision`).
-  - Opcionalmente, en modo diagnóstico, puede volcar snapshots incrementales de las filas emitidas en cada paso dentro del JSON para reconstruir exactamente qué vio y qué produjo cada tarea después de que el pipeline haya terminado.
-
----
-
-## 3. Gestión de Recursos, Límites de Memoria y Almacenamiento Remoto vía `.env`
-
-- **Cuota de Memoria por Tarea (`max_task_memory_mb`):** Exponer un asignador o `CountingAllocator` en el Host o límites `setrlimit` / `cgroup` para abortar tareas que superen el umbral configurado en `.env`.
-- **Streams y Cuarentena Remota Transparente (SSH / SFTP / S3):** Dado que los plugins leen bytes exclusivamente mediante `host.stream_read_at` y extraen payloads mediante `host.carve_to_quarantine`, el Host podrá montar orígenes o destinos remotos configurados con credenciales en `.env` sin modificar ni recompilar ningún plugin `.so`.
+### Planned Capabilities
+* **Live Control (Runtime Hooks for GUI / CLI `--step` or `--break-at <step_name>`):**
+  * Pauses execution between steps via an external controller.
+  * Allows single-stepping (`step_next`), running until a target step (`continue_until`), querying current SQLite table states, or aborting execution cleanly.
+* **Post-Mortem Analysis (*Time-Travel / Post-Mortem* over `../zig-out/out/trace.jsonl`):**
+  * The JSONL file logs each state transition (`step_start`, `task_log`, `step_end` with duration, rows read/emitted, and `router_decision`).
+  * In diagnostic mode, can serialize incremental snapshots of rows emitted at each step into the JSON stream, reconstructing exact pipeline state offline.
 
 ---
 
-## 4. Integración de Google Magika (`libmagika`) para Clasificación Dual y Alineación con VirusTotal
+## 3. Resource Management, Memory Quotas, and Remote Storage via `.env`
 
-### Caso de Uso
-Complementar el escáner forense determinista de firmas ([`src/lib/magic/`](file:///home/ubuntu/.gemini/antigravity/scratch/vidsec/src/lib/magic/)) con el modelo de *Deep Learning* **Google Magika** empleado por **VirusTotal**, permitiendo detección anticipada de evasión (*spoofing* de cabeceras, ejecutables camuflados como MP4) y enriquecimiento de metadatos con scores probabilísticos de confianza.
+* **Task Memory Quotas (`max_task_memory_mb`):** Expose an allocator wrapper or `CountingAllocator` in the Host with `setrlimit` / `cgroup` thresholds to terminate rogue tasks exceeding memory limits.
+* **Transparent Remote Streams and Quarantine (SSH / SFTP / S3):** Because plugins read bytes exclusively via `host.stream_read_at` and extract payloads via `host.carve_to_quarantine`, the Host can mount remote origins and destinations configured via `.env` credentials without altering plugin `.so` binaries.
 
-Para el análisis técnico detallado, comparativa de rendimiento y trade-offs de compilación, consultar el documento de diseño específico:
-👉 [`v2/development/magika.md`](file:///home/ubuntu/.gemini/antigravity/scratch/vidsec/v2/development/magika.md)
+---
 
-### Puntos Clave de la Integración
-1. **Validación Cruzada Dual (*Dual-Engine Verification*):**
-   - Comparación en SQLite entre la estructura física analizada por `vidsec_magic` y la clasificación neuronal de Magika (`magika_label` + `magika_score`).
-   - Detección inmediata de anomalías cuando los primeros bytes parecen un contenedor multimedia válido pero la red neuronal clasifica el cuerpo como `pebin`, `elf` o `script`.
-2. **Preservación de la Autonomía de Compilación:**
-   - Mantener el motor base `vidsec` 100% puro en Zig (cero dependencias externas de Rust/Python/ONNX).
-   - Encapsular `libmagika` como un **plugin C-ABI opcional** (`vidsec_magika.so`), activable dinámicamente mediante `pipeline.yaml` cuando las librerías nativas o el CLI estén presentes en el entorno.
-3. **Estandarización de Esquema e Informes:**
-   - Alinear los campos de `file_triage` con las convenciones de Magika/VirusTotal (`ct_label`, `score`, `group`, `mime_type`).
-   - Exponer la etiqueta y confianza de Magika en las vistas ejecutivas (`v_executive_summary`) e informes de auditoría (PDF/LaTeX).
+## 4. Google Magika (`libmagika`) Integration for Dual Verification and VirusTotal Alignment
+
+### Use Case
+Complement the deterministic signature scanner ([`src/lib/magic/`](../src/lib/magic/)) with the **Google Magika** Deep Learning model used by **VirusTotal**, enabling pre-emptive evasion detection (header spoofing, disguised executables) and enriching metadata with probabilistic confidence metrics.
+
+For the in-depth technical analysis and integration architecture, see the dedicated specification:
+👉 [`v2/development/magika.md`](./development/magika.md)
+
+### Key Architectural Pillars
+1. **Dual-Engine Verification:**
+   * SQLite / In-Memory correlation between physical structure (`vidsec_magic`) and neural classification (`magika_label` + `magika_score`).
+   * Immediate anomaly alerting when initial bytes mimic a valid media container but the neural net identifies executable content (`pebin`, `elf`, `script`).
+2. **Preserving Compilation Autonomy:**
+   * Maintain the core `vidsec` engine 100% pure native Zig (zero external dependencies on Rust/Python/ONNX).
+   * Encapsulate `libmagika` as an **optional C-ABI plugin** (`vidsec_magika.so`), dynamically loaded via `pipeline.yaml` when host libraries or the CLI are present.
+3. **Schema and Reporting Standardization:**
+   * Align `file_triage` attributes with Magika/VirusTotal conventions (`ct_label`, `score`, `group`, `mime_type`).
+   * Expose Magika labels and confidence metrics in executive summary views (`v_executive_summary`) and audit reports (PDF/LaTeX).
+
+---
+
+## 5. Distributed Cluster Computing (Coordinator / Worker)
+
+### Use Case
+Scale heavy analytical workloads across server farms or heterogeneous clusters by deploying worker daemons (`vidsec worker`), enabling distributed stream chunking (*Distributed Chunked Map*) and concurrent multi-node DAG execution (*Distributed Fan-Out*).
+
+For the in-depth technical analysis, network protocol, data locality strategies, and configuration schemas, see the dedicated specification:
+👉 [`v2/development/cluster.md`](./development/cluster.md)

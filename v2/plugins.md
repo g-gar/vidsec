@@ -1,118 +1,116 @@
-# Arquitectura del Catálogo de Plugins y Tareas (`vidsec v2`)
+# Plugin and Task Catalog Architecture (`vidsec v2`)
 
-## 1. Filosofía de Diseño de Plugins en `v2`
+## 1. Plugin Design Philosophy in `v2`
 
-En `vidsec v2`, el motor (`framework`) **no impone el uso de la Representación Intermedia (IR)**. El sistema se concibe como un ecosistema abierto de plugins donde conviven dos modos de trabajo:
+In `vidsec v2`, the framework engine **does not mandate the use of the Intermediate Representation (IR)**. The architecture establishes an open plugin ecosystem accommodating two distinct operational paradigms:
 
-1. **Flujo basado en IR Unificado (Antivirus Multi-Formato):**
-   - Cada familia de contenedor (`isobmff`, `ebml`, `riff`) implementa su propio traductor hacia el esquema común `ir_core` / `ir_deep` (apoyándose en una librería helper estática común `src/sdk/ir_contract.zig` para no repetir las estructuras de emisión).
-   - Una vez proyectado el contenedor al IR en SQLite, todas las reglas SQL (`sql_rule`), escáneres de bytes (`entropy_scan`, `signature_scan`) y sanitizadores quirúrgicos (`surgical_cdr`) operan de forma 100% agnóstica al formato original.
-2. **Flujo Directo / Independiente del IR (Pre-Triage y Post-Procesado Específico):**
-   - Tareas que operan directamente sobre el stream del archivo sin construir ni consultar el IR: desde el **pre-triage inicial** (detección de *magic bytes* y límites de tamaño anti-DoS) hasta **transformaciones específicas de un formato** (ej. reordenar el átomo `moov` en un MP4) o **filtros de post-procesado multimedia** (ej. pasar un vídeo a blanco y negro, normalizar audio o limpiar subtítulos).
+1. **Unified IR-Based Flow (Multi-Format Forensic Antivirus):**
+   - Each container family (`isobmff`, `ebml`, `riff`) implements its own lowering parser targeting the common `ir_core` / `ir_deep` schema (leveraging a shared compile-time helper library `src/sdk/ir_contract.zig` to eliminate boilerplate).
+   - Once mapped to the relational IR, declarative SQL rules (`use: sql_rule`), byte scanners (`entropy_scan`, `signature_scan`), and content disarm tools (`surgical_cdr`) operate in a manner **100% format-agnostic**.
+2. **Direct / IR-Independent Flow (Pre-Triage and Format-Specific Transforms):**
+   - Tasks operating directly against the input byte stream without instantiating or querying the IR: ranging from **initial pre-triage** (magic bytes inspection, anti-DoS size enforcement) to **format-specific binary manipulations** (e.g. reordering the `moov` atom in MP4s) and **multimedia post-processing filters** (e.g. grayscale conversion, audio normalization, subtitle stripping).
 
 ```mermaid
 flowchart TB
-    Input["Fichero de Entrada"] --> Triage["1. Módulo `triage` (Independiente del IR)\ntriage/probe_file: Magic Bytes + Límites de Tamaño Anti-DoS"]
+    Input["Input Media File"] --> Triage["1. Module `triage` (IR-Independent)\ntriage/probe_file: Magic Bytes + Anti-DoS Size Bounds"]
 
-    Triage --> RouterFormat{"Router por Familia / Amenaza"}
-    RouterFormat -->|"true_magic == ejecutable (R01)\no tamaño > límite DoS"| Quarantine["4. Módulo `cdr` (quarantine)\nAísla fichero y detiene pipeline (halt_pipeline)"]
+    Triage --> RouterFormat{"Format / Threat Router"}
+    RouterFormat -->|"true_magic == executable (R01)\nor file_size > DoS limit"| Quarantine["4. Module `cdr` (quarantine)\nIsolate file and halt pipeline (halt_pipeline)"]
 
-    subgraph FormatPlugins ["2. Módulos por Formato (Cada formato controla su parseo)"]
+    subgraph FormatPlugins ["2. Format Modules (Each format governs its parser)"]
         direction LR
-        MP4["Módulo `isobmff` (.mp4/.mov/.m4a)\n- to_ir_core / to_ir_deep\n- tareas directas MP4 (sin IR)"]
-        MKV["Módulo `ebml` (.mkv/.webm)\n- to_ir_core / to_ir_deep\n- tareas directas MKV (sin IR)"]
-        AVI["Módulo `riff` (.avi)\n- to_ir_core / to_ir_deep\n- tareas directas AVI (sin IR)"]
+        MP4["Module `isobmff` (.mp4/.mov/.m4a)\n- to_ir_core / to_ir_deep\n- direct MP4 tasks (no IR)"]
+        MKV["Module `ebml` (.mkv/.webm)\n- to_ir_core / to_ir_deep\n- direct MKV tasks (no IR)"]
+        AVI["Module `riff` (.avi)\n- to_ir_core / to_ir_deep\n- direct AVI tasks (no IR)"]
     end
 
     RouterFormat -->|"family == 'isobmff'"| MP4
     RouterFormat -->|"family == 'ebml'"| MKV
     RouterFormat -->|"family == 'riff'"| AVI
 
-    MP4 & MKV & AVI -->|"Vuelcan al esquema común `ir_core` / `ir_deep`\n(con protección anti-DoS de profundidad y nº de cajas)"| IR[("Tablas SQLite del IR\n(ir_regions, ir_sample_extents...)")]
+    MP4 & MKV & AVI -->|"Populate shared `ir_core` / `ir_deep` schema\n(with depth and box count DoS guards)"| IR[("SQLite IR Tables\n(ir_regions, ir_sample_extents...)")]
 
-    IR --> Audit["3. Auditoría Universal sobre IR\n- Reglas declarativas (`use: sql_rule`: R02..R06, R09, R10)\n- Módulo `scanners` (`entropy_scan`, `signature_scan`: R02, R07, R08)"]
+    IR --> Audit["3. Universal Audit over IR\n- Declarative rules (`use: sql_rule`: R02..R06, R09, R10)\n- Module `scanners` (`entropy_scan`, `signature_scan`: R02, R07, R08)"]
 
-    Audit --> RouterVerdict{"Router Post-Auditoría"}
-    RouterVerdict -->|"Amenaza Estructural Crítica"| Quarantine
-    RouterVerdict -->|"Sanitizable (Padding / Overlay / Slack)"| SurgicalCDR["4. Módulo `cdr` (`surgical_cdr`)\nTrunca overlay y rellena con 0x00 regiones sospechosas\n-> Genera artefacto `sanitized_video`"]
+    Audit --> RouterVerdict{"Post-Audit Router"}
+    RouterVerdict -->|"Critical Structural Threat"| Quarantine
+    RouterVerdict -->|"Sanitizable (Padding / Overlay / Slack)"| SurgicalCDR["4. Module `cdr` (`surgical_cdr`)\nTruncate overlay & zero-out suspicious regions\n-> Produce `sanitized_video` artifact"]
 
-    SurgicalCDR --> PostProc["5. Módulos de Post-Procesado (Independientes del IR)\nOperan directamente sobre `sanitized_video`:\n- Pasar a blanco y negro / recodificar\n- Normalizar audio / extraer miniaturas"]
+    SurgicalCDR --> PostProc["5. Post-Processing Modules (IR-Independent)\nOperate directly on `sanitized_video`:\n- Grayscale conversion / recode\n- Audio normalization / thumbnail extraction"]
 ```
 
 ---
 
-## 2. Catálogo de Módulos (`.so`) y sus Tareas
+## 2. Dynamic Module Catalog (`.so`) and Task Signatures
 
-### Categoría 1: Pre-Triage y Defensa Inicial Anti-DoS (`libtriage.so`)
-Completamente independiente del IR. Es la primera barrera ultrarrápida (ejecutada en microsegundos leyendo solo la cabecera del archivo y su tamaño en disco).
+### Category 1: Pre-Triage and Anti-DoS Gatekeeping (`libtriage.so`)
+Completely independent of the IR. Acts as an ultra-fast first line of defense (executing in sub-millisecond time by sampling only file headers and filesystem metadata).
 
-| Tarea (`module/task`) | Inputs | Params | Output | Responsabilidad |
+| Task (`module/task`) | Inputs | Params | Output | Responsibility |
 | :--- | :--- | :--- | :--- | :--- |
-| `triage/probe_file` | `stream: { from: file }` | `max_file_size_mb`, `strict_extension` | Tabla `file_triage` (`file_size`, `detected_family`, `true_magic_kind`, `true_magic_name`, ` exceeds_size_limit`) | Identifica la firma real (*magic bytes*) distinguiendo contenedores legítimos (`isobmff`, `ebml`, `riff`) de ejecutables/archivos camuflados (`MZ`, `ELF`, `Mach-O`, `ZIP`, scripts $\rightarrow$ `R01`) y verifica que el tamaño físico no viole los límites anti-DoS. |
+| `triage/probe_file` | `stream: { from: file }` | `max_file_size_mb`, `strict_extension` | Table `file_triage` (`file_size`, `detected_family`, `true_magic_kind`, `true_magic_name`, `exceeds_size_limit`) | Identifies genuine container signatures (*magic bytes*), distinguishing valid media (`isobmff`, `ebml`, `riff`) from disguised executables (`MZ`, `ELF`, `Mach-O`, `ZIP`, scripts $\rightarrow$ `R01`) and enforcing anti-DoS size limits. |
 
 ---
 
-### Categoría 2: Plugins de Formato y Construcción del IR (`libisobmff.so`, `libebml.so`, `libriff.so` + SDK IR)
+### Category 2: Format Plugins and IR Lowering (`libisobmff.so`, `libebml.so`, `libriff.so` + IR SDK)
 
-Para mantener una interfaz de datos única cuando se desea usar el IR, existe un paquete ligero compartido en tiempo de compilación (**`src/sdk/ir_emitter.zig`**) que define los helpers para emitir filas hacia los esquemas `ir_core` e `ir_deep` a través de `host.emit_row`. Sin embargo, **cada formato vive en su propio plugin** y decide cómo recorrer su estructura binaria y qué tareas adicionales ofrecer:
+To maintain a uniform interface across formats, a shared compile-time package (**`src/sdk/ir_emitter.zig`**) provides helpers for emitting records into `ir_core` and `ir_deep` schemas via `host.emit_row`. However, **each format resides in its own isolated plugin**, governing its parser and exposing specialized tasks:
 
-#### A) Protección Anti-DoS Integrada en los Walkers de Formato
-Al recorrer cajas (`ISOBMFF`), elementos (`EBML`) o chunks (`RIFF`), cada driver aplica tres cortafuegos contra ataques de agotamiento de recursos (*Parser DoS*):
-1. **`max_depth` (por defecto `32`):** Evita *Stack Overflow* / recursión infinita mediante árboles de cajas maliciosamente anidados (*Box Nesting Bombs*).
-2. **`max_regions` (por defecto `250_000`):** Evita *Box Flooding* (archivos con millones de cajas vacías de 8 bytes diseñadas para agotar CPU y memoria).
-3. **`max_samples` (por defecto `5_000_000`):** Limita el número de entradas procesadas en tablas `stsz`/`stco` falsificadas.
+#### A) Anti-DoS Safeguards in Format Walkers
+When traversing atoms (`ISOBMFF`), elements (`EBML`), or chunks (`RIFF`), each parser enforces three resource-exhaustion firewalls (*Parser DoS*):
+1. **`max_depth` (default `32`):** Prevents stack overflow / infinite recursion from maliciously nested hierarchies (*Box Nesting Bombs*).
+2. **`max_regions` (default `250_000`):** Blocks *Box Flooding* (files packing millions of empty 8-byte boxes designed to exhaust CPU and memory).
+3. **`max_samples` (default `5_000_000`):** Limits sample table entries processed in forged `stsz`/`stco` tables.
 
-#### B) Tareas Expuestas por cada Plugin de Formato (`isobmff`, `ebml`, `riff`)
+#### B) Format Plugin Task Interface (`isobmff`, `ebml`, `riff`)
 
-Gracias a que cada plugin de formato puede tanto **producir el IR (`to_ir_*`)** como **consumir el IR (`from_ir`)** o **operar directamente sobre el contenedor nativo**, es posible realizar compactación física (reducción de tamaño eliminando *padding*/*slack*/adjuntos) y conversión entre formatos (*trans-muxing* de MKV a MP4 o viceversa) **100% en Zig nativo sin depender de herramientas externas como `ffmpeg`**:
+Because format plugins can **produce the IR (`to_ir_*`)**, **consume the IR (`from_ir`)**, or **manipulate native containers directly**, physical compaction and format conversion (*trans-muxing* from MKV to MP4 or vice versa) execute **100% in native Zig without external dependencies like FFmpeg**:
 
-| Tarea (`<formato>/<tarea>`) | ¿Usa el IR? | Inputs | Output | Descripción |
+| Task (`<format>/<task>`) | Uses IR? | Inputs | Output | Description |
 | :--- | :---: | :--- | :--- | :--- |
-| `<formato>/to_ir_core` | **Sí** (Frontend $\rightarrow$ `ir_core`) | `stream: { from: file }` | `schema: ir_core` (`ir_regions`, `container_stats`) | Navega el árbol superficial de regiones del contenedor, calculando límites de padres, `highest_root_end` (para `R02`) y desbordamientos aritméticos (`is_truncated_or_overflow` para `R03`). |
-| `<formato>/to_ir_deep` | **Sí** (`ir_core` $\rightarrow$ `ir_deep`) | `stream` + regiones de índice de `ir_regions` | `schema: ir_deep` (`ir_sample_extents`, `ir_unreferenced_slack`, `ir_codec_configs`, `ir_attachments`, `ir_external_refs`) | Parseo profundo de tablas de muestras (`stbl` en MP4/M4A, `Cues` en MKV, `idx1` en AVI), cálculo de *slack space* huérfano dentro de `mdat`/`movi` (`R08`), validación de SPS `avcC`/`hvcC` vs pista (`R09`), adjuntos (`R06`) y referencias externas (`R05`). |
-| `<formato>/from_ir` | **Sí** (Backend `ir_deep` $\rightarrow$ Contenedor limpio) | `stream: { from: file }`, tablas `ir_sample_extents` e `ir_codec_configs` | `artifact: rebuilt_container` | **Reconstrucción / Conversión entre Formatos sin FFmpeg:** Construye desde cero un contenedor limpio en el formato `<formato>` copiando únicamente los *extents* de muestras legítimas y configuraciones de códec del IR. Permite tanto sanitización por reconstrucción (eliminando físicamente el peso de *padding*, *slack* y adjuntos) como *trans-muxing* nativo (ej. `ebml/to_ir_*` $\rightarrow$ `isobmff/from_ir`). |
-| `<formato>/compact` *(Directo sobre formato)* | **No** (o híbrido) | `stream: { from: sanitized_video }` | `artifact: compacted_video` | **Reducción de tamaño nativa sin FFmpeg:** Purga cajas de *padding* (`free`/`skip`/`Void`/`JUNK`), metadatos no esenciales y *slack*, desplazando los paquetes y recalculando las tablas de offsets (`stco`/`co64`) nativamente. |
-| `isobmff/faststart` *(Directo sobre formato)* | **No** | `stream: { from: sanitized_video }` | `artifact: faststart_mp4` | Tarea específica de formato MP4/M4A que opera directamente sobre el binario sin usar el IR (reubica el átomo `moov` al inicio para streaming). |
+| `<format>/to_ir_core` | **Yes** (Frontend $\rightarrow$ `ir_core`) | `stream: { from: file }` | `schema: ir_core` (`ir_regions`, `container_stats`) | Traverses container region trees, computing parent boundaries, `highest_root_end` (for `R02`), and arithmetic overflows (`is_truncated_or_overflow` for `R03`). |
+| `<format>/to_ir_deep` | **Yes** (`ir_core` $\rightarrow$ `ir_deep`) | `stream` + index regions from `ir_regions` | `schema: ir_deep` (`ir_sample_extents`, `ir_unreferenced_slack`, `ir_codec_configs`, `ir_attachments`, `ir_external_refs`) | Deep sample table parsing (`stbl` in MP4, `Cues` in MKV, `idx1` in AVI), unreferenced slack calculation inside `mdat`/`movi` (`R08`), codec config SPS validation (`R09`), attachments (`R06`), and external references (`R05`). |
+| `<format>/from_ir` | **Yes** (Backend `ir_deep` $\rightarrow$ Clean Container) | `stream: { from: file }`, tables `ir_sample_extents` & `ir_codec_configs` | `artifact: rebuilt_container` | **Reconstruction / Native Trans-Muxing without FFmpeg:** Constructs a clean container from scratch by copying only legitimate sample extents and codec parameters from the IR. Enables surgical sanitization and native format conversion (e.g. `ebml/to_ir_*` $\rightarrow$ `isobmff/from_ir`). |
+| `<format>/compact` *(Direct format task)* | **No** (or hybrid) | `stream: { from: sanitized_video }` | `artifact: compacted_video` | **Native Size Reduction without FFmpeg:** Strips padding boxes (`free`/`skip`/`Void`/`JUNK`), non-essential metadata, and slack space, shifting sample payloads and recalculating offset tables (`stco`/`co64`) natively. |
+| `isobmff/faststart` *(Direct format task)* | **No** | `stream: { from: sanitized_video }` | `artifact: faststart_mp4` | Specialized MP4/M4A task operating directly on container bytes without the IR (relocating the `moov` atom to the head of the file for web streaming). |
 
 ---
 
-### Categoría 3: Análisis Heurístico sobre Ventanas de Bytes (`libbyte_scanners.so`)
-Funciones puras de análisis de bytes que no conocen ni qué formato de vídeo se está analizando ni qué regla de negocio las invoca. Reciben un iterador *lazy* de ventanas (`input.windows`) desde el YAML:
+### Category 3: Heuristic Byte Scanners (`libbyte_scanners.so`)
+Pure byte analysis tasks agnostic of video container formats or calling rules. They consume lazy window iterators (`input.windows`) configured via YAML:
 
-| Tarea (`scanners/<tarea>`) | Inputs | Params | Campos Emitidos (`emit_row`) | Reutilización en el Antivirus |
+| Task (`scanners/<task>`) | Inputs | Params | Emitted Fields (`emit_row`) | Forensic Antivirus Use Case |
 | :--- | :--- | :--- | :--- | :--- |
-| `scanners/entropy_scan` | `windows` (`id`, `offset`, `length`, `tag`) | `entropy_threshold` (ej. `7.2`) | `window_id`, `offset`, `length`, `tag`, `entropy`, `severity` | Se instancia en el YAML para auditar cajas de *padding* (`R07`), *trailing overlays* tras la última caja raíz (`R02`) o huecos no referenciados en `mdat` (`R08`). |
-| `scanners/signature_scan` | `windows` (`id`, `offset`, `length`, `tag`) | `scan_step_bytes` | `window_id`, `offset`, `match_offset`, `tag`, `sig_name`, `severity` | Caza cabeceras ejecutables (`MZ`, `ELF`, `Mach-O`, scripts, `Go buildinf:`) ocultas dentro de regiones de *padding* o *slack space* incluso cuando el atacante rellena con ceros (`0x00`) para burlar el umbral de entropía. |
+| `scanners/entropy_scan` | `windows` (`id`, `offset`, `length`, `tag`) | `entropy_threshold` (e.g. `7.2`) | `window_id`, `offset`, `length`, `tag`, `entropy`, `severity` | Instantiated via YAML to audit padding boxes (`R07`), trailing overlays beyond the last root box (`R02`), or unreferenced holes in `mdat` (`R08`). |
+| `scanners/signature_scan` | `windows` (`id`, `offset`, `length`, `tag`) | `scan_step_bytes` | `window_id`, `offset`, `match_offset`, `tag`, `sig_name`, `severity` | Hunts executable headers (`MZ`, `ELF`, Mach-O, scripts, `Go buildinf:`) concealed within padding or slack space even when zero-padded (`0x00`) to evade entropy thresholds. |
 
 > [!NOTE]
-> **¿Y el resto de reglas (`R01`, `R03`, `R04`, `R05`, `R06`, `R09`, `R10`)?**
-> Al estar la información ya estructurada en `file_triage`, `ir_core` e `ir_deep`, no requieren plugins `.so`: se ejecutan directamente en `pipeline.yaml` mediante `use: sql_rule` (incluyendo la detección de bombas de solapamiento de muestras `R10` mediante `LAG()` en SQL).
+> **What about the remaining rules (`R01`, `R03`, `R04`, `R05`, `R06`, `R09`, `R10`)?**
+> Because data is already structured in `file_triage`, `ir_core`, and `ir_deep`, they require no `.so` plugins: they execute directly in `pipeline.yaml` via `use: sql_rule` (including overlapping sample bomb detection `R10` using `LAG()` in SQL).
 
 ---
 
-### Categoría 4: Mitigación, Cuarentena y Sanitización CDR (`libcdr.so`)
+### Category 4: Mitigation, Quarantine, and Surgical CDR (`libcdr.so`)
 
-| Tarea (`cdr/<tarea>`) | Inputs | Params | Output / Efecto | Descripción |
+| Task (`cdr/<task>`) | Inputs | Params | Output / Effect | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| `cdr/quarantine_file` | `stream: { from: file }`, cursor `findings` | `quarantine_dir` | Sin tabla `output:` (Devuelve `halt_pipeline`) | Copia el archivo malicioso y su resumen de hallazgos al directorio de cuarentena y detiene limpiamente la ejecución del pipeline. |
-| `cdr/surgical_cdr` | `stream: { from: file }`, `windows` (rangos a neutralizar), `truncate_at` | `carve_evidence: true` | `artifact: sanitized_video` (+ tabla opcional `carved_evidence`) | Clona el archivo de forma segura (CoW), extrae a cuarentena (`carve_to_quarantine`) las ventanas sospechosas (`R02`, `R07`, `R08`), las sobrescribe con `0x00` (`artifact_zero_range`) manteniendo intactos los offsets de `stco`/`co64`, y trunca cualquier *overlay* al final del contenedor (`artifact_truncate`). |
+| `cdr/quarantine_file` | `stream: { from: file }`, cursor `findings` | `quarantine_dir` | No `output:` table (Returns `halt_pipeline`) | Copies the malicious file and its findings manifest to quarantine storage and halts pipeline execution cleanly. |
+| `cdr/surgical_cdr` | `stream: { from: file }`, `windows` (neutralization targets), `truncate_at` | `carve_evidence: true` | `artifact: sanitized_video` (+ optional table `carved_evidence`) | Clones the file safely using Copy-on-Write (CoW), carves suspicious windows (`R02`, `R07`, `R08`) to quarantine (`carve_to_quarantine`), zeroes payload bytes (`artifact_zero_range`) to maintain exact `stco`/`co64` offsets, and truncates trailing overlays (`artifact_truncate`). |
 
 ---
 
-### Categoría 5: Limpieza y Post-Procesamiento Multimedia (`libmedia_ops.so` — Opcional / No Prioritario)
-Tareas pensadas para ejecutarse **después de la sanitización** (o en pipelines de transformación multimedia puros), operando directamente sobre el artefacto limpio (`from: sanitized_video`) **sin depender del IR**:
+### Category 5: Media Cleaning and Post-Processing (`libmedia_ops.so` — Optional)
+Tasks designed to execute **downstream of sanitization** (or in dedicated media processing pipelines), operating directly on clean artifacts (`from: sanitized_video`) **without requiring the IR**:
 
-| Tarea (`media_ops/<tarea>`) | Inputs | Params | Output | Descripción |
+| Task (`media_ops/<task>`) | Inputs | Params | Output | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| `media_ops/video_filter` | `stream: { from: sanitized_video }` | `filter: "grayscale" \| "scale"`, `codec: "libx264"`, `crf: 23` | `artifact: processed_video` | Aplica transformaciones visuales (como pasar el vídeo a blanco y negro o reescalar) invocando el motor de filtrado/transcodificación en un entorno aislado sin red. |
-| `media_ops/clean_subtitles` | `stream: { from: sanitized_video }` | `strip_html: true`, `strip_ass_tags: true` | `artifact: clean_srt` | Extrae subtítulos y purga etiquetas de estilo ASS/SSA y HTML potencialmente explotables en reproductores. |
-| `media_ops/remux_streams` | `stream: { from: sanitized_video }` | `keep_attachments: false`, `strip_metadata: true` | `artifact: remuxed_video` | Re-empaqueta exclusivamente las pistas elementales de vídeo y audio descartando cualquier metadato residual, capítulos o fuentes tipográficas adjuntas. |
+| `media_ops/video_filter` | `stream: { from: sanitized_video }` | `filter: "grayscale" \| "scale"`, `codec: "libx264"`, `crf: 23` | `artifact: processed_video` | Applies visual transformations (e.g. converting video to black-and-white or scaling) in an isolated network-sandboxed process. |
+| `media_ops/clean_subtitles` | `stream: { from: sanitized_video }` | `strip_html: true`, `strip_ass_tags: true` | `artifact: clean_srt` | Extracts subtitle tracks and purges ASS/SSA style tags and HTML exploits targeted at media players. |
+| `media_ops/remux_streams` | `stream: { from: sanitized_video }` | `keep_attachments: false`, `strip_metadata: true` | `artifact: remuxed_video` | Re-packages elementary video and audio streams, stripping residual metadata, chapters, and embedded font attachments. |
 
 ---
 
-## 3. Ejemplo de `pipeline.yaml` Unificando Triage, Plugins de Formato, IR, CDR y Post-Procesado
-
-Este ejemplo muestra cómo el `router` conecta el pre-triage independiente del IR con cada plugin de formato (`isobmff`, `ebml`, `riff`), ejecuta las reglas sobre el IR unificado, sanitiza el archivo y finalmente le aplica una tarea de post-procesado (pasar a blanco y negro) independiente del IR:
+## 3. Comprehensive `pipeline.yaml` Example: Triage, Format Plugins, IR, CDR, and Post-Processing
 
 ```yaml
 version: 2
@@ -131,7 +129,7 @@ modules:
   media_ops: { path: "./plugins/libmedia_ops.so" }
 
 pipelines:
-  # 1. PRE-TRIAGE (Independiente del IR: Magic Bytes + Anti-DoS de tamaño)
+  # 1. PRE-TRIAGE (IR-Independent: Magic Bytes + Anti-DoS Size Guards)
   main:
     steps:
       - task: initial_probe
@@ -161,7 +159,7 @@ pipelines:
         output:
           into: audit_findings
 
-      # Enrutamiento hacia el plugin específico de cada formato (o a cuarentena si falló el triage)
+      # Routing to format-specific lowering plugins (or quarantine on triage failure)
       - router: dispatch_by_format
         cases:
           - when: "SELECT 1 FROM audit_findings WHERE severity = 2"
@@ -174,7 +172,7 @@ pipelines:
             goto: parse_riff
         default: quarantine_flow
 
-  # 2. EXTRACCIÓN AL IR POR FORMATO (Cada plugin maneja su formato con límites anti-DoS)
+  # 2. FORMAT LOWERING TO IR (Each plugin enforces its anti-DoS depth/region limits)
   parse_isobmff:
     steps:
       - task: mp4_to_ir_core
@@ -221,7 +219,7 @@ pipelines:
         cases: []
         default: common_ir_audit
 
-  # 3. AUDITORÍA UNIVERSAL SOBRE EL IR
+  # 3. UNIVERSAL AUDIT OVER IR
   common_ir_audit:
     steps:
       - task: structural_sql_rules
@@ -269,7 +267,7 @@ pipelines:
             goto: quarantine_flow
         default: sanitize_and_postprocess
 
-  # 4. SANITIZACIÓN Y POST-PROCESADO (Post-procesado opera sobre el fichero limpio sin usar el IR)
+  # 4. SURGICAL SANITIZATION AND POST-PROCESSING (Post-processing runs on sanitized file without IR)
   sanitize_and_postprocess:
     steps:
       - task: neutralize_padding_and_overlay
@@ -288,7 +286,7 @@ pipelines:
         output:
           artifact: sanitized_video
 
-      # Tarea independiente del IR sobre el vídeo ya limpio:
+      # IR-independent task on sanitized video:
       - task: convert_to_grayscale
         use: media_ops/video_filter
         input:
