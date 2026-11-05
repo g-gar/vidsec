@@ -415,3 +415,192 @@ test "ABI SDK: definePureTask auto-injects Inputs and auto-emits Outputs without
     try std.testing.expectEqualStrings("file_size", std.mem.span(desc.requiredParams()[0]));
     try std.testing.expectEqual(@as(usize, 2), desc.outputFields().len);
 }
+
+// =============================================================================
+// MODERN BLACK BOX C-ABI TESTS
+// =============================================================================
+
+test "Black Box C-ABI: MemContext_ABI round-trip with testing.allocator" {
+    var host_alloc = std.testing.allocator;
+    const mem_abi = abi.MemContext_ABI.fromAllocator(&host_alloc);
+    const client_alloc = mem_abi.toAllocator();
+
+    const slice = try client_alloc.alloc(u64, 16);
+    defer client_alloc.free(slice);
+
+    for (slice, 0..) |*item, idx| {
+        item.* = idx * 100;
+    }
+    try std.testing.expectEqual(@as(u64, 500), slice[5]);
+}
+
+test "Black Box C-ABI: PayloadHandle_ABI scalar, slice, and byte view" {
+    const Point = struct { x: i32, y: i32 };
+    const pt = Point{ .x = 10, .y = 20 };
+    const handle_scalar = abi.PayloadHandle_ABI.fromScalar(Point, &pt);
+
+    try std.testing.expect(!handle_scalar.is_stream);
+    try std.testing.expectEqual(@as(usize, 1), handle_scalar.len);
+    try std.testing.expectEqual(@as(i32, 10), handle_scalar.asScalar(Point).x);
+
+    const pts = [_]Point{ .{ .x = 1, .y = 2 }, .{ .x = 3, .y = 4 } };
+    const handle_slice = abi.PayloadHandle_ABI.fromSlice(Point, &pts);
+
+    try std.testing.expect(handle_slice.is_stream);
+    try std.testing.expectEqual(@as(usize, 2), handle_slice.len);
+    try std.testing.expectEqual(@as(i32, 3), handle_slice.asSlice(Point)[1].x);
+
+    const raw_bytes = "HEADER_SIG";
+    const handle_bytes = abi.PayloadHandle_ABI{
+        .ptr = raw_bytes.ptr,
+        .len = raw_bytes.len,
+        .element_size = 1,
+        .element_align = 1,
+        .is_stream = true,
+    };
+    try std.testing.expectEqualStrings("HEADER_SIG", handle_bytes.asBytes());
+}
+
+test "Black Box C-ABI: defineBlackBoxTask scalar execution with reflection" {
+    const In = struct { val: u32 };
+    const Out = struct { score: f64, flag: bool };
+
+    const Task = struct {
+        fn run(alloc: std.mem.Allocator, in: In) !Out {
+            _ = alloc;
+            return .{
+                .score = @as(f64, @floatFromInt(in.val)) * 2.5,
+                .flag = in.val > 5,
+            };
+        }
+    };
+
+    const desc = abi.defineBlackBoxTask(.{
+        .name = "score_calc",
+        .description = "Calculates score from val",
+        .run = Task.run,
+    });
+
+    try std.testing.expectEqualStrings("score_calc", desc.nameSlice());
+    try std.testing.expectEqualStrings("Calculates score from val", desc.descriptionSlice());
+    try std.testing.expectEqual(@as(usize, 2), desc.outputFields().len);
+    try std.testing.expect(desc.declaresOutputField("score"));
+    try std.testing.expect(desc.declaresOutputField("flag"));
+    try std.testing.expect(!desc.declaresOutputField("nonexistent"));
+
+    var host_alloc = std.testing.allocator;
+    const mem_abi = abi.MemContext_ABI.fromAllocator(&host_alloc);
+    const in_obj = In{ .val = 10 };
+    const in_handle = abi.PayloadHandle_ABI.fromScalar(In, &in_obj);
+
+    const res = desc.execute_blackbox.?(&mem_abi, in_handle, .{});
+    try std.testing.expectEqual(abi.TaskStatus_ABI.ok, res.status);
+    const out_ptr = res.payload.asScalar(Out);
+    try std.testing.expectApproxEqAbs(@as(f64, 25.0), out_ptr.score, 0.001);
+    try std.testing.expect(out_ptr.flag);
+
+    host_alloc.destroy(out_ptr);
+}
+
+test "Black Box C-ABI: automatic elemental lifting and expansion flattening" {
+    const In = struct { factor: u32 };
+    const Out = struct { num: u32 };
+
+    const Elemental = struct {
+        fn run(_: std.mem.Allocator, in: In) !Out {
+            return .{ .num = in.factor * 10 };
+        }
+    };
+
+    const Expansion = struct {
+        fn run(alloc: std.mem.Allocator, in: In) ![]Out {
+            var sub = try alloc.alloc(Out, 2);
+            sub[0] = .{ .num = in.factor };
+            sub[1] = .{ .num = in.factor * 2 };
+            return sub;
+        }
+    };
+
+    const desc_elem = abi.defineBlackBoxTask(.{ .name = "elem_lift", .run = Elemental.run });
+    const desc_exp = abi.defineBlackBoxTask(.{ .name = "exp_lift", .run = Expansion.run });
+
+    var host_alloc = std.testing.allocator;
+    const mem_abi = abi.MemContext_ABI.fromAllocator(&host_alloc);
+
+    const in_stream = [_]In{ .{ .factor = 2 }, .{ .factor = 5 }, .{ .factor = 7 } };
+    const in_handle = abi.PayloadHandle_ABI.fromSlice(In, &in_stream);
+
+    // Test Elemental Lift (3 -> 3)
+    {
+        const res = desc_elem.execute_blackbox.?(&mem_abi, in_handle, .{});
+        try std.testing.expectEqual(abi.TaskStatus_ABI.ok, res.status);
+        const out_slice = res.payload.asSlice(Out);
+        try std.testing.expectEqual(@as(usize, 3), out_slice.len);
+        try std.testing.expectEqual(@as(u32, 20), out_slice[0].num);
+        try std.testing.expectEqual(@as(u32, 50), out_slice[1].num);
+        try std.testing.expectEqual(@as(u32, 70), out_slice[2].num);
+        host_alloc.free(out_slice);
+    }
+
+    // Test Expansion Flattening (3 -> 6)
+    {
+        const res = desc_exp.execute_blackbox.?(&mem_abi, in_handle, .{});
+        try std.testing.expectEqual(abi.TaskStatus_ABI.ok, res.status);
+        const out_slice = res.payload.asSlice(Out);
+        try std.testing.expectEqual(@as(usize, 6), out_slice.len);
+        try std.testing.expectEqual(@as(u32, 2), out_slice[0].num);
+        try std.testing.expectEqual(@as(u32, 4), out_slice[1].num);
+        try std.testing.expectEqual(@as(u32, 5), out_slice[2].num);
+        try std.testing.expectEqual(@as(u32, 10), out_slice[3].num);
+        try std.testing.expectEqual(@as(u32, 7), out_slice[4].num);
+        try std.testing.expectEqual(@as(u32, 14), out_slice[5].num);
+        host_alloc.free(out_slice);
+    }
+}
+
+test "Black Box C-ABI: error handling and telemetry logger" {
+    const Dummy = struct { x: u32 };
+
+    const FailingTask = struct {
+        fn run(_: std.mem.Allocator, in: Dummy, logger: abi.AbiLogger) !Dummy {
+            logger.info("Starting task");
+            if (in.x == 0) {
+                logger.err("Zero error detected");
+                return error.InvalidZeroInput;
+            }
+            return in;
+        }
+    };
+
+    const desc = abi.defineBlackBoxTask(.{
+        .name = "failing_task",
+        .run = FailingTask.run,
+    });
+
+    var host_alloc = std.testing.allocator;
+    const mem_abi = abi.MemContext_ABI.fromAllocator(&host_alloc);
+
+    const MockHost = struct {
+        var count: usize = 0;
+        fn logCallback(level: abi.LogLevel_ABI, msg_ptr: [*]const u8, len: usize) callconv(.c) void {
+            _ = level;
+            _ = msg_ptr;
+            _ = len;
+            count += 1;
+        }
+    };
+    MockHost.count = 0;
+
+    const options = abi.ExecutionOptions_ABI{
+        .workers = 1,
+        .log_fn = &MockHost.logCallback,
+    };
+
+    // Test failure path
+    const in_zero = Dummy{ .x = 0 };
+    const res_fail = desc.execute_blackbox.?(&mem_abi, abi.PayloadHandle_ABI.fromScalar(Dummy, &in_zero), options);
+    try std.testing.expectEqual(abi.TaskStatus_ABI.fatal_error, res_fail.status);
+    try std.testing.expectEqualStrings("InvalidZeroInput", res_fail.errorMessage().?);
+    try std.testing.expect(MockHost.count >= 2); // info + err
+}
+

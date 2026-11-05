@@ -24,6 +24,17 @@ pub const TaskExecuteFn_ABI = types.TaskExecuteFn_ABI;
 pub const TaskDescriptor_ABI = types.TaskDescriptor_ABI;
 pub const ModuleManifest_ABI = types.ModuleManifest_ABI;
 
+// Black Box C-ABI Types
+pub const MemContext_ABI = types.MemContext_ABI;
+pub const PayloadHandle_ABI = types.PayloadHandle_ABI;
+pub const ReflectedTag_ABI = types.ReflectedTag_ABI;
+pub const ReflectedValue_ABI = types.ReflectedValue_ABI;
+pub const ReflectFn_ABI = types.ReflectFn_ABI;
+pub const LogFn_ABI = types.LogFn_ABI;
+pub const ExecutionOptions_ABI = types.ExecutionOptions_ABI;
+pub const TaskResult_ABI = types.TaskResult_ABI;
+pub const TaskFn_ABI = types.TaskFn_ABI;
+
 // Pure Plugin SDK & Stream/Window Readers
 pub const BoundedStreamReader = reader.BoundedStreamReader;
 pub const WindowReader = reader.WindowReader;
@@ -43,6 +54,10 @@ pub const computeOutputFields = sdk.computeOutputFields;
 pub const definePureTask = sdk.definePureTask;
 pub const SdkError = sdk.SdkError;
 pub const mapHostError = sdk.mapHostError;
+
+// Modern Black Box Plugin SDK
+pub const AbiLogger = sdk.AbiLogger;
+pub const defineBlackBoxTask = sdk.defineBlackBoxTask;
 
 test {
     std.testing.refAllDecls(@This());

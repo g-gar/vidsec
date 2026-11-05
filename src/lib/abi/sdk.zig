@@ -20,6 +20,13 @@ pub const TaskContext_ABI = types.TaskContext_ABI;
 pub const TaskDescriptor_ABI = types.TaskDescriptor_ABI;
 pub const ModuleManifest_ABI = types.ModuleManifest_ABI;
 
+pub const MemContext_ABI = types.MemContext_ABI;
+pub const PayloadHandle_ABI = types.PayloadHandle_ABI;
+pub const LogFn_ABI = types.LogFn_ABI;
+pub const ExecutionOptions_ABI = types.ExecutionOptions_ABI;
+pub const TaskResult_ABI = types.TaskResult_ABI;
+pub const TaskFn_ABI = types.TaskFn_ABI;
+
 pub const SdkError = sdk_mod.SdkError;
 pub const mapHostError = sdk_mod.mapHostError;
 pub const TaskContext = sdk_mod.TaskContext;
@@ -36,3 +43,5 @@ pub const Logger = sdk_mod.Logger;
 pub const PureTaskSpec = sdk_mod.PureTaskSpec;
 pub const computeOutputFields = sdk_mod.computeOutputFields;
 pub const definePureTask = sdk_mod.definePureTask;
+pub const AbiLogger = sdk_mod.AbiLogger;
+pub const defineBlackBoxTask = sdk_mod.defineBlackBoxTask;

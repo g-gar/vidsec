@@ -110,6 +110,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    dataflow_mod.addImport("vidsec_abi", abi_mod);
 
     // 13. Core framework library module (`src/root.zig`)
     const root_mod = b.addModule("vidsec", .{

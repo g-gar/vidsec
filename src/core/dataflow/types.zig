@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const vidsec_abi = @import("vidsec_abi");
 
 /// Lightweight ephemeral view of a field value extracted via compile-time reflection.
 /// Allows zero-copy inspection of native Zig structs for filtering and serialization.
@@ -187,8 +188,17 @@ pub const PayloadHandle = struct {
     type_name: []const u8,
     element_size: usize,
     element_align: u29,
+    reflect_fn: ?*const fn (ptr: *const anyopaque, field_name: []const u8) ?ReflectedValue = null,
+    reflect_abi_fn: ?vidsec_abi.ReflectFn_ABI = null,
 
     pub fn fromScalar(comptime T: type, item: *const T) PayloadHandle {
+        const Trampoline = struct {
+            fn reflect(ptr: *const anyopaque, field: []const u8) ?ReflectedValue {
+                const typed: *const T = @ptrCast(@alignCast(ptr));
+                return reflectField(T, typed, field);
+            }
+        };
+
         return .{
             .ptr = @ptrCast(item),
             .len = 1,
@@ -196,10 +206,18 @@ pub const PayloadHandle = struct {
             .type_name = @typeName(T),
             .element_size = @sizeOf(T),
             .element_align = @alignOf(T),
+            .reflect_fn = &Trampoline.reflect,
         };
     }
 
     pub fn fromSlice(comptime T: type, items: []const T) PayloadHandle {
+        const Trampoline = struct {
+            fn reflect(ptr: *const anyopaque, field: []const u8) ?ReflectedValue {
+                const typed: [*]const T = @ptrCast(@alignCast(ptr));
+                return reflectField(T, &typed[0], field);
+            }
+        };
+
         return .{
             .ptr = @ptrCast(items.ptr),
             .len = items.len,
@@ -207,7 +225,26 @@ pub const PayloadHandle = struct {
             .type_name = @typeName(T),
             .element_size = @sizeOf(T),
             .element_align = @alignOf(T),
+            .reflect_fn = if (items.len > 0) &Trampoline.reflect else null,
         };
+    }
+
+    pub fn getReflected(self: PayloadHandle, field_name: []const u8) ?ReflectedValue {
+        if (self.reflect_fn) |rf| {
+            return rf(self.ptr, field_name);
+        }
+        if (self.reflect_abi_fn) |rf_abi| {
+            const res = rf_abi(self.ptr, field_name.ptr, field_name.len);
+            return switch (res.tag) {
+                .none => null,
+                .int => .{ .int = res.int_val },
+                .uint => .{ .uint = @intCast(res.int_val) },
+                .float => .{ .float = res.float_val },
+                .boolean => .{ .boolean = res.int_val != 0 },
+                .string => if (res.str_ptr) |sptr| .{ .string = sptr[0..res.str_len] } else null,
+            };
+        }
+        return null;
     }
 
     pub fn asSlice(self: PayloadHandle, comptime T: type) []const T {

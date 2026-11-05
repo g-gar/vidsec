@@ -18,3 +18,13 @@ pub const TaskContext_ABI = types_mod.TaskContext_ABI;
 pub const TaskExecuteFn_ABI = types_mod.TaskExecuteFn_ABI;
 pub const TaskDescriptor_ABI = types_mod.TaskDescriptor_ABI;
 pub const ModuleManifest_ABI = types_mod.ModuleManifest_ABI;
+
+pub const MemContext_ABI = types_mod.MemContext_ABI;
+pub const PayloadHandle_ABI = types_mod.PayloadHandle_ABI;
+pub const ReflectedTag_ABI = types_mod.ReflectedTag_ABI;
+pub const ReflectedValue_ABI = types_mod.ReflectedValue_ABI;
+pub const ReflectFn_ABI = types_mod.ReflectFn_ABI;
+pub const LogFn_ABI = types_mod.LogFn_ABI;
+pub const ExecutionOptions_ABI = types_mod.ExecutionOptions_ABI;
+pub const TaskResult_ABI = types_mod.TaskResult_ABI;
+pub const TaskFn_ABI = types_mod.TaskFn_ABI;

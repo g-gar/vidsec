@@ -1,26 +1,31 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const sqlite_core = @import("../../sqlite/mod.zig");
-const NamedValue = sqlite_core.NamedValue;
-const Value = sqlite_core.Value;
+const dataflow = @import("vidsec_dataflow");
+const PayloadHandle = dataflow.PayloadHandle;
 
-/// Abstract interface for storage repositories (Memory, SQLite, DuckDB, Parquet, etc.).
+/// Polymorphic abstract interface for storage repositories (Memory, SQLite, FileStore, Elasticsearch, etc.).
+/// Completely decoupled from SQL and underlying storage engines.
 pub const StorageRepository = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
     pub const VTable = struct {
-        saveRecord: *const fn (ctx: *anyopaque, table_name: []const u8, fields: []const NamedValue) anyerror!void,
-        recordCount: *const fn (ctx: *anyopaque, table_name: []const u8) usize,
+        writePayload: *const fn (ctx: *anyopaque, channel_or_table: []const u8, payload: PayloadHandle) anyerror!void,
+        readPayload: *const fn (ctx: *anyopaque, channel_or_table: []const u8) ?PayloadHandle,
+        recordCount: *const fn (ctx: *anyopaque, channel_or_table: []const u8) usize,
         deinit: *const fn (ctx: *anyopaque) void,
     };
 
-    pub fn saveRecord(self: StorageRepository, table_name: []const u8, fields: []const NamedValue) !void {
-        try self.vtable.saveRecord(self.ptr, table_name, fields);
+    pub fn writePayload(self: StorageRepository, channel_or_table: []const u8, payload: PayloadHandle) !void {
+        try self.vtable.writePayload(self.ptr, channel_or_table, payload);
     }
 
-    pub fn recordCount(self: StorageRepository, table_name: []const u8) usize {
-        return self.vtable.recordCount(self.ptr, table_name);
+    pub fn readPayload(self: StorageRepository, channel_or_table: []const u8) ?PayloadHandle {
+        return self.vtable.readPayload(self.ptr, channel_or_table);
+    }
+
+    pub fn recordCount(self: StorageRepository, channel_or_table: []const u8) usize {
+        return self.vtable.recordCount(self.ptr, channel_or_table);
     }
 
     pub fn deinit(self: StorageRepository) void {

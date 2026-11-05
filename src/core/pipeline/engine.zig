@@ -1,344 +1,192 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const abi = @import("vidsec_abi");
-const yaml_core = @import("../yaml/mod.zig");
-const sqlite_core = @import("../sqlite/mod.zig");
-const artifact_mod = @import("artifact.zig");
-const tracer_mod = @import("tracer.zig");
-const host_context_mod = @import("host_context.zig");
+const dataflow = @import("vidsec_dataflow");
+const ast_mod = @import("ast.zig");
+const loader_mod = @import("loader/mod.zig");
 const repository_mod = @import("repository/mod.zig");
-const binding_mod = @import("binding/mod.zig");
-const router_mod = @import("router/mod.zig");
+const tracer_mod = @import("tracer.zig");
 
-pub const PipelineConfig = yaml_core.PipelineConfig;
-pub const SchemaCatalog = yaml_core.SchemaCatalog;
-pub const TaskTarget = yaml_core.TaskTarget;
-pub const ModuleRegistry = @import("loader/mod.zig").ModuleRegistry;
-pub const LoaderError = @import("loader/mod.zig").LoaderError;
+pub const PipelineAST = ast_mod.PipelineAST;
+pub const ModuleRegistry = loader_mod.ModuleRegistry;
+pub const RepositoryRegistry = repository_mod.RepositoryRegistry;
+pub const PayloadHandle = dataflow.PayloadHandle;
 pub const TaskDescriptor_ABI = abi.TaskDescriptor_ABI;
-pub const TaskStatus_ABI = abi.TaskStatus_ABI;
-pub const SqliteRuntime = sqlite_core.SqliteRuntime;
-pub const ArtifactStore = artifact_mod.ArtifactStore;
-pub const ExecutionTracer = tracer_mod.ExecutionTracer;
-pub const DebugController = tracer_mod.DebugController;
-pub const HostExecutionContext = host_context_mod.HostExecutionContext;
-pub const MemoryRepository = repository_mod.MemoryRepository;
-pub const TaskOutputStore = binding_mod.TaskOutputStore;
-pub const InputResolver = binding_mod.InputResolver;
 
-pub const EngineError = error{
-    MissingRequiredTaskParam,
-    UndeclaredPluginOutputField,
-    TaskFatalError,
-    AbortedByDebugger,
-    OutOfMemory,
-} || sqlite_core.RuntimeError || LoaderError || artifact_mod.ArtifactError;
-
-/// Summary metrics returned after a pipeline run completes or halts.
 pub const ExecutionSummary = struct {
     steps_executed: usize = 0,
     routers_evaluated: usize = 0,
-    total_rows_emitted: usize = 0,
     halted_early: bool = false,
     final_pipeline: []const u8 = "main",
 };
 
-/// Core `vidsec v2` Pipeline Execution Engine.
-/// Coordinates pre-flight validation (YAML + SQLite DDL/DML + Plugin C-ABI manifests),
-/// per-step `SAVEPOINT` transactions, lazy C-ABI cursors, routers, and structured JSON tracing.
+pub const EngineError = error{
+    MissingMainPipeline,
+    UnknownSubPipeline,
+    UnknownTaskModule,
+    UnknownTaskEntrypoint,
+    TaskExecutionFailed,
+    OutOfMemory,
+};
+
+/// Modern Black Box Native Zig Pipeline Execution Engine.
+/// Consumes format-agnostic PipelineAST, executes pure tasks via C-ABI,
+/// evaluates RAM predicates zero-copy, and routes payloads to polymorphic repositories.
 pub const PipelineEngine = struct {
     allocator: Allocator,
-    config: *const PipelineConfig,
-    catalog: *const SchemaCatalog,
-    registry: *ModuleRegistry,
-    db_runtime: *SqliteRuntime,
-    memory_repo: MemoryRepository,
-    task_outputs: TaskOutputStore,
-    tracer: ExecutionTracer,
-    debug_controller: DebugController = .{},
+    ast: PipelineAST,
+    modules: *ModuleRegistry,
+    repos: *RepositoryRegistry,
+    workers: usize = 1,
 
     pub fn init(
         allocator: Allocator,
-        config: *const PipelineConfig,
-        catalog: *const SchemaCatalog,
-        registry: *ModuleRegistry,
-        db_runtime: *SqliteRuntime,
+        ast: PipelineAST,
+        modules: *ModuleRegistry,
+        repos: *RepositoryRegistry,
     ) PipelineEngine {
+        var w = ast.runtime.workers;
+        if (w == 0) w = 1;
         return .{
             .allocator = allocator,
-            .config = config,
-            .catalog = catalog,
-            .registry = registry,
-            .db_runtime = db_runtime,
-            .memory_repo = MemoryRepository.init(allocator),
-            .task_outputs = TaskOutputStore.init(allocator),
-            .tracer = ExecutionTracer.init(allocator),
+            .ast = ast,
+            .modules = modules,
+            .repos = repos,
+            .workers = w,
         };
     }
 
-    pub fn deinit(self: *PipelineEngine) void {
-        self.task_outputs.deinit();
-        self.memory_repo.deinit();
-        self.tracer.deinit();
-    }
-
-    /// Dynamically loads all `.so` modules declared in `config.modules` that are not already registered
-    /// in `self.registry` (enforcing `stat` permission checks and `VIDSEC_ABI_VERSION` verification).
-    pub fn loadConfiguredModules(self: *PipelineEngine) LoaderError!void {
-        for (self.config.modules.entries) |mod_entry| {
-            const alias = mod_entry.key;
-            const decl = mod_entry.value;
-            if (self.registry.getModule(alias) == null) {
-                _ = try self.registry.loadSharedLibrary(alias, decl.path);
-            }
-        }
-    }
-
-    /// Resolves a `TaskTarget` (`use: <module>` or `use: <module>/<task>`) against `ModuleRegistry`.
-    pub fn resolveTaskDescriptor(
-        self: *const PipelineEngine,
-        target: TaskTarget,
-    ) LoaderError!*const TaskDescriptor_ABI {
-        return switch (target) {
-            .sql_rule => unreachable,
-            .module_default => |mod_name| self.registry.resolveTask(mod_name, null),
-            .module_task => |mt| self.registry.resolveTask(mt.module, mt.task),
-        };
-    }
-
-    /// Evaluates a `RouterStep` (`cases: [{ when: "...", goto: "..." }]`, `default: ...`).
-    /// Dispatches in-memory expressions against `InputResolver` (without database roundtrips)
-    /// and SQL queries (`SELECT ...`) against `db_runtime`.
-    pub fn evaluateRouter(
-        self: *PipelineEngine,
-        router_step: yaml_core.RouterStep,
-        artifacts: *ArtifactStore,
-    ) EngineError!?[]const u8 {
-        const resolver = InputResolver.init(
-            &self.task_outputs,
-            &self.memory_repo,
-            self.db_runtime,
-            artifacts,
-        );
-
-        for (router_step.cases) |case_item| {
-            const when_str = case_item.when_sql;
-            var matched = false;
-
-            if (router_mod.isSqlQuery(when_str)) {
-                matched = try self.db_runtime.evaluateRouterWhen(when_str);
-            } else {
-                matched = router_mod.evaluateCondition(self.allocator, when_str, &resolver);
-            }
-
-            if (matched) {
-                return case_item.goto_pipeline;
-            }
-        }
-
-        return router_step.default_pipeline;
-    }
-
-    /// Performs full pre-flight validation across:
-    /// 1. `PipelineConfig` + `SchemaCatalog` + `SqliteRuntime` (read-only queries, `sql_rule` projections, `router` `when` clauses, output mutations).
-    /// 2. `ModuleRegistry` + `TaskDescriptor_ABI` (existence of every referenced module/task, required task `params`, and declared `output_fields` in `output.map`).
-    pub fn preflightValidate(self: *PipelineEngine) EngineError!void {
-        try self.db_runtime.preflightValidatePipeline(self.allocator, self.config);
-
-        for (self.config.pipelines.entries) |sub_entry| {
-            for (sub_entry.value.steps) |step| {
-                switch (step) {
-                    .router => {},
-                    .task => |t_step| {
-                        if (t_step.target == .sql_rule) continue;
-
-                        const task_desc = try self.resolveTaskDescriptor(t_step.target);
-
-                        // 1. Verify all required parameters declared by the plugin task exist in `params:` or `inputs:`
-                        for (task_desc.requiredParams()) |req_param_z| {
-                            const req_name = std.mem.span(req_param_z);
-                            if (t_step.getParam(req_name) == null and t_step.getInputBinding(req_name) == null) {
-                                return error.MissingRequiredTaskParam;
-                            }
-                        }
-
-                        // 2. Verify all plugin fields referenced in `output.map`, `output.fields`, or field_specs are declared by the plugin task
-                        if (t_step.output) |out_spec| {
-                            var fs_iter = out_spec.field_specs.iterator();
-                            while (fs_iter.next()) |entry| {
-                                if (task_desc.outputFields().len > 0) {
-                                    if (!task_desc.declaresOutputField(entry.key_ptr.*)) {
-                                        return error.UndeclaredPluginOutputField;
-                                    }
-                                }
-                            }
-
-                            if (out_spec.target()) |out_target| {
-                                switch (out_target) {
-                                    .schema_domain => {},
-                                    .into_table => |into_tbl| {
-                                        if (into_tbl.map) |mappings| {
-                                            for (mappings.entries) |m| {
-                                                switch (m.value) {
-                                                    .constant_literal => {},
-                                                    .plugin_field => |pf| {
-                                                        if (!task_desc.declaresOutputField(pf)) {
-                                                            return error.UndeclaredPluginOutputField;
-                                                        }
-                                                    },
-                                                }
-                                            }
-                                        } else if (into_tbl.fields) |field_list| {
-                                            for (field_list) |pf| {
-                                                if (!task_desc.declaresOutputField(pf)) {
-                                                    return error.UndeclaredPluginOutputField;
-                                                }
-                                            }
-                                        }
-                                    },
-                                }
-                            }
-                        }
-                    },
-                }
-            }
-        }
-    }
-
-    /// Executes the pipeline starting at sub-pipeline `"main"` against `artifacts`.
-    pub fn run(self: *PipelineEngine, artifacts: *ArtifactStore) EngineError!ExecutionSummary {
-        return self.runFrom(artifacts, "main");
-    }
-
-    /// Executes the pipeline starting at `start_pipeline` against `artifacts`.
-    pub fn runFrom(
-        self: *PipelineEngine,
-        artifacts: *ArtifactStore,
-        start_pipeline: []const u8,
-    ) EngineError!ExecutionSummary {
+    pub fn run(self: *PipelineEngine, input_payload: PayloadHandle) anyerror!ExecutionSummary {
         var summary = ExecutionSummary{};
-        var current_pipeline_name: []const u8 = start_pipeline;
 
-        pipeline_loop: while (true) {
-            summary.final_pipeline = current_pipeline_name;
-            const sub = self.config.pipelines.get(current_pipeline_name) orelse
-                return error.UnknownTargetSubPipeline;
-
-            for (sub.steps) |*step| {
-                switch (step.*) {
-                    .task => |*t_step| {
-                        const seq = try self.tracer.recordStepStart(current_pipeline_name, t_step.name);
-
-                        if (t_step.target == .sql_rule) {
-                            const out_into = t_step.output.?.target().?.into_table;
-                            const inserted = try self.db_runtime.executeSqlRule(
-                                self.allocator,
-                                t_step.name,
-                                t_step.query.?,
-                                out_into,
-                            );
-
-                            try self.tracer.recordStepEnd(
-                                seq,
-                                current_pipeline_name,
-                                t_step.name,
-                                .ok,
-                                0,
-                                0,
-                                inserted,
-                            );
-
-                            summary.steps_executed += 1;
-                            summary.total_rows_emitted += inserted;
-
-                            if (self.debug_controller.notifyAfterStep(current_pipeline_name, t_step.name) == .abort_run) {
-                                return error.AbortedByDebugger;
-                            }
-                        } else {
-                            const task_desc = try self.resolveTaskDescriptor(t_step.target);
-
-                            var sp = try self.db_runtime.savepoint(t_step.name);
-                            errdefer sp.rollback();
-
-                            var host_ctx = try HostExecutionContext.init(
-                                self.allocator,
-                                current_pipeline_name,
-                                seq,
-                                t_step,
-                                self.db_runtime,
-                                &self.memory_repo,
-                                &self.task_outputs,
-                                artifacts,
-                                &self.tracer,
-                            );
-                            defer host_ctx.deinit();
-
-                            var abi_ctx = host_ctx.toAbiContext();
-                            const status = task_desc.execute(&abi_ctx);
-
-                            if (status == .fatal_error or host_ctx.had_db_error) {
-                                sp.rollback();
-                                try self.tracer.recordStepEnd(
-                                    seq,
-                                    current_pipeline_name,
-                                    t_step.name,
-                                    .fatal_error,
-                                    host_ctx.windows_read,
-                                    host_ctx.rows_read,
-                                    host_ctx.rows_emitted,
-                                );
-                                return error.TaskFatalError;
-                            }
-
-                            try host_ctx.commitStagedArtifact();
-                            try sp.release();
-
-                            try self.tracer.recordStepEnd(
-                                seq,
-                                current_pipeline_name,
-                                t_step.name,
-                                status,
-                                host_ctx.windows_read,
-                                host_ctx.rows_read,
-                                host_ctx.rows_emitted,
-                            );
-
-                            summary.steps_executed += 1;
-                            summary.total_rows_emitted += host_ctx.rows_emitted;
-
-                            if (self.debug_controller.notifyAfterStep(current_pipeline_name, t_step.name) == .abort_run) {
-                                return error.AbortedByDebugger;
-                            }
-
-                            if (status == .halt_pipeline) {
-                                summary.halted_early = true;
-                                return summary;
-                            }
-                        }
-                    },
-                    .router => |r_step| {
-                        summary.routers_evaluated += 1;
-                        const maybe_next = try self.evaluateRouter(r_step, artifacts);
-                        try self.tracer.recordRouterDecision(current_pipeline_name, r_step.name, maybe_next);
-
-                        if (self.debug_controller.notifyAfterStep(current_pipeline_name, r_step.name) == .abort_run) {
-                            return error.AbortedByDebugger;
-                        }
-
-                        if (maybe_next) |next_pipe| {
-                            current_pipeline_name = next_pipe;
-                            continue :pipeline_loop;
-                        } else {
-                            return summary;
-                        }
-                    },
-                }
-            }
-
-            // Reached the end of the current sub-pipeline without a router transition
-            break;
+        // 1. Resolve or instantiate all declared datasources
+        for (self.ast.datasources) |ds_spec| {
+            _ = try self.repos.resolveOrCreate(ds_spec);
         }
+
+        // 2. Track intermediate step outputs by step ID
+        var outputs: std.StringHashMapUnmanaged(PayloadHandle) = .empty;
+        defer outputs.deinit(self.allocator);
+
+        // 3. Execute main pipeline
+        try self.executeSubPipeline("main", input_payload, &outputs, &summary);
 
         return summary;
+    }
+
+    fn executeSubPipeline(
+        self: *PipelineEngine,
+        name: []const u8,
+        active_input: PayloadHandle,
+        outputs: *std.StringHashMapUnmanaged(PayloadHandle),
+        summary: *ExecutionSummary,
+    ) anyerror!void {
+        const pipe = self.ast.getPipeline(name) orelse return error.UnknownSubPipeline;
+        summary.final_pipeline = name;
+
+        var current_input = active_input;
+
+        for (pipe.steps) |step| {
+            if (summary.halted_early) break;
+
+            switch (step) {
+                .task => |task_spec| {
+                    // Resolve input stream
+                    var step_input = current_input;
+                    if (task_spec.inputs.len == 1) {
+                        const in_expr = task_spec.inputs[0].expr;
+                        if (in_expr.stream_ref) |ref| {
+                            if (!std.mem.eql(u8, ref, "stream") and !std.mem.eql(u8, ref, "file")) {
+                                if (outputs.get(ref)) |prev_out| {
+                                    step_input = prev_out;
+                                }
+                            }
+                        }
+                    }
+
+                    // Resolve task descriptor from module registry
+                    const desc = try self.modules.resolveTask(task_spec.module, task_spec.task);
+
+                    var task_output: PayloadHandle = undefined;
+
+                    if (desc.execute_blackbox) |bb_fn| {
+                        const mem = abi.MemContext_ABI.fromAllocator(&self.allocator);
+                        const in_abi = abi.PayloadHandle_ABI{
+                            .ptr = step_input.ptr,
+                            .len = step_input.len,
+                            .element_size = step_input.element_size,
+                            .element_align = step_input.element_align,
+                            .is_stream = step_input.is_stream,
+                        };
+
+                        const workers: u32 = if (task_spec.concurrency) |c| @intCast(c) else @intCast(self.workers);
+                        const options = abi.ExecutionOptions_ABI{
+                            .workers = workers,
+                        };
+
+                        const res = bb_fn(&mem, in_abi, options);
+                        switch (res.status) {
+                            .ok => {},
+                            .recoverable_warning => {},
+                            .halt_pipeline => {
+                                summary.halted_early = true;
+                            },
+                            .fatal_error => return error.TaskExecutionFailed,
+                        }
+
+                        task_output = .{
+                            .ptr = res.payload.ptr orelse &{},
+                            .len = res.payload.len,
+                            .element_size = res.payload.element_size,
+                            .element_align = @truncate(res.payload.element_align),
+                            .is_stream = res.payload.is_stream,
+                            .type_name = step_input.type_name,
+                            .reflect_abi_fn = res.payload.reflect_fn,
+                        };
+                    } else {
+                        return error.TaskExecutionFailed;
+                    }
+
+                    // Store output
+                    try outputs.put(self.allocator, task_spec.id, task_output);
+                    current_input = task_output;
+
+                    // Route to declared output datasources
+                    for (task_spec.outputs) |out_ch| {
+                        if (self.repos.get(out_ch.datasource)) |repo| {
+                            try repo.writePayload(out_ch.name, task_output);
+                        }
+                    }
+
+                    summary.steps_executed += 1;
+                },
+
+                .router => |router_spec| {
+                    summary.routers_evaluated += 1;
+                    var branched = false;
+
+                    for (router_spec.cases) |case| {
+                        const matched = dataflow.predicate.evaluatePredicateHandle(current_input, case.when_predicate);
+                        if (matched) {
+                            branched = true;
+                            if (std.mem.eql(u8, case.goto_pipeline, "continue")) {
+                                break;
+                            } else {
+                                try self.executeSubPipeline(case.goto_pipeline, current_input, outputs, summary);
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!branched) {
+                        if (router_spec.default_pipeline) |def_pipe| {
+                            if (!std.mem.eql(u8, def_pipe, "continue")) {
+                                try self.executeSubPipeline(def_pipe, current_input, outputs, summary);
+                            }
+                        }
+                    }
+                },
+            }
+        }
     }
 };

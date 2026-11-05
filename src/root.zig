@@ -38,6 +38,7 @@ pub const sqlite = @import("core/sqlite/mod.zig");
 
 /// `vidsec v2` Pipeline Execution Engine, Host VTable Context, Managed Artifact Store, and JSONL Tracer (`src/core/pipeline/`).
 pub const pipeline = @import("core/pipeline/mod.zig");
+pub const pipeline_ast = pipeline.ast;
 
 /// `vidsec v2` Pure Dataflow Algebra, Automatic Lifting, Stream Transformation, and Multi-Core Execution (`src/core/dataflow/`).
 pub const dataflow = @import("vidsec_dataflow");
@@ -48,7 +49,7 @@ pub const plugin = @import("plugin/mod.zig");
 pub const EnvInterpolator = yaml.EnvInterpolator;
 pub const YamlNode = yaml.YamlNode;
 pub const SchemaCatalog = yaml.SchemaCatalog;
-pub const PipelineConfig = yaml.PipelineConfig;
+pub const PipelineAST = pipeline.PipelineAST;
 pub const CatalogCompiler = sqlite.CatalogCompiler;
 pub const SqliteRuntime = sqlite.SqliteRuntime;
 pub const ModuleRegistry = pipeline.ModuleRegistry;

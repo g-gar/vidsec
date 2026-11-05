@@ -17,6 +17,13 @@ pub const task_execute_fn_abi = @import("task_execute_fn_abi.zig");
 pub const task_descriptor_abi = @import("task_descriptor_abi.zig");
 pub const module_manifest_abi = @import("module_manifest_abi.zig");
 
+// Black Box C-ABI Types
+pub const mem_context_abi = @import("mem_context_abi.zig");
+pub const payload_handle_abi = @import("payload_handle_abi.zig");
+pub const execution_options_abi = @import("execution_options_abi.zig");
+pub const task_result_abi = @import("task_result_abi.zig");
+pub const task_fn_abi = @import("task_fn_abi.zig");
+
 pub const VIDSEC_ABI_VERSION = vidsec_abi_version.VIDSEC_ABI_VERSION;
 pub const MANIFEST_SYMBOL_NAME = manifest_symbol_name.MANIFEST_SYMBOL_NAME;
 pub const SemVer_ABI = semver_abi.SemVer_ABI;
@@ -35,3 +42,13 @@ pub const TaskContext_ABI = task_context_abi.TaskContext_ABI;
 pub const TaskExecuteFn_ABI = task_execute_fn_abi.TaskExecuteFn_ABI;
 pub const TaskDescriptor_ABI = task_descriptor_abi.TaskDescriptor_ABI;
 pub const ModuleManifest_ABI = module_manifest_abi.ModuleManifest_ABI;
+
+pub const MemContext_ABI = mem_context_abi.MemContext_ABI;
+pub const PayloadHandle_ABI = payload_handle_abi.PayloadHandle_ABI;
+pub const ReflectedTag_ABI = payload_handle_abi.ReflectedTag_ABI;
+pub const ReflectedValue_ABI = payload_handle_abi.ReflectedValue_ABI;
+pub const ReflectFn_ABI = payload_handle_abi.ReflectFn_ABI;
+pub const LogFn_ABI = execution_options_abi.LogFn_ABI;
+pub const ExecutionOptions_ABI = execution_options_abi.ExecutionOptions_ABI;
+pub const TaskResult_ABI = task_result_abi.TaskResult_ABI;
+pub const TaskFn_ABI = task_fn_abi.TaskFn_ABI;

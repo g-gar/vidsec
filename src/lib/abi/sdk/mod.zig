@@ -10,6 +10,8 @@ pub const define_bound_task = @import("define_bound_task.zig");
 pub const logger = @import("logger.zig");
 pub const pure_task_spec = @import("pure_task_spec.zig");
 pub const define_pure_task = @import("define_pure_task.zig");
+pub const abi_logger = @import("abi_logger.zig");
+pub const define_blackbox_task = @import("define_blackbox_task.zig");
 
 pub const SdkError = sdk_error.SdkError;
 pub const mapHostError = map_host_error.mapHostError;
@@ -26,3 +28,5 @@ pub const Logger = logger.Logger;
 pub const PureTaskSpec = pure_task_spec.PureTaskSpec;
 pub const computeOutputFields = define_pure_task.computeOutputFields;
 pub const definePureTask = define_pure_task.definePureTask;
+pub const AbiLogger = abi_logger.AbiLogger;
+pub const defineBlackBoxTask = define_blackbox_task.defineBlackBoxTask;

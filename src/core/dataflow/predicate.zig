@@ -31,6 +31,21 @@ pub fn evaluatePredicate(comptime T: type, item: *const T, expr: []const u8) boo
     return false;
 }
 
+/// Evaluates a declarative predicate condition directly against a type-erased PayloadHandle
+/// using the handle's compile-time reflection callback (zero boxing).
+pub fn evaluatePredicateHandle(payload: types.PayloadHandle, expr: []const u8) bool {
+    const trimmed = std.mem.trim(u8, expr, " \t\r\n");
+    if (trimmed.len == 0) return true;
+
+    var or_it = splitCaseInsensitive(trimmed, " or ");
+    while (or_it.next()) |or_clause| {
+        if (evaluateAndClauseHandle(payload, or_clause)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /// Filters a stream of native structs `T`, returning only those matching `predicate_expr`.
 pub fn filterStream(
     comptime T: type,
@@ -57,6 +72,16 @@ fn evaluateAndClause(comptime T: type, item: *const T, clause: []const u8) bool 
     var and_it = splitCaseInsensitive(std.mem.trim(u8, clause, " \t\r\n"), " and ");
     while (and_it.next()) |and_sub| {
         if (!evaluateSingleComparison(T, item, and_sub)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn evaluateAndClauseHandle(payload: types.PayloadHandle, clause: []const u8) bool {
+    var and_it = splitCaseInsensitive(std.mem.trim(u8, clause, " \t\r\n"), " and ");
+    while (and_it.next()) |and_sub| {
+        if (!evaluateSingleComparisonHandle(payload, and_sub)) {
             return false;
         }
     }
@@ -107,6 +132,62 @@ fn evaluateSingleComparison(comptime T: type, item: *const T, raw_clause: []cons
 
     const lhs = resolveOperand(T, item, lhs_raw);
     const rhs = resolveOperand(T, item, rhs_raw);
+
+    return switch (op) {
+        .eq => lhs.equals(rhs),
+        .ne => !lhs.equals(rhs),
+        .gte => compareOrdered(lhs, rhs) != .less,
+        .lte => compareOrdered(lhs, rhs) != .greater,
+        .gt => compareOrdered(lhs, rhs) == .greater,
+        .lt => compareOrdered(lhs, rhs) == .less,
+        .truthy => unreachable,
+    };
+}
+
+fn evaluateSingleComparisonHandle(payload: types.PayloadHandle, raw_clause: []const u8) bool {
+    const c = std.mem.trim(u8, raw_clause, " \t\r\n");
+    if (c.len == 0) return true;
+
+    var op: ComparisonOp = .truthy;
+    var op_idx: usize = 0;
+    var op_len: usize = 0;
+
+    if (std.mem.indexOf(u8, c, "==")) |idx| {
+        op = .eq;
+        op_idx = idx;
+        op_len = 2;
+    } else if (std.mem.indexOf(u8, c, "!=")) |idx| {
+        op = .ne;
+        op_idx = idx;
+        op_len = 2;
+    } else if (std.mem.indexOf(u8, c, ">=")) |idx| {
+        op = .gte;
+        op_idx = idx;
+        op_len = 2;
+    } else if (std.mem.indexOf(u8, c, "<=")) |idx| {
+        op = .lte;
+        op_idx = idx;
+        op_len = 2;
+    } else if (std.mem.indexOf(u8, c, ">")) |idx| {
+        op = .gt;
+        op_idx = idx;
+        op_len = 1;
+    } else if (std.mem.indexOf(u8, c, "<")) |idx| {
+        op = .lt;
+        op_idx = idx;
+        op_len = 1;
+    }
+
+    if (op == .truthy) {
+        const val = resolveOperandHandle(payload, c);
+        return val.isTruthy();
+    }
+
+    const lhs_raw = std.mem.trim(u8, c[0..op_idx], " \t\r\n");
+    const rhs_raw = std.mem.trim(u8, c[op_idx + op_len ..], " \t\r\n");
+
+    const lhs = resolveOperandHandle(payload, lhs_raw);
+    const rhs = resolveOperandHandle(payload, rhs_raw);
 
     return switch (op) {
         .eq => lhs.equals(rhs),
@@ -181,45 +262,89 @@ fn resolveOperand(comptime T: type, item: *const T, token: []const u8) Reflected
     return reflectField(T, item, field_name) orelse .{ .none = {} };
 }
 
-fn splitCaseInsensitive(input: []const u8, delimiter: []const u8) CaseInsensitiveSplitIterator {
+fn resolveOperandHandle(payload: types.PayloadHandle, token: []const u8) ReflectedValue {
+    const t = std.mem.trim(u8, token, " \t\r\n");
+
+    // 1. Quoted string literals: 'text' or "text"
+    if ((std.mem.startsWith(u8, t, "'") and std.mem.endsWith(u8, t, "'")) or
+        (std.mem.startsWith(u8, t, "\"") and std.mem.endsWith(u8, t, "\"")))
+    {
+        if (t.len >= 2) {
+            return ReflectedValue.fromString(t[1 .. t.len - 1]);
+        }
+    }
+
+    // 2. Boolean literals
+    if (std.mem.eql(u8, t, "true")) return ReflectedValue.fromBool(true);
+    if (std.mem.eql(u8, t, "false")) return ReflectedValue.fromBool(false);
+    if (std.mem.eql(u8, t, "null")) return .{ .none = {} };
+
+    // 3. Integer numbers
+    if (std.fmt.parseInt(i64, t, 10)) |iv| {
+        return ReflectedValue.fromInt(iv);
+    } else |_| {}
+
+    // 4. Floating point numbers
+    if (std.fmt.parseFloat(f64, t)) |fv| {
+        return ReflectedValue.fromFloat(fv);
+    } else |_| {}
+
+    // 5. Field access on the type-erased payload handle
+    var field_name = t;
+    if (std.mem.lastIndexOf(u8, t, ".")) |dot_idx| {
+        field_name = t[dot_idx + 1 ..];
+    }
+
+    return payload.getReflected(field_name) orelse .{ .none = {} };
+}
+
+pub fn splitCaseInsensitive(haystack: []const u8, needle: []const u8) CaseInsensitiveSplitIterator {
     return .{
-        .buffer = input,
-        .delimiter = delimiter,
+        .haystack = haystack,
+        .needle = needle,
         .index = 0,
     };
 }
 
-const CaseInsensitiveSplitIterator = struct {
-    buffer: []const u8,
-    delimiter: []const u8,
-    index: usize,
+pub const CaseInsensitiveSplitIterator = struct {
+    haystack: []const u8,
+    needle: []const u8,
+    index: ?usize,
 
     pub fn next(self: *CaseInsensitiveSplitIterator) ?[]const u8 {
-        if (self.index > self.buffer.len) return null;
-        if (self.index == self.buffer.len) {
-            self.index += 1;
-            return self.buffer[self.buffer.len..];
+        const start = self.index orelse return null;
+        if (start >= self.haystack.len) {
+            self.index = null;
+            return null;
         }
 
-        const remaining = self.buffer[self.index..];
-        var found_idx: ?usize = null;
-
-        var i: usize = 0;
-        while (i + self.delimiter.len <= remaining.len) : (i += 1) {
-            if (std.ascii.eqlIgnoreCase(remaining[i .. i + self.delimiter.len], self.delimiter)) {
-                found_idx = i;
-                break;
-            }
-        }
-
-        if (found_idx) |idx| {
-            const match = remaining[0..idx];
-            self.index += idx + self.delimiter.len;
-            return match;
+        const remaining = self.haystack[start..];
+        if (indexOfCaseInsensitive(remaining, self.needle)) |offset| {
+            const end = start + offset;
+            self.index = end + self.needle.len;
+            return self.haystack[start..end];
         } else {
-            const match = remaining;
-            self.index = self.buffer.len + 1;
-            return match;
+            self.index = null;
+            return self.haystack[start..];
         }
     }
 };
+
+fn indexOfCaseInsensitive(haystack: []const u8, needle: []const u8) ?usize {
+    if (needle.len == 0) return 0;
+    if (haystack.len < needle.len) return null;
+
+    const max_idx = haystack.len - needle.len;
+    var i: usize = 0;
+    while (i <= max_idx) : (i += 1) {
+        var match = true;
+        for (needle, 0..) |n_ch, j| {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(n_ch)) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return i;
+    }
+    return null;
+}

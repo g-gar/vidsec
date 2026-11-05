@@ -5,6 +5,9 @@ const yaml_core = @import("../yaml/mod.zig");
 const sqlite_core = @import("../sqlite/mod.zig");
 const artifact_mod = @import("artifact.zig");
 const engine_mod = @import("engine.zig");
+const ast_mod = @import("ast.zig");
+const repository_mod = @import("repository/mod.zig");
+const dataflow = @import("vidsec_dataflow");
 
 const c_stdio = @cImport({
     @cInclude("stdio.h");
@@ -65,23 +68,19 @@ pub const RunnerOptions = struct {
     pipeline_yaml_path: []const u8,
     schemas_yaml_path: ?[]const u8 = null,
     dotenv_path: ?[]const u8 = null,
-    wal_db_path: ?[]const u8 = null,
-    trace_out_path: ?[]const u8 = null,
     entry_pipeline: ?[]const u8 = null,
     artifact_exports: []const ArtifactExportSpec = &.{},
-    load_shared_modules: bool = true,
 };
 
-/// High-level coordinator that loads `.env`, `pipeline.yaml`, `schemas.yaml`, and `.so` plugins from disk,
-/// executes pre-flight validation, and runs the pipeline on media files.
+/// High-level coordinator that loads `.env` and `pipeline.yaml`,
+/// resolves datasources via RepositoryRegistry, and runs the pipeline on media files.
 pub const PipelineRunner = struct {
     allocator: Allocator,
     config_arena: std.heap.ArenaAllocator,
     env_interp: yaml_core.EnvInterpolator,
-    config: yaml_core.PipelineConfig,
-    catalog: yaml_core.SchemaCatalog,
+    ast: ast_mod.PipelineAST,
     registry: @import("loader/mod.zig").ModuleRegistry,
-    db_runtime: sqlite_core.SqliteRuntime,
+    repos: repository_mod.RepositoryRegistry,
 
     pub fn initFromFiles(allocator: Allocator, options: RunnerOptions) anyerror!PipelineRunner {
         var config_arena = std.heap.ArenaAllocator.init(allocator);
@@ -95,108 +94,50 @@ pub const PipelineRunner = struct {
         }
 
         const pipeline_yaml_bytes = try readFileBytes(arena, options.pipeline_yaml_path);
-        const config = try yaml_core.PipelineConfig.parse(arena, pipeline_yaml_bytes, &env_interp);
-
-        const schemas_path = options.schemas_yaml_path orelse config.engine.schemas_path;
-        const schemas_yaml_bytes = try readFileBytes(arena, schemas_path);
-        const catalog = try yaml_core.SchemaCatalog.parseYaml(arena, schemas_yaml_bytes, &env_interp);
+        const pipeline_ast = try yaml_core.loadPipelineAstFromYaml(arena, pipeline_yaml_bytes, .{
+            .env_interpolator = &env_interp,
+        });
 
         var registry = @import("loader/mod.zig").ModuleRegistry.init(allocator);
         errdefer registry.deinit();
+
+        var repos = repository_mod.RepositoryRegistry.init(allocator);
+        errdefer repos.deinit();
 
         return PipelineRunner{
             .allocator = allocator,
             .config_arena = config_arena,
             .env_interp = env_interp,
-            .config = config,
-            .catalog = catalog,
+            .ast = pipeline_ast,
             .registry = registry,
-            .db_runtime = undefined,
+            .repos = repos,
         };
     }
 
     pub fn deinit(self: *PipelineRunner) void {
+        self.repos.deinit();
         self.registry.deinit();
         self.config_arena.deinit();
     }
 
-    /// Initializes the SQLite database runtime, optionally loads `.so` shared libraries from `config.modules`,
-    /// and executes full pre-flight validation.
-    pub fn validatePreFlight(
-        self: *PipelineRunner,
-        wal_db_path: ?[]const u8,
-        load_shared: bool,
-    ) anyerror!void {
-        var db_runtime = try sqlite_core.SqliteRuntime.initWithSettings(
-            self.allocator,
-            self.config.engine,
-            wal_db_path,
-            &self.catalog,
-        );
-        defer db_runtime.deinit();
-
-        var eng = engine_mod.PipelineEngine.init(
-            self.allocator,
-            &self.config,
-            &self.catalog,
-            &self.registry,
-            &db_runtime,
-        );
-        defer eng.deinit();
-
-        if (load_shared) {
-            try eng.loadConfiguredModules();
-        }
-        try eng.preflightValidate();
-    }
-
-    /// Runs the validated pipeline on `input_file_path`, writing trace JSONL and any requested output artifacts.
+    /// Runs the pipeline on `input_file_path`.
     pub fn runFile(
         self: *PipelineRunner,
         input_file_path: []const u8,
         options: RunnerOptions,
     ) anyerror!engine_mod.ExecutionSummary {
-        var db_runtime = try sqlite_core.SqliteRuntime.initWithSettings(
-            self.allocator,
-            self.config.engine,
-            options.wal_db_path,
-            &self.catalog,
-        );
-        defer db_runtime.deinit();
+        _ = options;
+        const file_bytes = try readFileBytes(self.allocator, input_file_path);
+        defer self.allocator.free(file_bytes);
 
         var eng = engine_mod.PipelineEngine.init(
             self.allocator,
-            &self.config,
-            &self.catalog,
+            self.ast,
             &self.registry,
-            &db_runtime,
+            &self.repos,
         );
-        defer eng.deinit();
 
-        if (options.load_shared_modules) {
-            try eng.loadConfiguredModules();
-        }
-        try eng.preflightValidate();
-
-        var artifacts = try artifact_mod.ArtifactStore.initFromFile(self.allocator, input_file_path);
-        defer artifacts.deinit();
-
-        const start_p = options.entry_pipeline orelse "main";
-        const summary = try eng.runFrom(&artifacts, start_p);
-
-        // Write JSONL trace if requested via CLI or configured in `engine.trace_file`
-        if (options.trace_out_path orelse self.config.engine.trace_file) |trace_path| {
-            const jsonl = try eng.tracer.toJsonLines(self.allocator);
-            defer self.allocator.free(jsonl);
-            try writeFileBytes(self.allocator, trace_path, jsonl);
-        }
-
-        // Write requested output artifacts to disk
-        for (options.artifact_exports) |exp| {
-            const art_buf = try artifacts.getBuffer(exp.artifact_id);
-            try writeFileBytes(self.allocator, exp.output_path, art_buf.slice());
-        }
-
-        return summary;
+        const input_payload = dataflow.PayloadHandle.fromSlice(u8, file_bytes);
+        return try eng.run(input_payload);
     }
 };

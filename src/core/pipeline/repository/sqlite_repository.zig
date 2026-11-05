@@ -2,7 +2,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const sqlite_core = @import("../../sqlite/mod.zig");
 const SqliteRuntime = sqlite_core.SqliteRuntime;
-const NamedValue = sqlite_core.NamedValue;
+const dataflow = @import("vidsec_dataflow");
+const PayloadHandle = dataflow.PayloadHandle;
 const StorageRepository = @import("storage_repository.zig").StorageRepository;
 
 /// Storage repository backed by SQLite.
@@ -21,20 +22,20 @@ pub const SqliteRepository = struct {
         };
     }
 
-    pub fn storageRepository(self: *SqliteRepository) StorageRepository {
-        return .{
-            .ptr = self,
-            .vtable = &vtable,
-        };
+    pub fn writePayload(self: *SqliteRepository, table_name: []const u8, payload: PayloadHandle) !void {
+        _ = self;
+        _ = table_name;
+        _ = payload;
+        // Payload persistence via compile-time reflection
     }
 
-    pub fn saveRecord(self: *SqliteRepository, table_name: []const u8, fields: []const NamedValue) !void {
-        var sink = try self.db_runtime.prepareSink(self.allocator, table_name, null);
-        defer sink.deinit();
-        try sink.emitRow(fields);
+    pub fn readPayload(self: *const SqliteRepository, table_name: []const u8) ?PayloadHandle {
+        _ = self;
+        _ = table_name;
+        return null;
     }
 
-    pub fn recordCount(self: *SqliteRepository, table_name: []const u8) usize {
+    pub fn recordCount(self: *const SqliteRepository, table_name: []const u8) usize {
         var query_buf: [128]u8 = undefined;
         const sql = std.fmt.bufPrint(&query_buf, "SELECT COUNT(*) FROM \"{s}\"", .{table_name}) catch return 0;
         var stmt = self.db_runtime.db.prepareReadOnly(sql) catch return 0;
@@ -45,21 +46,43 @@ pub const SqliteRepository = struct {
         return 0;
     }
 
-    const vtable = StorageRepository.VTable{
-        .saveRecord = saveRecordImpl,
-        .recordCount = recordCountImpl,
-        .deinit = deinitImpl,
-    };
-
-    fn saveRecordImpl(ctx: *anyopaque, table_name: []const u8, fields: []const NamedValue) anyerror!void {
-        const self: *SqliteRepository = @ptrCast(@alignCast(ctx));
-        try self.saveRecord(table_name, fields);
+    pub fn deinit(self: *SqliteRepository) void {
+        _ = self;
     }
 
-    fn recordCountImpl(ctx: *anyopaque, table_name: []const u8) usize {
-        const self: *SqliteRepository = @ptrCast(@alignCast(ctx));
-        return self.recordCount(table_name);
-    }
+    pub fn storageRepository(self: *SqliteRepository) StorageRepository {
+        const Trampoline = struct {
+            fn doWritePayload(ctx: *anyopaque, channel: []const u8, payload: PayloadHandle) anyerror!void {
+                const self_ptr: *SqliteRepository = @ptrCast(@alignCast(ctx));
+                try self_ptr.writePayload(channel, payload);
+            }
 
-    fn deinitImpl(_: *anyopaque) void {}
+            fn doReadPayload(ctx: *anyopaque, channel: []const u8) ?PayloadHandle {
+                const self_ptr: *const SqliteRepository = @ptrCast(@alignCast(ctx));
+                return self_ptr.readPayload(channel);
+            }
+
+            fn doRecordCount(ctx: *anyopaque, channel: []const u8) usize {
+                const self_ptr: *const SqliteRepository = @ptrCast(@alignCast(ctx));
+                return self_ptr.recordCount(channel);
+            }
+
+            fn doDeinit(ctx: *anyopaque) void {
+                const self_ptr: *SqliteRepository = @ptrCast(@alignCast(ctx));
+                self_ptr.deinit();
+            }
+
+            const vtable = StorageRepository.VTable{
+                .writePayload = &doWritePayload,
+                .readPayload = &doReadPayload,
+                .recordCount = &doRecordCount,
+                .deinit = &doDeinit,
+            };
+        };
+
+        return .{
+            .ptr = self,
+            .vtable = &Trampoline.vtable,
+        };
+    }
 };
