@@ -18,12 +18,12 @@ test {
     _ = @import("lib/math_test.zig");
     _ = @import("lib/ir_domain_test.zig");
     _ = @import("lib/forensics_domain_test.zig");
-
     // Core pipeline & artifact tests
     _ = @import("core/loader_test.zig");
     _ = @import("core/pipeline_test.zig");
     _ = @import("core/artifact_test.zig");
     _ = @import("core/field_pipeline_test.zig");
+    _ = @import("core/dataflow_test.zig");
 
     // Plugin domain tests
     _ = @import("plugins/analyzer_test.zig");

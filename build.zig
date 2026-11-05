@@ -104,7 +104,14 @@ pub fn build(b: *std.Build) void {
     forensics_mod.addImport("vidsec_ir", ir_mod);
     forensics_mod.addImport("vidsec_math", math_mod);
 
-    // 11. Core framework library module (`src/root.zig`)
+    // 12. Core Dataflow Algebra & Stream Execution module (`src/core/dataflow/mod.zig`)
+    const dataflow_mod = b.addModule("vidsec_dataflow", .{
+        .root_source_file = b.path("src/core/dataflow/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // 13. Core framework library module (`src/root.zig`)
     const root_mod = b.addModule("vidsec", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -123,6 +130,7 @@ pub fn build(b: *std.Build) void {
     root_mod.addImport("vidsec_riff", riff_mod);
     root_mod.addImport("vidsec_ir", ir_mod);
     root_mod.addImport("vidsec_forensics", forensics_mod);
+    root_mod.addImport("vidsec_dataflow", dataflow_mod);
 
     // 10. Official `.so` Plugin Shared Libraries (`src/plugin/*`)
     _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, ir_mod, forensics_mod, "analyzer", "src/plugin/analyzer/mod.zig");
@@ -184,6 +192,7 @@ pub fn build(b: *std.Build) void {
     test_suite_mod.addImport("vidsec_riff", riff_mod);
     test_suite_mod.addImport("vidsec_ir", ir_mod);
     test_suite_mod.addImport("vidsec_forensics", forensics_mod);
+    test_suite_mod.addImport("vidsec_dataflow", dataflow_mod);
 
     const test_suite = b.addTest(.{
         .root_module = test_suite_mod,

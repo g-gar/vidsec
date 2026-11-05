@@ -39,6 +39,9 @@ pub const sqlite = @import("core/sqlite/mod.zig");
 /// `vidsec v2` Pipeline Execution Engine, Host VTable Context, Managed Artifact Store, and JSONL Tracer (`src/core/pipeline/`).
 pub const pipeline = @import("core/pipeline/mod.zig");
 
+/// `vidsec v2` Pure Dataflow Algebra, Automatic Lifting, Stream Transformation, and Multi-Core Execution (`src/core/dataflow/`).
+pub const dataflow = @import("vidsec_dataflow");
+
 /// Official `vidsec v2` Plugin Modules (`src/plugin/`), compilable both as `.so` shared libraries and static modules.
 pub const plugin = @import("plugin/mod.zig");
 
