@@ -12,13 +12,23 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(std.SemanticVersion, "version", vidsec_version);
     const options_mod = build_options.createModule();
 
-    // 1. Standalone C-ABI & Plugin SDK module (zero SQLite/YAML dependencies for .so plugins)
-    const abi_mod = b.addModule("vidsec_abi", .{
-        .root_source_file = b.path("src/lib/abi/mod.zig"),
+    // Flowdata General Purpose Dataflow & Pipeline Engine module
+    const flowdata_mod = b.addModule("flowdata", .{
+        .root_source_file = b.path("packages/flowdata/src/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
+    flowdata_mod.linkSystemLibrary("sqlite3", .{});
+
+    // 1. Standalone C-ABI & Plugin SDK module (Flowdata ABI)
+    const abi_mod = b.addModule("vidsec_abi", .{
+        .root_source_file = b.path("packages/flowdata/abi.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    abi_mod.addImport("flowdata", flowdata_mod);
 
     // 2. Standalone zero-allocation Magic Number & MIME Type detection module (`src/lib/magic/mod.zig`)
     const magic_mod = b.addModule("vidsec_magic", .{
@@ -104,15 +114,15 @@ pub fn build(b: *std.Build) void {
     forensics_mod.addImport("vidsec_ir", ir_mod);
     forensics_mod.addImport("vidsec_math", math_mod);
 
-    // 12. Core Dataflow Algebra & Stream Execution module (`src/core/dataflow/mod.zig`)
+    // 12. Flowdata Dataflow Algebra & Stream Execution module
     const dataflow_mod = b.addModule("vidsec_dataflow", .{
-        .root_source_file = b.path("src/core/dataflow/mod.zig"),
+        .root_source_file = b.path("packages/flowdata/dataflow.zig"),
         .target = target,
         .optimize = optimize,
     });
-    dataflow_mod.addImport("vidsec_abi", abi_mod);
+    dataflow_mod.addImport("flowdata", flowdata_mod);
 
-    // 13. Core framework library module (`src/root.zig`)
+    // 13. Vidsec core framework library module (`src/root.zig`)
     const root_mod = b.addModule("vidsec", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -121,6 +131,7 @@ pub fn build(b: *std.Build) void {
     });
     root_mod.linkSystemLibrary("sqlite3", .{});
     root_mod.addImport("build_options", options_mod);
+    root_mod.addImport("flowdata", flowdata_mod);
     root_mod.addImport("vidsec_abi", abi_mod);
     root_mod.addImport("vidsec_magic", magic_mod);
     root_mod.addImport("vidsec_math", math_mod);
@@ -172,6 +183,11 @@ pub fn build(b: *std.Build) void {
     });
     const run_unit_check = b.addRunArtifact(unit_check);
 
+    const flowdata_unit_check = b.addTest(.{
+        .root_module = flowdata_mod,
+    });
+    const run_flowdata_unit_check = b.addRunArtifact(flowdata_unit_check);
+
     // 8. Full test suite in dedicated `tests/` directory
     const test_suite_mod = b.createModule(.{
         .root_source_file = b.path("tests/main.zig"),
@@ -182,6 +198,7 @@ pub fn build(b: *std.Build) void {
     test_suite_mod.linkSystemLibrary("sqlite3", .{});
     test_suite_mod.addImport("build_options", options_mod);
     test_suite_mod.addImport("vidsec", root_mod);
+    test_suite_mod.addImport("flowdata", flowdata_mod);
     test_suite_mod.addImport("vidsec_abi", abi_mod);
     test_suite_mod.addImport("vidsec_magic", magic_mod);
     test_suite_mod.addImport("vidsec_math", math_mod);
@@ -203,6 +220,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run all tests in the tests/ suite");
     test_step.dependOn(&run_unit_check.step);
+    test_step.dependOn(&run_flowdata_unit_check.step);
     test_step.dependOn(&run_test_suite.step);
 }
 

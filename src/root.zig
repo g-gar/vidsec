@@ -1,13 +1,10 @@
 const std = @import("std");
 
-/// Generic, specification-agnostic YAML library (`src/lib/yaml/`).
-pub const yaml_lib = @import("lib/yaml/mod.zig");
+/// Flowdata: Zero-Copy Black Box Native Zig Dataflow & Pipeline Engine (`packages/flowdata/`).
+pub const flowdata = @import("flowdata");
 
-/// Generic, idiomatic SQLite3 SDK & full-fledged DDL/Query Builder (`src/lib/sqlite/`).
-pub const sqlite_lib = @import("lib/sqlite/mod.zig");
-
-/// C-ABI Plugin Contract (`VIDSEC_ABI_VERSION = 2`), Zig Plugin SDK, and Dynamic Module Loader (`src/lib/abi/`).
-pub const abi_lib = @import("vidsec_abi");
+/// C-ABI Plugin Contract (`VIDSEC_ABI_VERSION = 2`), Zig Plugin SDK, and Dynamic Module Loader.
+pub const abi_lib = flowdata.abi;
 
 /// Zero-allocation binary signature (`magic bytes`), MIME type, and container family detection library (`src/lib/magic/`).
 pub const magic_lib = @import("vidsec_magic");
@@ -30,36 +27,23 @@ pub const mkv_lib = @import("vidsec_mkv");
 /// Pure RIFF container and chunk hierarchy parsing library (`src/lib/formats/riff/`).
 pub const riff_lib = @import("vidsec_riff");
 
-/// `vidsec v2` domain configuration loaders (`schemas.yaml` and `pipeline.yaml`) built on top of `yaml_lib`.
-pub const yaml = @import("core/yaml/mod.zig");
+/// Flowdata domain configuration loaders (`schemas.yaml` and `pipeline.yaml`).
+pub const yaml = flowdata.yaml;
 
-/// `vidsec v2` SQLite runtime, schema DDL compiler, declarative query compiler, `sql_rule`, and `router` engine.
-pub const sqlite = @import("core/sqlite/mod.zig");
+/// Flowdata Pipeline Execution Engine, Managed Artifact Store, and JSONL Tracer.
+pub const pipeline = flowdata;
+pub const pipeline_ast = flowdata.ast;
+pub const PipelineAST = flowdata.PipelineAST;
+pub const PipelineEngine = flowdata.PipelineEngine;
 
-/// `vidsec v2` Pipeline Execution Engine, Host VTable Context, Managed Artifact Store, and JSONL Tracer (`src/core/pipeline/`).
-pub const pipeline = @import("core/pipeline/mod.zig");
-pub const pipeline_ast = pipeline.ast;
-
-/// `vidsec v2` Pure Dataflow Algebra, Automatic Lifting, Stream Transformation, and Multi-Core Execution (`src/core/dataflow/`).
-pub const dataflow = @import("vidsec_dataflow");
+/// Flowdata Pure Dataflow Algebra, Automatic Lifting, Stream Transformation, and Multi-Core Execution.
+pub const dataflow = flowdata.dataflow;
 
 /// Official `vidsec v2` Plugin Modules (`src/plugin/`), compilable both as `.so` shared libraries and static modules.
 pub const plugin = @import("plugin/mod.zig");
 
 pub const EnvInterpolator = yaml.EnvInterpolator;
 pub const YamlNode = yaml.YamlNode;
-pub const SchemaCatalog = yaml.SchemaCatalog;
-pub const PipelineAST = pipeline.PipelineAST;
-pub const CatalogCompiler = sqlite.CatalogCompiler;
-pub const SqliteRuntime = sqlite.SqliteRuntime;
-pub const ModuleRegistry = pipeline.ModuleRegistry;
-pub const ArtifactStore = pipeline.ArtifactStore;
-pub const ExecutionTracer = pipeline.ExecutionTracer;
-pub const PipelineEngine = pipeline.PipelineEngine;
-
-pub const build_options = @import("build_options");
-pub const version = build_options.version;
-pub const version_string = build_options.version_string;
 
 test {
     std.testing.refAllDecls(@This());
