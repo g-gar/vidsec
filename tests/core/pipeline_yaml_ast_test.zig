@@ -211,7 +211,7 @@ test "YAML to AST: Parse actual configs/pipeline.yaml" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const file_content = try vidsec.pipeline.readFileBytes(alloc, "configs/pipeline.yaml");
+    const file_content = try vidsec.pipeline.readFileBytes(alloc, "apps/vidsec/configs/pipeline.yaml");
 
     var interp = yaml_mod.EnvInterpolator.init(false);
     defer interp.deinit(alloc);

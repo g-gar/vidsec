@@ -1,9 +1,8 @@
 **/.zig-cache/
 **/.idea/
 **/zig-out/
-dist/
-configs/.env
+**/dist/
+**/.env
 *.db
 *.db-shm
 *.db-wal
-

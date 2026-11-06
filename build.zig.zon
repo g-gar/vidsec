@@ -1,13 +1,12 @@
 .{
-    .name = .vidsec,
-    .version = "2.0.0",
-    .fingerprint = 0xd659431e14e4c6b2,
+    .name = .flowdata,
+    .version = "0.1.0",
+    .fingerprint = 0x157fdebf4193069,
     .dependencies = .{},
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
-        "configs",
-        "tests",
+        "extensions",
     },
 }
