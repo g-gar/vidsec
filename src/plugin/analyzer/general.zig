@@ -616,3 +616,46 @@ pub fn runProbeFile(ctx: abi.TaskContext, inputs: ProbeFileInputs) abi.SdkError!
 
     return .ok;
 }
+
+pub const ProbeFileOutput = struct {
+    file_size: u64,
+    detected_family: []const u8,
+    true_magic_kind: i64,
+    true_magic_name: []const u8,
+    exceeds_size_limit: bool,
+    verdict: []const u8,
+    identified_format: []const u8,
+    mime_type: []const u8,
+    extension_match: bool,
+    mid_entropy: f64,
+    head_size_read: u64,
+    tail_size_read: u64,
+    flags_csv: []const u8,
+    suspicious_string: []const u8 = "",
+    zip_eocd_offset: i64 = -1,
+};
+
+/// Modern pure Black Box task for Level 0 triage (`analyzer/probe_file`).
+pub fn probeFileTask(alloc: std.mem.Allocator, in: []const u8) !ProbeFileOutput {
+    const res = analyzeSlice(in, .{});
+    const flags_buf = try alloc.alloc(u8, 512);
+    const flags_csv = res.formatFlagsCsv(flags_buf);
+
+    return .{
+        .file_size = res.file_size,
+        .detected_family = res.detected_family,
+        .true_magic_kind = res.true_magic_kind,
+        .true_magic_name = res.true_magic_name,
+        .exceeds_size_limit = res.exceeds_size_limit,
+        .verdict = res.verdict.asText(),
+        .identified_format = res.identified_format,
+        .mime_type = res.magic_info.mime_type,
+        .extension_match = res.extension_match,
+        .mid_entropy = res.mid_entropy,
+        .head_size_read = @intCast(res.head_size_read),
+        .tail_size_read = @intCast(res.tail_size_read),
+        .flags_csv = flags_csv,
+        .suspicious_string = res.first_suspicious_string,
+        .zip_eocd_offset = if (res.zip_eocd_offset) |o| @intCast(o) else -1,
+    };
+}

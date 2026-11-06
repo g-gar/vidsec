@@ -82,4 +82,46 @@ pub const MemoryRepository = struct {
             .vtable = &Trampoline.vtable,
         };
     }
+
+    pub fn createHeap(allocator: Allocator, params: []const @import("../../ast/ast.zig").KeyValueParam) anyerror!StorageRepository {
+        _ = params;
+        const self_ptr = try allocator.create(MemoryRepository);
+        self_ptr.* = MemoryRepository.init(allocator);
+
+        const Trampoline = struct {
+            fn doWritePayload(ctx: *anyopaque, channel: []const u8, payload: PayloadHandle) anyerror!void {
+                const s: *MemoryRepository = @ptrCast(@alignCast(ctx));
+                try s.writePayload(channel, payload);
+            }
+
+            fn doReadPayload(ctx: *anyopaque, channel: []const u8) ?PayloadHandle {
+                const s: *const MemoryRepository = @ptrCast(@alignCast(ctx));
+                return s.readPayload(channel);
+            }
+
+            fn doRecordCount(ctx: *anyopaque, channel: []const u8) usize {
+                const s: *const MemoryRepository = @ptrCast(@alignCast(ctx));
+                return s.recordCount(channel);
+            }
+
+            fn doDeinit(ctx: *anyopaque) void {
+                const s: *MemoryRepository = @ptrCast(@alignCast(ctx));
+                const alloc = s.allocator;
+                s.deinit();
+                alloc.destroy(s);
+            }
+
+            const vtable = StorageRepository.VTable{
+                .writePayload = &doWritePayload,
+                .readPayload = &doReadPayload,
+                .recordCount = &doRecordCount,
+                .deinit = &doDeinit,
+            };
+        };
+
+        return .{
+            .ptr = self_ptr,
+            .vtable = &Trampoline.vtable,
+        };
+    }
 };

@@ -30,6 +30,13 @@ pub const analyzeStream = general.analyzeStream;
 pub const analyzeSlice = general.analyzeSlice;
 pub const shannonEntropy = math.shannonEntropy;
 
+pub const probeFileTask = general.probeFileTask;
+pub const probeIsobmffTask = isobmff_analyzer.probeIsobmffTask;
+pub const probeMp4Task = mp4_analyzer.probeMp4Task;
+pub const probeEbmlTask = ebml_analyzer.probeEbmlTask;
+pub const probeMkvTask = mkv_analyzer.probeMkvTask;
+pub const probeRiffTask = riff_analyzer.probeRiffTask;
+
 pub const runProbeFile = general.runProbeFile;
 pub const runProbeIsobmff = isobmff_analyzer.runProbeIsobmff;
 pub const runProbeMp4 = mp4_analyzer.runProbeMp4;
@@ -149,76 +156,65 @@ pub const LOWER_MEDIA_OUTPUT_FIELDS = [_][*:0]const u8{
 };
 
 pub const tasks = [_]abi.TaskDescriptor_ABI{
-    // Level 0: Universal Pre-Triage
-    abi.defineBoundTask(general.ProbeFileInputs, .{
+    // Level 0: Universal Pre-Triage (Modern Black Box)
+    abi.defineBlackBoxTask(.{
         .name = "probe_file",
         .description = "Level 0 lightweight multimedia triage: magic bytes, MIME, polyglot EOCD, mid-stream Shannon entropy",
-        .output_fields = &PROBE_FILE_OUTPUT_FIELDS,
-        .run = &runProbeFile,
+        .run = &probeFileTask,
     }),
 
-    // Level 1: Container Structural Audits (with aliases for backward compatibility)
-    abi.defineBoundTask(isobmff_analyzer.ProbeIsobmffInputs, .{
+    // Level 1: Container Structural Audits (Modern Black Box)
+    abi.defineBlackBoxTask(.{
         .name = "audit_isobmff",
         .description = "Level 1 structural auditing for ISOBMFF containers (MP4/MOV): box grammar, overflows, cycles, trailing slack",
-        .output_fields = &PROBE_ISOBMFF_OUTPUT_FIELDS,
-        .run = &runProbeIsobmff,
+        .run = &probeIsobmffTask,
     }),
-    abi.defineBoundTask(isobmff_analyzer.ProbeIsobmffInputs, .{
+    abi.defineBlackBoxTask(.{
         .name = "probe_isobmff",
         .description = "Alias for audit_isobmff",
-        .output_fields = &PROBE_ISOBMFF_OUTPUT_FIELDS,
-        .run = &runProbeIsobmff,
+        .run = &probeIsobmffTask,
     }),
-    abi.defineBoundTask(ebml_analyzer.ProbeEbmlInputs, .{
+    abi.defineBlackBoxTask(.{
         .name = "audit_ebml",
         .description = "Level 1 structural auditing for EBML containers (MKV/WebM): VINT encoding, element hierarchy, nesting bounds",
-        .output_fields = &PROBE_EBML_OUTPUT_FIELDS,
-        .run = &runProbeEbml,
+        .run = &probeEbmlTask,
     }),
-    abi.defineBoundTask(ebml_analyzer.ProbeEbmlInputs, .{
+    abi.defineBlackBoxTask(.{
         .name = "probe_ebml",
         .description = "Alias for audit_ebml",
-        .output_fields = &PROBE_EBML_OUTPUT_FIELDS,
-        .run = &runProbeEbml,
+        .run = &probeEbmlTask,
     }),
-    abi.defineBoundTask(riff_analyzer.ProbeRiffInputs, .{
+    abi.defineBlackBoxTask(.{
         .name = "audit_riff",
         .description = "Level 1 structural auditing for RIFF containers (AVI/WAV/WEBP): chunk headers, LIST nesting, word alignment",
-        .output_fields = &PROBE_RIFF_OUTPUT_FIELDS,
-        .run = &runProbeRiff,
+        .run = &probeRiffTask,
     }),
-    abi.defineBoundTask(riff_analyzer.ProbeRiffInputs, .{
+    abi.defineBlackBoxTask(.{
         .name = "probe_riff",
         .description = "Alias for audit_riff",
-        .output_fields = &PROBE_RIFF_OUTPUT_FIELDS,
-        .run = &runProbeRiff,
+        .run = &probeRiffTask,
     }),
 
-    // Level 2: Format-Specific Semantic Audits
-    abi.defineBoundTask(mp4_analyzer.ProbeMp4Inputs, .{
+    // Level 2: Format-Specific Semantic Audits (Modern Black Box)
+    abi.defineBlackBoxTask(.{
         .name = "audit_mp4",
         .description = "Level 2 semantic auditing for MP4: track decoding, ftyp brands, avcC/esds codec configs, sample tables",
-        .output_fields = &PROBE_MP4_OUTPUT_FIELDS,
-        .run = &runProbeMp4,
+        .run = &probeMp4Task,
     }),
-    abi.defineBoundTask(mp4_analyzer.ProbeMp4Inputs, .{
+    abi.defineBlackBoxTask(.{
         .name = "probe_mp4",
         .description = "Alias for audit_mp4",
-        .output_fields = &PROBE_MP4_OUTPUT_FIELDS,
-        .run = &runProbeMp4,
+        .run = &probeMp4Task,
     }),
-    abi.defineBoundTask(mkv_analyzer.ProbeMkvInputs, .{
+    abi.defineBlackBoxTask(.{
         .name = "audit_mkv",
         .description = "Level 2 semantic auditing for Matroska: track entries, codec parameters, SPS/PPS configs, cluster integrity",
-        .output_fields = &PROBE_MKV_OUTPUT_FIELDS,
-        .run = &runProbeMkv,
+        .run = &probeMkvTask,
     }),
-    abi.defineBoundTask(mkv_analyzer.ProbeMkvInputs, .{
+    abi.defineBlackBoxTask(.{
         .name = "probe_mkv",
         .description = "Alias for audit_mkv",
-        .output_fields = &PROBE_MKV_OUTPUT_FIELDS,
-        .run = &runProbeMkv,
+        .run = &probeMkvTask,
     }),
 
     // Stage 2: Declarative Format-Specific IR Lowering

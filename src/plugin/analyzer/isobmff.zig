@@ -238,3 +238,39 @@ pub fn runProbeIsobmff(ctx: abi.TaskContext, inputs: ProbeIsobmffInputs) abi.Sdk
 
     return .ok;
 }
+
+pub const ProbeIsobmffOutput = struct {
+    box_count: u32,
+    root_box_count: u32,
+    max_depth: u16,
+    mdat_count: u32,
+    total_mdat_bytes: u64,
+    trailing_slack_bytes: u64,
+    verdict: []const u8,
+    has_ftyp: bool,
+    has_moov: bool,
+    flags_csv: []const u8,
+};
+
+/// Modern pure Black Box task for Level 1 ISOBMFF structural audit (`analyzer/probe_isobmff`).
+pub fn probeIsobmffTask(alloc: std.mem.Allocator, in: []const u8) !ProbeIsobmffOutput {
+    const byte_source = isobmff.ByteSource.fromSlice(in);
+    const parser = isobmff.SafeBoxParser.init(alloc);
+    const parse_result = try parser.parse(byte_source);
+
+    const flags_buf = try alloc.alloc(u8, 1024);
+    const triage_res = evaluatePolicy(parse_result, in.len, flags_buf);
+
+    return .{
+        .box_count = triage_res.box_count,
+        .root_box_count = triage_res.root_box_count,
+        .max_depth = triage_res.max_depth,
+        .mdat_count = triage_res.mdat_count,
+        .total_mdat_bytes = triage_res.total_mdat_bytes,
+        .trailing_slack_bytes = triage_res.trailing_slack_bytes,
+        .verdict = triage_res.verdict.asText(),
+        .has_ftyp = triage_res.has_ftyp,
+        .has_moov = triage_res.has_moov,
+        .flags_csv = triage_res.flags_csv,
+    };
+}

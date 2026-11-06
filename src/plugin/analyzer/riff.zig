@@ -197,3 +197,48 @@ pub fn runProbeRiff(ctx: abi.TaskContext, inputs: ProbeRiffInputs) abi.SdkError!
 
     return .ok;
 }
+
+pub const ProbeRiffOutput = struct {
+    chunk_count: u32,
+    root_chunk_count: u32,
+    max_depth: u16,
+    form_type: []const u8,
+    root_size: u64,
+    movi_bytes: u64,
+    junk_bytes: u64,
+    trailing_slack_bytes: u64,
+    verdict: []const u8,
+    flags_csv: []const u8,
+};
+
+/// Modern pure Black Box task for Level 1 RIFF structural audit (`analyzer/probe_riff`).
+pub fn probeRiffTask(alloc: std.mem.Allocator, in: []const u8) !ProbeRiffOutput {
+    const byte_source = riff.ByteSource.fromSlice(in);
+    const parser = riff.SafeRiffParser.init(alloc, .{});
+    const parse_result = try parser.parse(byte_source);
+
+    const flags_buf = try alloc.alloc(u8, 1024);
+    const evaluation = evaluateRiffPolicy(parse_result, in.len, flags_buf);
+
+    var root_chunk_count: u32 = 0;
+    var max_depth: u16 = 0;
+    for (parse_result.chunks) |c| {
+        if (c.parent_id == null) root_chunk_count += 1;
+        if (c.depth > max_depth) max_depth = c.depth;
+    }
+
+    const form = try alloc.dupe(u8, &parse_result.form_type.bytes);
+
+    return .{
+        .chunk_count = @intCast(parse_result.chunks.len),
+        .root_chunk_count = root_chunk_count,
+        .max_depth = max_depth,
+        .form_type = form,
+        .root_size = parse_result.root_size,
+        .movi_bytes = parse_result.movi_bytes,
+        .junk_bytes = parse_result.junk_bytes,
+        .trailing_slack_bytes = parse_result.trailing_slack_bytes,
+        .verdict = evaluation.verdict.asText(),
+        .flags_csv = evaluation.flags_csv,
+    };
+}

@@ -207,3 +207,70 @@ pub fn runProbeMp4(ctx: abi.TaskContext, inputs: ProbeMp4Inputs) abi.SdkError!ab
 
     return .ok;
 }
+
+pub const ProbeMp4Output = struct {
+    track_count: i64,
+    video_track_count: i64,
+    audio_track_count: i64,
+    major_brand: []const u8,
+    video_codec: []const u8,
+    video_width: i64,
+    video_height: i64,
+    total_samples: i64,
+    total_sample_bytes: i64,
+    unreferenced_mdat_slack: i64,
+    verdict: []const u8,
+    flags_csv: []const u8,
+};
+
+/// Modern pure Black Box task for Level 2 MP4 semantic audit (`analyzer/probe_mp4`).
+pub fn probeMp4Task(alloc: std.mem.Allocator, in: []const u8) !ProbeMp4Output {
+    const byte_source = isobmff.ByteSource.fromSlice(in);
+    const box_parser = isobmff.SafeBoxParser.init(alloc);
+    const parse_result = try box_parser.parse(byte_source);
+
+    const inspector = mp4.Mp4Inspector.init(alloc);
+    const mp4_result = try inspector.inspect(byte_source, parse_result.boxes);
+
+    const flags_buf = try alloc.alloc(u8, 1024);
+    const evaluation = evaluateMp4Policy(mp4_result, flags_buf);
+
+    var video_count: i64 = 0;
+    var audio_count: i64 = 0;
+    var primary_video_codec = try alloc.dupe(u8, "none");
+    var primary_video_w: i64 = 0;
+    var primary_video_h: i64 = 0;
+
+    for (mp4_result.tracks) |tr| {
+        if (tr.isVideo()) {
+            video_count += 1;
+            if (video_count == 1) {
+                primary_video_codec = try alloc.dupe(u8, &tr.codec_fourcc.bytes);
+                primary_video_w = @intCast(tr.width);
+                primary_video_h = @intCast(tr.height);
+            }
+        } else if (tr.isAudio()) {
+            audio_count += 1;
+        }
+    }
+
+    var brand = try alloc.dupe(u8, "isom");
+    if (mp4_result.ftyp) |f| {
+        brand = try alloc.dupe(u8, &f.major_brand.bytes);
+    }
+
+    return .{
+        .track_count = @intCast(mp4_result.tracks.len),
+        .video_track_count = video_count,
+        .audio_track_count = audio_count,
+        .major_brand = brand,
+        .video_codec = primary_video_codec,
+        .video_width = primary_video_w,
+        .video_height = primary_video_h,
+        .total_samples = @intCast(mp4_result.total_samples),
+        .total_sample_bytes = @intCast(mp4_result.total_sample_bytes),
+        .unreferenced_mdat_slack = @intCast(mp4_result.unreferenced_mdat_slack),
+        .verdict = evaluation.verdict.asText(),
+        .flags_csv = evaluation.flags_csv,
+    };
+}

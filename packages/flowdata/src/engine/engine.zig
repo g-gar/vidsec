@@ -65,11 +65,14 @@ pub const PipelineEngine = struct {
         }
 
         // 2. Track intermediate step outputs by step ID
+        var outputs_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer outputs_arena.deinit();
+        const outputs_alloc = outputs_arena.allocator();
+
         var outputs: std.StringHashMapUnmanaged(PayloadHandle) = .empty;
-        defer outputs.deinit(self.allocator);
 
         // 3. Execute main pipeline
-        try self.executeSubPipeline("main", input_payload, &outputs, &summary);
+        try self.executeSubPipeline("main", input_payload, &outputs, outputs_alloc, &summary);
 
         return summary;
     }
@@ -127,6 +130,7 @@ pub const PipelineEngine = struct {
         name: []const u8,
         active_input: PayloadHandle,
         outputs: *std.StringHashMapUnmanaged(PayloadHandle),
+        outputs_alloc: Allocator,
         summary: *ExecutionSummary,
     ) anyerror!void {
         const pipe = self.ast.getPipeline(name) orelse return error.UnknownSubPipeline;
@@ -194,7 +198,7 @@ pub const PipelineEngine = struct {
                     }
 
                     // Store output by task ID
-                    try outputs.put(self.allocator, task_spec.id, task_output);
+                    try outputs.put(outputs_alloc, task_spec.id, task_output);
                     current_input = task_output;
 
                     // Route to declared output channels and datasources
@@ -212,9 +216,9 @@ pub const PipelineEngine = struct {
                         }
 
                         // Save channel output under channel name and scoped step_id.channel_name
-                        try outputs.put(self.allocator, out_ch.name, channel_payload);
-                        const scoped_name = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ task_spec.id, out_ch.name });
-                        try outputs.put(self.allocator, scoped_name, channel_payload);
+                        try outputs.put(outputs_alloc, out_ch.name, channel_payload);
+                        const scoped_name = try std.fmt.allocPrint(outputs_alloc, "{s}.{s}", .{ task_spec.id, out_ch.name });
+                        try outputs.put(outputs_alloc, scoped_name, channel_payload);
                     }
 
                     summary.steps_executed += 1;
@@ -231,7 +235,7 @@ pub const PipelineEngine = struct {
                             if (std.mem.eql(u8, case.goto_pipeline, "continue")) {
                                 break;
                             } else {
-                                try self.executeSubPipeline(case.goto_pipeline, current_input, outputs, summary);
+                                try self.executeSubPipeline(case.goto_pipeline, current_input, outputs, outputs_alloc, summary);
                                 break;
                             }
                         }
@@ -240,7 +244,7 @@ pub const PipelineEngine = struct {
                     if (!branched) {
                         if (router_spec.default_pipeline) |def_pipe| {
                             if (!std.mem.eql(u8, def_pipe, "continue")) {
-                                try self.executeSubPipeline(def_pipe, current_input, outputs, summary);
+                                try self.executeSubPipeline(def_pipe, current_input, outputs, outputs_alloc, summary);
                             }
                         }
                     }

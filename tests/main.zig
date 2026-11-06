@@ -1,8 +1,8 @@
 const std = @import("std");
 
 test {
-    // End-to-end integration tests (will be migrated to Black Box in Phase 5)
-    // _ = @import("pipeline_e2e_test.zig");
+    // End-to-end integration tests with dynamic shared plugin loading
+    _ = @import("pipeline_e2e_test.zig");
 
     // Format parser tests
     _ = @import("formats/formats_common_test.zig");

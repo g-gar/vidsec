@@ -16,6 +16,8 @@ pub const extensions = @import("extensions/mod.zig");
 pub const PipelineAST = ast.PipelineAST;
 pub const PipelineBuilder = ast.PipelineBuilder;
 pub const PipelineEngine = engine.PipelineEngine;
+pub const PipelineRunner = runner.PipelineRunner;
+pub const RunnerOptions = runner.RunnerOptions;
 pub const ModuleRegistry = loader.ModuleRegistry;
 pub const validateManifest = loader.validateManifest;
 pub const verifySafeModulePermissions = loader.verifySafeModulePermissions;
@@ -28,6 +30,7 @@ pub const PayloadHandle = dataflow.PayloadHandle;
 pub const ArtifactStore = artifact.ArtifactStore;
 pub const ManagedBuffer = artifact.ManagedBuffer;
 pub const readFileBytes = runner.readFileBytes;
+pub const ArtifactExportSpec = runner.ArtifactExportSpec;
 
 test {
     std.testing.refAllDecls(@This());

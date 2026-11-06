@@ -142,7 +142,7 @@ pub fn main(init: std.process.Init) !u8 {
     switch (cmd) {
         .validate => {
             try runner.validatePreFlight(wal_db_path, load_shared);
-            const msg = "[OK] Pre-flight validation passed (YAML, DAG, SQLite DDL/DML, and Plugin ABI).\n";
+            const msg = "[OK] Pre-flight validation passed (YAML, DAG, and Plugin ABI).\n";
             printStdout(msg);
         },
         .run => {
@@ -151,19 +151,15 @@ pub fn main(init: std.process.Init) !u8 {
                 return 1;
             };
             const summary = try runner.runFile(in_path, opts);
-            const active_db = opts.wal_db_path orelse runner.config.engine.db_path orelse
-                (if (runner.config.engine.db_mode == .wal_file) "./vidsec_state.db" else ":memory:");
             var out_buf: [512]u8 = undefined;
             const line = try std.fmt.bufPrint(
                 &out_buf,
-                "[OK] Pipeline completed: steps={d}, routers={d}, rows_emitted={d}, halted={any}, final_pipeline={s}, db={s}\n",
+                "[OK] Pipeline completed: steps={d}, routers={d}, halted={any}, final_pipeline={s}\n",
                 .{
                     summary.steps_executed,
                     summary.routers_evaluated,
-                    summary.total_rows_emitted,
                     summary.halted_early,
                     summary.final_pipeline,
-                    active_db,
                 },
             );
             printStdout(line);

@@ -225,3 +225,43 @@ pub fn runProbeEbml(ctx: abi.TaskContext, inputs: ProbeEbmlInputs) abi.SdkError!
 
     return .ok;
 }
+
+pub const ProbeEbmlOutput = struct {
+    element_count: u32,
+    root_element_count: u32,
+    max_depth: u16,
+    cluster_count: u32,
+    total_cluster_bytes: u64,
+    trailing_slack_bytes: u64,
+    doc_type: []const u8,
+    doc_type_version: u32,
+    verdict: []const u8,
+    has_ebml_header: bool,
+    has_segment: bool,
+    flags_csv: []const u8,
+};
+
+/// Modern pure Black Box task for Level 1 EBML structural audit (`analyzer/probe_ebml`).
+pub fn probeEbmlTask(alloc: std.mem.Allocator, in: []const u8) !ProbeEbmlOutput {
+    const byte_source = ebml.ByteSource.fromSlice(in);
+    const parser = ebml.SafeEbmlParser.init(alloc, .{});
+    const parse_result = try parser.parse(byte_source);
+
+    const flags_buf = try alloc.alloc(u8, 1024);
+    const evaluation = evaluateEbmlPolicy(parse_result, in.len, flags_buf);
+
+    return .{
+        .element_count = evaluation.element_count,
+        .root_element_count = evaluation.root_element_count,
+        .max_depth = evaluation.max_depth,
+        .cluster_count = evaluation.cluster_count,
+        .total_cluster_bytes = evaluation.total_cluster_bytes,
+        .trailing_slack_bytes = evaluation.trailing_slack_bytes,
+        .doc_type = evaluation.doc_type,
+        .doc_type_version = evaluation.doc_type_version,
+        .verdict = evaluation.verdict.asText(),
+        .has_ebml_header = evaluation.has_ebml_header,
+        .has_segment = evaluation.has_segment,
+        .flags_csv = evaluation.flags_csv,
+    };
+}

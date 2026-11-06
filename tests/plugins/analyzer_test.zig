@@ -139,3 +139,51 @@ test "Triage Scenario 4: Sample with MZ stub or /bin/sh inserted in the first 4 
     try std.testing.expect(res.hasFlag(.suspicious_string_detected));
     try std.testing.expectEqual(@as(?u64, 512), res.secondary_exec_offset);
 }
+
+test "Black Box Tasks: Native typed execution under std.testing.allocator" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // 1. probeFileTask on mock MP4
+    var mp4_buf: [4096]u8 = undefined;
+    fillHighEntropyPayload(&mp4_buf, 0x11223344);
+    const mp4_hdr = "\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2mp41";
+    @memcpy(mp4_buf[0..mp4_hdr.len], mp4_hdr);
+
+    const probe_out = try analyzer.probeFileTask(alloc, &mp4_buf);
+    try std.testing.expectEqualStrings("mp4", probe_out.identified_format);
+    try std.testing.expectEqualStrings("isobmff", probe_out.detected_family);
+    try std.testing.expect(probe_out.file_size == 4096);
+
+    // 2. probeIsobmffTask
+    const isobmff_out = try analyzer.probeIsobmffTask(alloc, &mp4_buf);
+    try std.testing.expect(isobmff_out.has_ftyp);
+
+    // 3. probeMp4Task
+    const mp4_out = try analyzer.probeMp4Task(alloc, &mp4_buf);
+    try std.testing.expectEqualStrings("isom", mp4_out.major_brand);
+
+    // 4. probeEbmlTask & probeMkvTask on mock MKV
+    var mkv_buf: [4096]u8 = undefined;
+    fillHighEntropyPayload(&mkv_buf, 0x55667788);
+    const mkv_hdr = "\x1A\x45\xDF\xA3\x9F\x42\x86\x81\x01\x42\xF7\x81\x01\x42\x82\x88matroska\x42\x87\x81\x04";
+    @memcpy(mkv_buf[0..mkv_hdr.len], mkv_hdr);
+
+    const ebml_out = try analyzer.probeEbmlTask(alloc, &mkv_buf);
+    try std.testing.expectEqualStrings("matroska", ebml_out.doc_type);
+    try std.testing.expect(ebml_out.element_count > 0);
+
+    const mkv_out = try analyzer.probeMkvTask(alloc, &mkv_buf);
+    try std.testing.expect(mkv_out.track_count >= 0);
+
+    // 5. probeRiffTask on mock AVI
+    var riff_buf: [4096]u8 = undefined;
+    fillHighEntropyPayload(&riff_buf, 0x99AABBCC);
+    @memcpy(riff_buf[0..4], "RIFF");
+    std.mem.writeInt(u32, riff_buf[4..8], @intCast(riff_buf.len - 8), .little);
+    @memcpy(riff_buf[8..12], "AVI ");
+
+    const riff_out = try analyzer.probeRiffTask(alloc, &riff_buf);
+    try std.testing.expectEqualStrings("AVI ", riff_out.form_type);
+}

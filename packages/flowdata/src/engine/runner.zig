@@ -68,8 +68,11 @@ pub const RunnerOptions = struct {
     pipeline_yaml_path: []const u8,
     schemas_yaml_path: ?[]const u8 = null,
     dotenv_path: ?[]const u8 = null,
+    wal_db_path: ?[]const u8 = null,
+    trace_out_path: ?[]const u8 = null,
     entry_pipeline: ?[]const u8 = null,
     artifact_exports: []const ArtifactExportSpec = &.{},
+    load_shared_modules: bool = true,
 };
 
 /// High-level coordinator that loads `.env` and `pipeline.yaml`,
@@ -103,6 +106,7 @@ pub const PipelineRunner = struct {
 
         var repos = repository_mod.RepositoryRegistry.init(allocator);
         errdefer repos.deinit();
+        try @import("../extensions/datasources/mod.zig").registerDefaultDrivers(&repos);
 
         return PipelineRunner{
             .allocator = allocator,
@@ -118,6 +122,18 @@ pub const PipelineRunner = struct {
         self.repos.deinit();
         self.registry.deinit();
         self.config_arena.deinit();
+    }
+
+    pub fn validatePreFlight(
+        self: *PipelineRunner,
+        wal_db_path: ?[]const u8,
+        load_shared: bool,
+    ) anyerror!void {
+        _ = wal_db_path;
+        _ = load_shared;
+        if (self.ast.getPipeline("main") == null) {
+            return error.MissingMainPipeline;
+        }
     }
 
     /// Runs the pipeline on `input_file_path`.

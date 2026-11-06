@@ -14,3 +14,4 @@ pub const sqlite = @import("../extensions/datasources/sqlite.zig");
 pub const MemoryRepository = memory.MemoryRepository;
 pub const FileStoreRepository = file_store.FileStoreRepository;
 pub const SqliteRepository = sqlite.SqliteRepository;
+pub const registerDefaultDrivers = @import("../extensions/datasources/mod.zig").registerDefaultDrivers;
