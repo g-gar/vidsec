@@ -42,6 +42,14 @@ The `schemas.yaml` file defines the shared relational structure consumed by pipe
 * `default` *(optional, literal)*: Default value for the column (`0`, `false`, `'unknown'`).
 * `ref` *(optional, `<table_name>.<column_name>`)*: Foreign key reference (`REFERENCES <table>(<column>)`).
 
+**Table Attributes:**
+* `columns`: Dictionary of column definitions.
+* `indexes` *(optional)*: List of index definitions (columns, unique, expressions, where).
+* `primary_key` *(optional)*: Explicit single or composite primary key `[<col1>, <col2>]`.
+* `unique_keys` *(optional)*: List of composite unique constraints.
+* `checks` *(optional)*: Table-level `CHECK` expressions.
+* `seeds` *(optional, list of mappings)*: Initial static rows for lookup and enum tables (`- { col1: val1, col2: val2 }`). Every column name must exist in `columns`.
+
 ### 2.2. Complete `schemas.yaml` Example
 
 ```yaml

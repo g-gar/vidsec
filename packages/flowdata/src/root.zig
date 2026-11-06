@@ -7,10 +7,10 @@ pub const yaml = @import("yaml/mod.zig");
 pub const repository = @import("repository/mod.zig");
 pub const engine = @import("engine/engine.zig");
 pub const runner = @import("engine/runner.zig");
-pub const loader = @import("engine/loader/mod.zig");
+pub const modules = @import("modules/mod.zig");
+pub const loader = modules;
 pub const tracer = @import("engine/tracer.zig");
 pub const artifact = @import("engine/artifact.zig");
-pub const extensions = @import("extensions/mod.zig");
 
 // Primary Engine Exports
 pub const PipelineAST = ast.PipelineAST;
@@ -18,9 +18,10 @@ pub const PipelineBuilder = ast.PipelineBuilder;
 pub const PipelineEngine = engine.PipelineEngine;
 pub const PipelineRunner = runner.PipelineRunner;
 pub const RunnerOptions = runner.RunnerOptions;
-pub const ModuleRegistry = loader.ModuleRegistry;
-pub const validateManifest = loader.validateManifest;
-pub const verifySafeModulePermissions = loader.verifySafeModulePermissions;
+pub const ModuleRegistry = modules.ModuleRegistry;
+pub const validateManifest = modules.validateManifest;
+pub const verifySafeModulePermissions = modules.verifySafeModulePermissions;
+pub const LoaderError = modules.LoaderError;
 pub const ExecutionSummary = engine.ExecutionSummary;
 pub const StorageRepository = repository.StorageRepository;
 pub const RepositoryRegistry = repository.RepositoryRegistry;

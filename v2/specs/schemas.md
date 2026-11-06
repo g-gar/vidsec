@@ -56,6 +56,10 @@ components:
         - columns: [<column1>, ...]
           unique: <bool>                        # Optional (defaults to false)
           build: immediate | deferred           # Optional (deferred: post-bulk ingestion)
+
+      # Declarative initial seed rows (optional, e.g. for lookup / enum tables)
+      seeds:
+        - { <column_name>: <literal_value>, ... }
 ```
 
 ### 2.2. Validation Rules
@@ -63,8 +67,9 @@ components:
 2. **Clean Default Literals:** Defaults are declared as native YAML literals without SQL escaping artifacts:
    - Correct: `default: unknown`, `default: ""`, `default: 0`, `default: false`.
    - Prohibited: `default: "'unknown'"`.
-3. **Deferred Indexing (`build: deferred`):** Indexes on high-throughput ingestion tables (such as `ir_regions`) are marked `deferred` to avoid B-Tree rebalancing overhead during sequential bulk inserts.
-4. **Deferred Foreign Keys (`defer_fk: true`):** Compiles to `DEFERRABLE INITIALLY DEFERRED` in SQLite, enabling streaming ingestion without hierarchical ordering deadlocks.
+3. **Declarative Catalog Seeds (`seeds:`):** Lookup, enum, and reference tables can declare initial static rows directly in YAML without maintaining hardcoded imperative `INSERT` statements in host or plugin code. Every key in each seed entry must strictly match a declared column in `columns`.
+4. **Deferred Indexing (`build: deferred`):** Indexes on high-throughput ingestion tables (such as `ir_regions`) are marked `deferred` to avoid B-Tree rebalancing overhead during sequential bulk inserts.
+5. **Deferred Foreign Keys (`defer_fk: true`):** Compiles to `DEFERRABLE INITIALLY DEFERRED` in SQLite, enabling streaming ingestion without hierarchical ordering deadlocks.
 
 ### 2.3. Canonical Example
 

@@ -134,6 +134,7 @@ pub fn main(init: std.process.Init) !u8 {
         .entry_pipeline = entry_pipeline,
         .artifact_exports = exports_list.items,
         .load_shared_modules = load_shared,
+        .driver_initializer = &vidsec.extensions.datasources.registerDefaultDrivers,
     };
 
     var runner = try vidsec.pipeline.PipelineRunner.initFromFiles(allocator, opts);

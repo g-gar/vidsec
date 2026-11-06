@@ -2,7 +2,6 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const abi = @import("../abi/mod.zig");
 const yaml_core = @import("../yaml/mod.zig");
-const sqlite_core = @import("../extensions/datasources/sqlite_runtime/mod.zig");
 const artifact_mod = @import("artifact.zig");
 const engine_mod = @import("engine.zig");
 const ast_mod = @import("../ast/ast.zig");
@@ -64,6 +63,8 @@ pub const ArtifactExportSpec = struct {
     output_path: []const u8,
 };
 
+pub const DriverInitializerFn = *const fn (registry: *repository_mod.RepositoryRegistry) anyerror!void;
+
 pub const RunnerOptions = struct {
     pipeline_yaml_path: []const u8,
     schemas_yaml_path: ?[]const u8 = null,
@@ -73,16 +74,18 @@ pub const RunnerOptions = struct {
     entry_pipeline: ?[]const u8 = null,
     artifact_exports: []const ArtifactExportSpec = &.{},
     load_shared_modules: bool = true,
+    driver_initializer: ?DriverInitializerFn = null,
 };
 
 /// High-level coordinator that loads `.env` and `pipeline.yaml`,
 /// resolves datasources via RepositoryRegistry, and runs the pipeline on media files.
 pub const PipelineRunner = struct {
     allocator: Allocator,
+    options: RunnerOptions,
     config_arena: std.heap.ArenaAllocator,
     env_interp: yaml_core.EnvInterpolator,
     ast: ast_mod.PipelineAST,
-    registry: @import("loader/mod.zig").ModuleRegistry,
+    registry: @import("../modules/mod.zig").ModuleRegistry,
     repos: repository_mod.RepositoryRegistry,
 
     pub fn initFromFiles(allocator: Allocator, options: RunnerOptions) anyerror!PipelineRunner {
@@ -101,15 +104,24 @@ pub const PipelineRunner = struct {
             .env_interpolator = &env_interp,
         });
 
-        var registry = @import("loader/mod.zig").ModuleRegistry.init(allocator);
+        var registry = @import("../modules/mod.zig").ModuleRegistry.init(allocator);
         errdefer registry.deinit();
+
+        if (options.load_shared_modules) {
+            for (pipeline_ast.modules) |mod_entry| {
+                _ = try registry.loadSharedLibrary(mod_entry.name, mod_entry.path);
+            }
+        }
 
         var repos = repository_mod.RepositoryRegistry.init(allocator);
         errdefer repos.deinit();
-        try @import("../extensions/datasources/mod.zig").registerDefaultDrivers(&repos);
+        if (options.driver_initializer) |init_fn| {
+            try init_fn(&repos);
+        }
 
         return PipelineRunner{
             .allocator = allocator,
+            .options = options,
             .config_arena = config_arena,
             .env_interp = env_interp,
             .ast = pipeline_ast,
@@ -130,9 +142,57 @@ pub const PipelineRunner = struct {
         load_shared: bool,
     ) anyerror!void {
         _ = wal_db_path;
-        _ = load_shared;
+
+        // 1. Validate main pipeline exists
         if (self.ast.getPipeline("main") == null) {
             return error.MissingMainPipeline;
+        }
+
+        // 2. Validate schemas if specified or default configs/schemas.yaml exists
+        const schemas_path: ?[]const u8 = if (self.options.schemas_yaml_path) |p| p else blk: {
+            const fp = c_stdio.fopen("configs/schemas.yaml", "rb");
+            if (fp != null) {
+                _ = c_stdio.fclose(fp);
+                break :blk "configs/schemas.yaml";
+            } else {
+                break :blk null;
+            }
+        };
+
+        if (schemas_path) |s_path| {
+            const arena = self.config_arena.allocator();
+            const schema_yaml_bytes = try readFileBytes(arena, s_path);
+            const catalog = try yaml_core.SchemaCatalog.parseYaml(arena, schema_yaml_bytes, &self.env_interp);
+            try catalog.yamlValidate(arena);
+        }
+
+        // 3. Validate modules and step task bindings
+        for (self.ast.pipelines) |pipe| {
+            for (pipe.steps) |step| {
+                switch (step) {
+                    .task => |t| {
+                        if (load_shared and self.options.load_shared_modules) {
+                            _ = try self.registry.resolveTask(t.module, t.task);
+                        }
+                    },
+                    .router => |r| {
+                        for (r.cases) |c| {
+                            if (!std.mem.eql(u8, c.goto_pipeline, "continue")) {
+                                if (self.ast.getPipeline(c.goto_pipeline) == null) {
+                                    return error.UnknownTargetSubPipeline;
+                                }
+                            }
+                        }
+                        if (r.default_pipeline) |def_pipe| {
+                            if (!std.mem.eql(u8, def_pipe, "continue")) {
+                                if (self.ast.getPipeline(def_pipe) == null) {
+                                    return error.UnknownTargetSubPipeline;
+                                }
+                            }
+                        }
+                    },
+                }
+            }
         }
     }
 

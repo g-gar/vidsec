@@ -16,6 +16,8 @@ pub const StorageRepository = struct {
         deinit: *const fn (ctx: *anyopaque) void,
     };
 
+    pub const StorageRepositoryVTable = VTable;
+
     pub fn writePayload(self: StorageRepository, channel_or_table: []const u8, payload: PayloadHandle) !void {
         try self.vtable.writePayload(self.ptr, channel_or_table, payload);
     }

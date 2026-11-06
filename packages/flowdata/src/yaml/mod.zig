@@ -15,6 +15,7 @@ pub const DomainSchema = schema_loader.DomainSchema;
 pub const TableSchema = schema_loader.TableSchema;
 pub const ColumnSpec = schema_loader.ColumnSpec;
 pub const ColumnType = schema_loader.ColumnType;
+pub const SeedRow = schema_loader.SeedRow;
 
 // Declarative Pipeline AST Loader (pipeline.yaml)
 pub const loadPipelineAstFromYaml = ast_loader.loadPipelineAstFromYaml;

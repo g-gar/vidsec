@@ -186,4 +186,67 @@ test "Black Box Tasks: Native typed execution under std.testing.allocator" {
 
     const riff_out = try analyzer.probeRiffTask(alloc, &riff_buf);
     try std.testing.expectEqualStrings("AVI ", riff_out.form_type);
+
+    // 6. Test decoupled modular namespaces (triage, audit, forensics)
+    const triage_out = try analyzer.triage.probeFile(alloc, &mp4_buf);
+    try std.testing.expectEqualStrings("mp4", triage_out.identified_format);
+
+    const audit_mp4_out = try analyzer.audit.mp4.auditMp4(alloc, &mp4_buf);
+    try std.testing.expectEqualStrings("isom", audit_mp4_out.major_brand);
+
+    const slacks = [_]vidsec.ir.IrUnreferencedSlackRow{
+        .{
+            .slack_id = 1,
+            .region_tag = "trailing_slack",
+            .file_offset = 100,
+            .byte_length = 500,
+        },
+    };
+    const findings = try analyzer.forensics_analysis.entropy.scanEntropy(alloc, &mp4_buf, &slacks, .{ .min_entropy = 5.0 });
+    try std.testing.expect(findings.len > 0);
+
+    // 7. Verify plugin library organization and analysis alias
+    try std.testing.expect(vidsec.plugin.analysis == vidsec.plugin.analyzer);
+    try std.testing.expect(@hasDecl(vidsec.plugin.lib, "isobmff"));
+    try std.testing.expect(@hasDecl(vidsec.plugin.lib, "ebml"));
+    try std.testing.expect(@hasDecl(vidsec.plugin.lib, "mp4"));
+    try std.testing.expect(@hasDecl(vidsec.plugin.lib, "mkv"));
+    try std.testing.expect(@hasDecl(vidsec.plugin.lib, "riff"));
+    try std.testing.expect(@hasDecl(vidsec.plugin.lib, "ir"));
+
+    // 8. Verify pure media lowering functions (zero ABI, zero ctx)
+    const media = analyzer.lowering.media;
+    const test_tracks = [_]media.TrackInput{
+        .{ .track_id = 1, .codec_tag = "avc1", .width = 1920, .height = 1080 },
+        .{ .track_id = 2, .codec_tag = "mp4a", .width = 0, .height = 0 },
+    };
+    var cfg_counter: i64 = 1;
+    const lowered_mp4_configs = try media.lowerMp4Tracks(alloc, &test_tracks, &cfg_counter);
+    defer alloc.free(lowered_mp4_configs);
+    try std.testing.expectEqual(@as(usize, 2), lowered_mp4_configs.len);
+    try std.testing.expectEqual(@as(i64, 1), lowered_mp4_configs[0].config_id);
+    try std.testing.expectEqualStrings("avc1", lowered_mp4_configs[0].codec_tag);
+    try std.testing.expectEqual(@as(i64, 1920), lowered_mp4_configs[0].container_width);
+
+    const test_samples = [_]media.SampleInput{
+        .{ .track_id = 1, .sample_index = 1, .source_tag = "mdat", .target_offset = 1000, .byte_size = 500 },
+    };
+    var ext_counter: i64 = 1;
+    const lowered_samples = try media.lowerSampleExtents(alloc, &test_samples, &ext_counter);
+    defer alloc.free(lowered_samples);
+    try std.testing.expectEqual(@as(usize, 1), lowered_samples.len);
+    try std.testing.expectEqual(@as(u64, 1500), lowered_samples[0].end_offset);
+
+    // 9. Verify pure container lowering functions (zero ABI, zero ctx)
+    const container = analyzer.lowering.container;
+    const test_boxes = [_]container.RegionInput{
+        .{ .id = 1, .parent_id = null, .tag = "ftyp", .role = "header", .header_offset = 0, .payload_offset = 8, .size = 32 },
+        .{ .id = 2, .parent_id = null, .tag = "moov", .role = "index", .header_offset = 32, .payload_offset = 40, .size = 100 },
+    };
+    const lowered_container = try container.lowerIsobmffContainer(alloc, 132, 1, "mp4", &test_boxes);
+    defer alloc.free(lowered_container.regions);
+    defer alloc.free(lowered_container.overflow_findings);
+    try std.testing.expectEqual(@as(usize, 2), lowered_container.regions.len);
+    try std.testing.expectEqual(@as(u64, 132), lowered_container.metadata.highest_root_end);
+    try std.testing.expectEqual(@as(usize, 0), lowered_container.overflow_findings.len);
 }

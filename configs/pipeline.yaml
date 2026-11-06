@@ -1,17 +1,28 @@
 version: 2
 
 # =============================================================================
-# VidSec Video Security & Forensics Pipeline
-# Declarative, in-memory, field-routed analytical pipeline configuration.
-# Operational logging is handled natively via ExecutionTracer (JSONL),
-# while audit_findings in SQLite is strictly reserved for security threats.
+# VidSec Video Security & Forensics Pipeline (Next-Gen Architecture)
+# Declarative, field-routed analytical pipeline with black-box tasks.
+# Memory is a first-class datasource; SQLite is an opt-in analytical sink.
 # =============================================================================
 
-storages:
-  db:
+# =============================================================================
+# RUNTIME & THREAD BUDGET
+# =============================================================================
+runtime:
+  workers: auto # "auto" detects host CPU cores; set to 1 for single-threaded deterministic debugging
+
+datasources:
+  # High-speed in-memory repository for zero-copy step chaining & router coordination
+  pipeline_memory:
+    type: memory
+
+  # Relational sink for long-term audit trail and security reports
+  audit_db:
     type: sqlite
-    schema: "./configs/schemas.yaml"
-    path: "./vidsec_state.db"
+    path: "${VIDSEC_DB_PATH:-./vidsec_state.db}"
+
+  # Physical artifact directory for forensic extractions or quarantined files
   artifacts:
     type: file_store
     directory: "./artifacts/"
@@ -20,11 +31,14 @@ modules:
   analyzer:
     path: "./zig-out/lib/libanalyzer.so"
 
+# =============================================================================
+# PIPELINE DEFINITION
+# =============================================================================
 pipelines:
   # ===========================================================================
   # STAGE 0: Pre-Triage Gatekeeper
   # Validates magic bytes, container entropy, and file dimensions.
-  # Persists initial triage metadata to SQLite; intermediate buffers remain in RAM.
+  # Emits formal triage record to SQLite and lightweight coordination flags to RAM.
   # ===========================================================================
   main:
     steps:
@@ -36,316 +50,296 @@ pipelines:
           min_mid_entropy: 5.5
           strict_extension: true
         outputs:
-          into: file_triage
-          fields:
-            file_size: { into: db }
-            identified_format: { into: db }
-            mime_type: { into: db }
-            true_magic_kind: { into: db }
-            true_magic_name: { into: db }
-            detected_family: { into: db }
-            exceeds_size_limit: { into: db }
-            mid_entropy: { into: db }
-            zip_eocd_offset: { into: db }
-            verdict: { into: db }
-            flags_csv: { into: db }
+          # Canal 1: Registro formal a SQLite usando el catálogo central
+          triage_record:
+            from: result
+            schema: components/schemas/file_triage
+            datasource: audit_db
 
+          # Canal 2: Control de flujo enriquecido e inline en memoria para routers
+          coordination:
+            datasource: pipeline_memory
+            schema:
+              detected_family: text
+              true_magic_kind: int64
+              exceeds_size_limit: bool
+              verdict:
+                type: text
+                from: verdict
+              should_quarantine:
+                type: bool
+                from: "verdict == 'DROP' or true_magic_kind >= 10 or exceeds_size_limit == true"
+
+      # Router ultra-rápido en RAM: evalúa variables directamente sin hacer SELECT
       - router: dispatch_after_triage
         cases:
-          - when: "stage0_probe_file.verdict == 'DROP' or stage0_probe_file.true_magic_kind >= 10 or stage0_probe_file.exceeds_size_limit == true"
+          - when: "stage0_probe_file.coordination.should_quarantine"
             goto: quarantine_flow
-          - when: "stage0_probe_file.detected_family == 'isobmff'"
-            goto: isobmff_triage_pipeline
-          - when: "stage0_probe_file.detected_family == 'ebml'"
-            goto: ebml_triage_pipeline
-          - when: "stage0_probe_file.detected_family == 'riff'"
-            goto: riff_triage_pipeline
+          - when: "stage0_probe_file.coordination.detected_family == 'isobmff'"
+            goto: mp4_pipeline
+          - when: "stage0_probe_file.coordination.detected_family == 'ebml'"
+            goto: mkv_pipeline
+          - when: "stage0_probe_file.coordination.detected_family == 'riff'"
+            goto: riff_pipeline
         default: unsupported_format_flow
 
   # ===========================================================================
-  # STAGE 1: Format-Specific Container Inspection & Semantic Triaging
+  # MP4 / ISOBMFF PIPELINE: Triage Específico de Formato + Lowering a IR
   # ===========================================================================
-
-  # Stage 1: ISOBMFF Structural Triaging Pipeline
-  isobmff_triage_pipeline:
+  mp4_pipeline:
     steps:
-      - id: isobmff_probe_and_expand
-        uses: analyzer/probe_isobmff
-        params:
-          emit_boxes: true
-          allow_gaps: false
-          max_gap_tolerance_bytes: 0
-          allow_trailing_data: false
-          max_depth: 8
-          strict_order: true
-        outputs:
-          into: isobmff_triage
-          fields:
-            box_count: { into: db }
-            root_box_count: { into: db }
-            max_depth: { into: db }
-            mdat_count: { into: db }
-            total_mdat_bytes: { into: db }
-            trailing_slack_bytes: { into: db }
-            has_ftyp: { into: db }
-            has_moov: { into: db }
-            verdict: { into: db }
-            flags_csv: { into: db }
-
-      - router: dispatch_after_isobmff_triage
-        cases:
-          - when: "isobmff_probe_and_expand.verdict == 'DROP'"
-            goto: quarantine_flow
-        default: mp4_triage_pipeline
-
-  # Stage 1: MP4 Semantic Triaging Pipeline
-  mp4_triage_pipeline:
-    steps:
-      - id: mp4_probe_and_triage
+      # -----------------------------------------------------------------------
+      # PASO 1: Triage Semántico Rápido de MP4
+      # Valida marcas (ftyp), tracks, dimensiones y codecs antes del lowering pesado.
+      # -----------------------------------------------------------------------
+      - id: probe_mp4
         uses: analyzer/probe_mp4
         inputs:
-          file_size: stage0_probe_file.file_size
-          isobmff_box_count:
-            from: isobmff_probe_and_expand.box_count
-            default: 0
-        params:
-          emit_tracks: true
+          stream: file
+          file_size: stage0_probe_file.coordination.file_size
         outputs:
-          into: mp4_triage
-          fields:
-            track_count: { into: db }
-            video_track_count: { into: db }
-            audio_track_count: { into: db }
-            major_brand: { into: db }
-            video_codec: { into: db }
-            video_width: { into: db }
-            video_height: { into: db }
-            total_samples: { into: db }
-            total_sample_bytes: { into: db }
-            unreferenced_mdat_slack: { into: db }
-            verdict: { into: db }
-            flags_csv: { into: db }
+          triage_record:
+            from: result
+            schema: components/schemas/mp4_triage
+            datasource: audit_db
+
+          coordination:
+            datasource: pipeline_memory
+            schema:
+              track_count: int64
+              video_codec: text
+              verdict: text
+              should_drop:
+                type: bool
+                from: "verdict == 'DROP'"
 
       - router: dispatch_after_mp4_triage
         cases:
-          - when: "mp4_probe_and_triage.verdict == 'DROP'"
+          - when: "probe_mp4.coordination.should_drop"
             goto: quarantine_flow
-        default: mp4_lowering_pipeline
+        default: continue
 
-  # Stage 2: Declarative ISOBMFF / MP4 Lowering Pipeline
-  mp4_lowering_pipeline:
-    steps:
-      - id: lower_container_to_ir
-        uses: analyzer/lower_isobmff_container
-        input:
-          boxes:
-            table: isobmff_boxes
+      # -----------------------------------------------------------------------
+      # PASO 2: Lowering Directo a IR (Black Box)
+      # Entrada: Archivo -> Salida: { metadata, regions, findings }
+      # -----------------------------------------------------------------------
+      - id: lower_mp4
+        uses: analyzer/lower_mp4_container
         inputs:
-          file_size: stage0_probe_file.file_size
-          true_magic_kind: stage0_probe_file.true_magic_kind
-          true_magic_name: stage0_probe_file.true_magic_name
+          stream: file
         outputs:
-          into: [container_metadata, ir_regions, audit_findings]
+          # Metadatos del contenedor a SQLite
+          metadata:
+            from: container_metadata
+            schema: components/schemas/container_metadata
+            datasource: audit_db
 
-      - id: lower_media_to_ir
-        uses: analyzer/lower_mp4_media
-        input:
-          tracks:
-            table: mp4_tracks
-        outputs:
-          target: memory
+          # Árbol de regiones (50.000 cajas): se queda en RAM como slice tipado
+          regions:
+            from: regions
+            schema: components/schemas/ir_regions
+            datasource: pipeline_memory
+
+          # Hallazgos de seguridad detectados durante el parsing (overflows, slack)
+          findings:
+            from: findings
+            schema: components/schemas/audit_findings
+            datasource: audit_db
+
+          # Resumen inline en RAM para que el router decida sin consultas SQL
+          gate_control:
+            datasource: pipeline_memory
+            schema:
+              critical_count:
+                type: int64
+                from: "count(findings, severity >= 2)"
+              has_overflows:
+                type: bool
+                from: "count(findings, rule_id == 'IR_REGION_OVERFLOW') > 0"
 
       - router: dispatch_after_mp4_lowering
         cases:
-          - when: "SELECT 1 FROM audit_findings WHERE rule_id = 'IR_REGION_OVERFLOW' OR severity >= 2"
+          - when: "lower_mp4.gate_control.critical_count > 0 or lower_mp4.gate_control.has_overflows"
             goto: quarantine_flow
         default: forensics_analysis_pipeline
 
-  # Stage 1: EBML Structural Triaging Pipeline
-  ebml_triage_pipeline:
+  # ===========================================================================
+  # EBML / MKV PIPELINE: Triage Específico de Formato + Lowering a IR
+  # ===========================================================================
+  mkv_pipeline:
     steps:
-      - id: ebml_probe_and_expand
-        uses: analyzer/probe_ebml
-        params:
-          emit_elements: true
-          recurse_clusters: false
-        outputs:
-          into: ebml_triage
-          fields:
-            element_count: { into: db }
-            doc_type: { into: db }
-            doc_type_version: { into: db }
-            has_ebml_header: { into: db }
-            has_segment: { into: db }
-            cluster_count: { into: db }
-            total_cluster_bytes: { into: db }
-            trailing_slack_bytes: { into: db }
-            verdict: { into: db }
-            flags_csv: { into: db }
-
-      - router: dispatch_after_ebml_triage
-        cases:
-          - when: "ebml_probe_and_expand.verdict == 'DROP'"
-            goto: quarantine_flow
-        default: mkv_triage_pipeline
-
-  # Stage 1: MKV Semantic Triaging Pipeline
-  mkv_triage_pipeline:
-    steps:
-      - id: mkv_probe_and_triage
+      - id: probe_mkv
         uses: analyzer/probe_mkv
         inputs:
-          file_size: stage0_probe_file.file_size
-        params:
-          emit_tracks: true
+          stream: file
+          file_size: stage0_probe_file.coordination.file_size
         outputs:
-          into: mkv_triage
-          fields:
-            track_count: { into: db }
-            video_track_count: { into: db }
-            audio_track_count: { into: db }
-            video_codec_id: { into: db }
-            video_width: { into: db }
-            video_height: { into: db }
-            duration_seconds: { into: db }
-            cluster_count: { into: db }
-            unreferenced_cluster_slack: { into: db }
-            verdict: { into: db }
-            flags_csv: { into: db }
+          triage_record:
+            from: result
+            schema: components/schemas/mkv_triage
+            datasource: audit_db
+
+          coordination:
+            datasource: pipeline_memory
+            schema:
+              verdict: text
+              should_drop:
+                type: bool
+                from: "verdict == 'DROP'"
 
       - router: dispatch_after_mkv_triage
         cases:
-          - when: "mkv_probe_and_triage.verdict == 'DROP'"
+          - when: "probe_mkv.coordination.should_drop"
             goto: quarantine_flow
-        default: mkv_lowering_pipeline
+        default: continue
 
-  # Stage 2: Declarative EBML / MKV Lowering Pipeline
-  mkv_lowering_pipeline:
-    steps:
-      - id: lower_container_to_ir
+      - id: lower_mkv
         uses: analyzer/lower_ebml_container
-        input:
-          elements:
-            table: ebml_elements
         inputs:
-          file_size: stage0_probe_file.file_size
-          true_magic_kind: stage0_probe_file.true_magic_kind
-          true_magic_name: stage0_probe_file.true_magic_name
+          stream: file
         outputs:
-          into: [container_metadata, ir_regions, audit_findings]
+          metadata:
+            from: container_metadata
+            schema: components/schemas/container_metadata
+            datasource: audit_db
 
-      - id: lower_media_to_ir
-        uses: analyzer/lower_mkv_media
-        input:
-          tracks:
-            table: mkv_tracks
-        outputs:
-          target: memory
+          regions:
+            from: elements
+            schema: components/schemas/ir_regions
+            datasource: pipeline_memory
+
+          findings:
+            from: findings
+            schema: components/schemas/audit_findings
+            datasource: audit_db
+
+          gate_control:
+            datasource: pipeline_memory
+            schema:
+              critical_count:
+                type: int64
+                from: "count(findings, severity >= 2)"
 
       - router: dispatch_after_mkv_lowering
         cases:
-          - when: "SELECT 1 FROM audit_findings WHERE rule_id = 'IR_REGION_OVERFLOW' OR severity >= 2"
+          - when: "lower_mkv.gate_control.critical_count > 0"
             goto: quarantine_flow
         default: forensics_analysis_pipeline
 
-  # Stage 1: RIFF Structural Triaging Pipeline
-  riff_triage_pipeline:
+  # ===========================================================================
+  # RIFF / AVI PIPELINE: Triage Específico de Formato + Lowering a IR
+  # ===========================================================================
+  riff_pipeline:
     steps:
-      - id: riff_probe_and_expand
+      - id: probe_riff
         uses: analyzer/probe_riff
-        params:
-          emit_chunks: true
-          recurse_movi: false
+        inputs:
+          stream: file
+          file_size: stage0_probe_file.coordination.file_size
         outputs:
-          into: riff_triage
-          fields:
-            chunk_count: { into: db }
-            form_type: { into: db }
-            root_size: { into: db }
-            movi_bytes: { into: db }
-            junk_bytes: { into: db }
-            trailing_slack_bytes: { into: db }
-            verdict: { into: db }
-            flags_csv: { into: db }
+          triage_record:
+            from: result
+            schema: components/schemas/riff_triage
+            datasource: audit_db
+
+          coordination:
+            datasource: pipeline_memory
+            schema:
+              verdict: text
+              should_drop:
+                type: bool
+                from: "verdict == 'DROP'"
 
       - router: dispatch_after_riff_triage
         cases:
-          - when: "riff_probe_and_expand.verdict == 'DROP'"
+          - when: "probe_riff.coordination.should_drop"
             goto: quarantine_flow
-        default: riff_lowering_pipeline
+        default: continue
 
-  # Stage 2: Declarative RIFF Lowering Pipeline
-  riff_lowering_pipeline:
-    steps:
-      - id: lower_container_to_ir
+      - id: lower_riff
         uses: analyzer/lower_riff_container
-        input:
-          chunks:
-            table: riff_chunks
         inputs:
-          file_size: stage0_probe_file.file_size
-          true_magic_kind: stage0_probe_file.true_magic_kind
-          true_magic_name: stage0_probe_file.true_magic_name
+          stream: file
         outputs:
-          into: [container_metadata, ir_regions, audit_findings]
+          metadata:
+            from: container_metadata
+            schema: components/schemas/container_metadata
+            datasource: audit_db
+
+          regions:
+            from: chunks
+            schema: components/schemas/ir_regions
+            datasource: pipeline_memory
+
+          findings:
+            from: findings
+            schema: components/schemas/audit_findings
+            datasource: audit_db
+
+          gate_control:
+            datasource: pipeline_memory
+            schema:
+              critical_count:
+                type: int64
+                from: "count(findings, severity >= 2)"
 
       - router: dispatch_after_riff_lowering
         cases:
-          - when: "SELECT 1 FROM audit_findings WHERE rule_id = 'IR_REGION_OVERFLOW' OR severity >= 2"
+          - when: "lower_riff.gate_control.critical_count > 0"
             goto: quarantine_flow
         default: forensics_analysis_pipeline
 
   # ===========================================================================
   # STAGE 3: Deep Forensic Analysis & Security Audit Pipeline
-  # Reads topology, entropy, and codec structures from memory and registers findings.
+  # Consume las 'regions' directamente desde RAM sin pasar por BBDD.
   # ===========================================================================
   forensics_analysis_pipeline:
     steps:
+      # Analiza solapamientos y huecos en la topología recibida en memoria
       - id: analyze_topology
         uses: analyzer/analyze_topology
-        input:
-          regions:
-            table: ir_regions
         inputs:
-          file_size: stage0_probe_file.file_size
-          highest_root_end: lower_container_to_ir.highest_root_end
-          prev_verdict: db.file_triage.verdict
+          # Enlaza directamente con el slice de regiones en RAM de la tarea anterior
+          regions: lower_mp4.regions
         params:
           allow_trailing_slack: false
           max_trailing_slack_bytes: 0
         outputs:
-          into: audit_findings
+          findings:
+            from: findings
+            schema: components/schemas/audit_findings
+            datasource: audit_db
 
+      # Escaneo de entropía sobre el slack detectado
       - id: scan_entropy
         uses: analyzer/scan_entropy
-        input:
-          slack:
-            table: ir_unreferenced_slack
+        concurrency: max # Burst a todos los núcleos disponibles para computación intensiva de Shannon entropy
         inputs:
-          file_size: stage0_probe_file.file_size
+          stream: file
+          regions: lower_mp4.regions
         params:
           min_entropy: 7.2
         outputs:
-          into: audit_findings
+          findings:
+            from: findings
+            schema: components/schemas/audit_findings
+            datasource: audit_db
 
-      - id: check_inconsistencies
-        uses: analyzer/check_inconsistencies
-        input:
-          configs:
-            table: ir_codec_configs
-          extents:
-            table: ir_sample_extents
-        outputs:
-          into: audit_findings
+          coordination:
+            datasource: pipeline_memory
+            schema:
+              anomalous_entropy_detected:
+                type: bool
+                from: "count(findings, severity >= 2) > 0"
 
       - router: dispatch_after_forensics
         cases:
-          - when: "SELECT 1 FROM audit_findings WHERE severity >= 2"
+          - when: "scan_entropy.coordination.anomalous_entropy_detected"
             goto: forensics_findings_detected
         default: video_verified_clean
 
   # ===========================================================================
-  # Final Terminal Flows
+  # TERMINAL FLOWS
   # ===========================================================================
   forensics_findings_detected:
     steps: []
@@ -355,30 +349,136 @@ pipelines:
 
   unsupported_format_flow:
     steps:
-      - id: log_unsupported_format
-        uses: sql_rule
-        query: |
-          SELECT 'STAGE1_UNSUPPORTED_FORMAT' AS rule_id,
-                 1 AS severity,
-                 0 AS file_offset,
-                 detected_family AS region_tag,
-                 0.0 AS measured_value,
-                 'Format family not supported for deep triage: ' || detected_family AS message
-          FROM file_triage
+      - id: mark_unsupported
+        uses: analyzer/record_finding
+        params:
+          rule_id: "STAGE1_UNSUPPORTED_FORMAT"
+          severity: 1
+          message: "Format family not supported for deep analysis"
         outputs:
-          into: audit_findings
+          findings:
+            schema: components/schemas/audit_findings
+            datasource: audit_db
 
   quarantine_flow:
     steps:
-      - id: mark_quarantine_decision
-        uses: sql_rule
-        query: |
-          SELECT 'STAGE0_QUARANTINED' AS rule_id,
-                 2 AS severity,
-                 0 AS file_offset,
-                 identified_format AS region_tag,
-                 mid_entropy AS measured_value,
-                 'File rejected at Stage 0 Triage (' || flags_csv || ')' AS message
-          FROM file_triage
+      - id: mark_quarantined
+        uses: analyzer/record_finding
+        params:
+          rule_id: "STAGE0_QUARANTINED"
+          severity: 2
+          message: "File rejected during initial triage"
         outputs:
-          into: audit_findings
+          findings:
+            schema: components/schemas/audit_findings
+            datasource: audit_db
+
+# =============================================================================
+# COMPONENTS (Catálogo Central de Esquemas Canónicos)
+# Define la estructura de persistencia relacional para datasources estructurados.
+# =============================================================================
+components:
+  schemas:
+    file_triage:
+      primary_key: id
+      columns:
+        id:                 { type: int64, pk: true }
+        file_size:          { type: int64 }
+        detected_family:    { type: text }
+        true_magic_kind:    { type: int64 }
+        true_magic_name:    { type: text }
+        exceeds_size_limit: { type: bool, default: false }
+        verdict:            { type: text }
+        identified_format:  { type: text, default: "unknown" }
+        mime_type:          { type: text, default: "application/octet-stream" }
+        mid_entropy:        { type: float64, default: 0.0 }
+        flags_csv:          { type: text, default: "" }
+
+    mp4_triage:
+      primary_key: id
+      columns:
+        id:                      { type: int64, pk: true }
+        track_count:             { type: int64 }
+        video_track_count:       { type: int64 }
+        audio_track_count:       { type: int64 }
+        major_brand:             { type: text }
+        video_codec:             { type: text }
+        video_width:             { type: int64 }
+        video_height:            { type: int64 }
+        total_samples:           { type: int64 }
+        total_sample_bytes:      { type: int64 }
+        unreferenced_mdat_slack: { type: int64 }
+        verdict:                 { type: text }
+        flags_csv:               { type: text, default: "" }
+
+    mkv_triage:
+      primary_key: id
+      columns:
+        id:                         { type: int64, pk: true }
+        track_count:                { type: int64 }
+        video_track_count:          { type: int64 }
+        audio_track_count:          { type: int64 }
+        video_codec_id:             { type: text }
+        video_width:                { type: int64 }
+        video_height:               { type: int64 }
+        duration_seconds:           { type: float64 }
+        cluster_count:              { type: int64 }
+        unreferenced_cluster_slack: { type: int64 }
+        verdict:                    { type: text }
+        flags_csv:                  { type: text, default: "" }
+
+    riff_triage:
+      primary_key: id
+      columns:
+        id:                   { type: int64, pk: true }
+        chunk_count:          { type: int64 }
+        form_type:            { type: text }
+        root_size:            { type: int64 }
+        movi_bytes:           { type: int64 }
+        junk_bytes:           { type: int64 }
+        trailing_slack_bytes: { type: int64 }
+        verdict:              { type: text }
+        flags_csv:            { type: text, default: "" }
+
+    container_metadata:
+      primary_key: id
+      columns:
+        id:               { type: int64, pk: true }
+        file_size:        { type: int64 }
+        detected_format:  { type: text }
+        true_magic_name:  { type: text }
+        highest_root_end: { type: int64 }
+
+    ir_regions:
+      primary_key: [container_id, region_id]
+      columns:
+        container_id:             { type: int64 }
+        region_id:                { type: int64 }
+        parent_region_id:         { type: int64, nullable: true }
+        tag_name:                 { type: text }
+        role:                     { type: text }
+        header_offset:            { type: int64 }
+        payload_offset:           { type: int64 }
+        effective_end_offset:     { type: int64 }
+        is_truncated_or_overflow: { type: bool, default: false }
+      indexes:
+        - columns: [role]
+        - columns: [tag_name]
+
+    audit_findings:
+      primary_key: finding_id
+      columns:
+        finding_id:         { type: int64, pk: true }
+        rule_id:            { type: text }
+        severity:           { type: int64 }
+        file_offset:        { type: int64 }
+        byte_length:        { type: int64, default: 0 }
+        end_offset:         { type: int64, default: 0 }
+        region_tag:         { type: text, nullable: true }
+        measured_value:     { type: float64, nullable: true }
+        message:            { type: text, nullable: true }
+        is_remediated:      { type: bool, default: false }
+        remediation_action: { type: text, default: "UNRESOLVED" }
+      indexes:
+        - columns: [rule_id]
+        - columns: [severity]

@@ -1,7 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const yaml = @import("../lib/mod.zig");
-const sqlite = @import("../../extensions/datasources/sqlite_lib/mod.zig");
 const EnvInterpolator = @import("../env.zig").EnvInterpolator;
 
 pub const SchemaLoadError = error{
@@ -12,12 +11,12 @@ pub const SchemaLoadError = error{
     IndexedColumnNotFound,
     CompositeKeyColumnNotFound,
     DuplicateTableNameAcrossDomains,
-    ConflictingViewAndColumns,
     InvalidIndexSpec,
+    SeedColumnNotFound,
     OutOfMemory,
 };
 
-/// 1:1 bijection with `ValueTag_ABI` and SQLite `STRICT` column types.
+/// 1:1 bijection with `ValueTag_ABI` and standard column types.
 pub const ColumnType = enum {
     int64,
     float64,
@@ -25,16 +24,6 @@ pub const ColumnType = enum {
     text,
     blob,
     any,
-
-    pub fn toStorageType(self: ColumnType) sqlite.StorageType {
-        return switch (self) {
-            .int64, .bool => .integer,
-            .float64 => .real,
-            .text => .text,
-            .blob => .blob,
-            .any => .any,
-        };
-    }
 };
 
 pub const DefaultValue = union(enum) {
@@ -44,17 +33,19 @@ pub const DefaultValue = union(enum) {
     boolean: bool,
     text: []const u8,
     raw_expr: []const u8,
+};
 
-    pub fn toSqliteDefault(self: DefaultValue) sqlite.DefaultSpec {
-        return switch (self) {
-            .null_val => .null_val,
-            .int64 => |v| .{ .int64 = v },
-            .float64 => |v| .{ .float64 = v },
-            .boolean => |v| .{ .boolean = v },
-            .text => |v| .{ .text = v },
-            .raw_expr => |v| .{ .raw_expr = v },
-        };
-    }
+pub const SortOrder = enum {
+    asc,
+    desc,
+};
+
+pub const ForeignKeyAction = enum {
+    no_action,
+    restrict,
+    set_null,
+    set_default,
+    cascade,
 };
 
 /// Custom scalar type for `ref: <table_name>.<column_name>`.
@@ -97,8 +88,8 @@ pub const ColumnSpec = struct {
     generated_as: ?[]const u8 = null,
     stored: bool = false,
     ref: ?ForeignKeyRef = null,
-    on_delete: ?sqlite.ForeignKeyAction = null,
-    on_update: ?sqlite.ForeignKeyAction = null,
+    on_delete: ?ForeignKeyAction = null,
+    on_update: ?ForeignKeyAction = null,
 
     pub const yaml_fields = .{
         .col_type = "type",
@@ -144,7 +135,7 @@ pub const IndexSpec = struct {
     expressions: []const []const u8 = &.{},
     unique: bool = false,
     where: ?[]const u8 = null,
-    order: ?sqlite.SortOrder = null,
+    order: ?SortOrder = null,
 
     const RichIndexHelper = struct {
         name: ?[]const u8 = null,
@@ -152,7 +143,7 @@ pub const IndexSpec = struct {
         expressions: []const []const u8 = &.{},
         unique: bool = false,
         where: ?[]const u8 = null,
-        order: ?sqlite.SortOrder = null,
+        order: ?SortOrder = null,
     };
 
     pub fn yamlParse(
@@ -183,7 +174,10 @@ pub const IndexSpec = struct {
     }
 };
 
-/// Table (or view) definition inside a domain (`schemas.<domain>.<table_name>`).
+/// Row entry in a table's declarative `seeds:` block.
+pub const SeedRow = yaml.Map(yaml.Scalar);
+
+/// Table definition inside a domain (`schemas.<domain>.<table_name>`).
 pub const TableSchema = struct {
     columns: yaml.Map(ColumnSpec) = .{},
     indexes: []const IndexSpec = &.{},
@@ -193,23 +187,14 @@ pub const TableSchema = struct {
     strict: bool = true,
     without_rowid: bool = false,
     temp: bool = false,
-    /// Optional `SELECT ...` query if this entry defines a read-only SQL `VIEW`.
-    view_as: ?[]const u8 = null,
-
-    pub fn isView(self: *const TableSchema) bool {
-        return self.view_as != null;
-    }
+    /// Optional declarative initial seed rows for lookup and enum tables.
+    seeds: []const SeedRow = &.{},
 
     pub fn findColumn(self: *const TableSchema, col_name: []const u8) ?ColumnSpec {
         return self.columns.get(col_name);
     }
 
     pub fn yamlValidate(self: *const TableSchema, _: Allocator) SchemaLoadError!void {
-        if (self.view_as) |v_sql| {
-            if (std.mem.trim(u8, v_sql, " \t\r\n;").len == 0) return error.EmptyTableColumns;
-            return;
-        }
-
         if (self.columns.count() == 0) return error.EmptyTableColumns;
 
         for (self.primary_key) |pk_col| {
@@ -230,6 +215,82 @@ pub const TableSchema = struct {
                 }
             }
         }
+
+        for (self.seeds) |seed_row| {
+            for (seed_row.entries) |entry| {
+                if (!self.columns.contains(entry.key)) {
+                    return error.SeedColumnNotFound;
+                }
+            }
+        }
+    }
+
+    /// Emits `INSERT OR IGNORE INTO <table_name> (<cols...>) VALUES (<vals...>);`
+    /// statements for all seed rows defined in this table schema.
+    pub fn renderSeedInsertSql(
+        self: *const TableSchema,
+        allocator: Allocator,
+        table_name: []const u8,
+    ) !?[]const u8 {
+        if (self.seeds.len == 0) return null;
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        errdefer buf.deinit(allocator);
+
+        for (self.seeds) |seed_row| {
+            if (seed_row.entries.len == 0) continue;
+
+            try buf.appendSlice(allocator, "INSERT OR IGNORE INTO ");
+            try buf.appendSlice(allocator, table_name);
+            try buf.appendSlice(allocator, " (");
+
+            for (seed_row.entries, 0..) |entry, i| {
+                if (i > 0) try buf.appendSlice(allocator, ", ");
+                try buf.appendSlice(allocator, entry.key);
+            }
+            try buf.appendSlice(allocator, ") VALUES (");
+
+            for (seed_row.entries, 0..) |entry, i| {
+                if (i > 0) try buf.appendSlice(allocator, ", ");
+                const col_spec = self.columns.get(entry.key);
+                const col_type = if (col_spec) |c| c.col_type else ColumnType.text;
+
+                const raw_val = entry.value.value;
+                if (std.mem.eql(u8, raw_val, "null") and entry.value.quote_style == .plain) {
+                    try buf.appendSlice(allocator, "NULL");
+                } else switch (col_type) {
+                    .int64, .float64 => {
+                        try buf.appendSlice(allocator, raw_val);
+                    },
+                    .bool => {
+                        if (std.mem.eql(u8, raw_val, "true") or std.mem.eql(u8, raw_val, "1")) {
+                            try buf.appendSlice(allocator, "1");
+                        } else {
+                            try buf.appendSlice(allocator, "0");
+                        }
+                    },
+                    .text, .blob, .any => {
+                        try buf.append(allocator, '\'');
+                        for (raw_val) |ch| {
+                            if (ch == '\'') {
+                                try buf.appendSlice(allocator, "''");
+                            } else {
+                                try buf.append(allocator, ch);
+                            }
+                        }
+                        try buf.append(allocator, '\'');
+                    },
+                }
+            }
+            try buf.appendSlice(allocator, ");\n");
+        }
+
+        if (buf.items.len == 0) {
+            buf.deinit(allocator);
+            return null;
+        }
+
+        return try buf.toOwnedSlice(allocator);
     }
 };
 
@@ -290,4 +351,102 @@ pub const SchemaCatalog = struct {
         }
         return null;
     }
+
+    /// Emits all seed SQL statements for all tables across all domains in the catalog.
+    pub fn renderAllSeedsSql(self: *const SchemaCatalog, allocator: Allocator) ![]const u8 {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        errdefer buf.deinit(allocator);
+
+        for (self.schemas.entries) |dom_entry| {
+            for (dom_entry.value.entries) |tbl_entry| {
+                if (try tbl_entry.value.renderSeedInsertSql(allocator, tbl_entry.key)) |sql| {
+                    defer allocator.free(sql);
+                    try buf.appendSlice(allocator, sql);
+                }
+            }
+        }
+
+        return try buf.toOwnedSlice(allocator);
+    }
 };
+
+test "SchemaCatalog: parse and validate declarative seeds" {
+    const yaml_text =
+        \\version: 2
+        \\schemas:
+        \\  catalog:
+        \\    enum_test:
+        \\      columns:
+        \\        id:    { type: int64, pk: true }
+        \\        code:  { type: text, unique: true }
+        \\        descr: { type: text }
+        \\        flag:  { type: bool }
+        \\      seeds:
+        \\        - { id: 0, code: unknown, descr: "Unknown's value", flag: true }
+        \\        - { id: 1, code: regular, descr: "Normal", flag: false }
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const catalog = try SchemaCatalog.parseYaml(alloc, yaml_text, null);
+    try catalog.yamlValidate(alloc);
+
+    const tbl = catalog.getTable("enum_test") orelse return error.TestExpectedTable;
+    try std.testing.expectEqual(@as(usize, 2), tbl.seeds.len);
+
+    const seed0 = tbl.seeds[0];
+    try std.testing.expectEqualStrings("0", seed0.get("id").?.value);
+    try std.testing.expectEqualStrings("unknown", seed0.get("code").?.value);
+    try std.testing.expectEqualStrings("Unknown's value", seed0.get("descr").?.value);
+
+    // Render SQL
+    const sql = (try tbl.renderSeedInsertSql(alloc, "enum_test")) orelse return error.TestExpectedSql;
+    defer alloc.free(sql);
+
+    try std.testing.expect(std.mem.indexOf(u8, sql, "INSERT OR IGNORE INTO enum_test (id, code, descr, flag) VALUES (0, 'unknown', 'Unknown''s value', 1);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "INSERT OR IGNORE INTO enum_test (id, code, descr, flag) VALUES (1, 'regular', 'Normal', 0);") != null);
+}
+
+test "SchemaCatalog: seeds with non-existent column returns SeedColumnNotFound" {
+    const yaml_text =
+        \\version: 2
+        \\schemas:
+        \\  catalog:
+        \\    enum_test:
+        \\      columns:
+        \\        id: { type: int64, pk: true }
+        \\      seeds:
+        \\        - { id: 0, nonexistent: 123 }
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const catalog = try SchemaCatalog.parseYaml(alloc, yaml_text, null);
+    const tbl = catalog.getTable("enum_test").?;
+    try std.testing.expectError(error.SeedColumnNotFound, tbl.yamlValidate(alloc));
+}
+
+test "SchemaCatalog: parse actual configs/schemas.yaml and render seeds" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const file = try std.fs.cwd().openFile("configs/schemas.yaml", .{});
+    defer file.close();
+    const yaml_bytes = try file.readToEndAlloc(alloc, 1024 * 1024);
+
+    const catalog = try SchemaCatalog.parseYaml(alloc, yaml_bytes, null);
+    try catalog.yamlValidate(alloc);
+
+    const all_seeds_sql = try catalog.renderAllSeedsSql(alloc);
+    defer alloc.free(all_seeds_sql);
+
+    try std.testing.expect(std.mem.indexOf(u8, all_seeds_sql, "enum_container_format") != null);
+    try std.testing.expect(std.mem.indexOf(u8, all_seeds_sql, "enum_severity") != null);
+    try std.testing.expect(std.mem.indexOf(u8, all_seeds_sql, "enum_verdict") != null);
+    try std.testing.expect(std.mem.indexOf(u8, all_seeds_sql, "enum_region_role") != null);
+}

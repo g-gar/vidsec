@@ -9,6 +9,11 @@ schemas:
         code:         { type: text, unique: true }
         display_name: { type: text }
         default_mime: { type: text }
+      seeds:
+        - { id: 0, code: unknown, display_name: "Unknown / Unrecognized Format", default_mime: "application/octet-stream" }
+        - { id: 1, code: isobmff, display_name: "ISO Base Media File Format (MP4/MOV)", default_mime: "video/mp4" }
+        - { id: 2, code: ebml, display_name: "Extensible Binary Meta Language (MKV/WebM)", default_mime: "video/x-matroska" }
+        - { id: 3, code: riff, display_name: "Resource Interchange File Format (AVI/WAV)", default_mime: "video/x-msvideo" }
 
     enum_severity:
       columns:
@@ -16,56 +21,38 @@ schemas:
         code:         { type: text, unique: true }
         badge_color:  { type: text }
         description:  { type: text }
+      seeds:
+        - { level: 0, code: INFO, badge_color: "#3B82F6", description: "Informational metric or clean indicator" }
+        - { level: 1, code: LOW, badge_color: "#10B981", description: "Minor structural anomaly without immediate threat" }
+        - { level: 2, code: MEDIUM, badge_color: "#F59E0B", description: "Suspicious unreferenced payload or slack data" }
+        - { level: 3, code: HIGH, badge_color: "#EF4444", description: "Dangerous polyglot, trailing overlay, or format tampering" }
+        - { level: 4, code: CRITICAL, badge_color: "#7F1D1D", description: "Confirmed exploit, corrupted header, or severe threat" }
 
     enum_verdict:
       columns:
         id:          { type: int64, pk: true }
         code:        { type: text, unique: true }
         description: { type: text }
+      seeds:
+        - { id: 0, code: PASS, description: "Media file passed triage validation" }
+        - { id: 1, code: FLAGGED, description: "Media file triggered security or structural warnings" }
+        - { id: 2, code: DROP, description: "Media file violates security policies and should be rejected" }
 
     enum_region_role:
       columns:
         id:          { type: int64, pk: true }
         code:        { type: text, unique: true }
         description: { type: text }
-
-    v_findings_report:
-      view_as: |
-        SELECT 
-            f.finding_id,
-            f.rule_id,
-            f.severity,
-            s.code AS severity_label,
-            s.badge_color,
-            f.file_offset,
-            f.byte_length,
-            f.end_offset,
-            f.region_tag,
-            f.measured_value,
-            f.message,
-            f.is_remediated,
-            f.remediation_action
-        FROM audit_findings f
-        LEFT JOIN enum_severity s ON f.severity = s.level
-
-    v_executive_summary:
-      view_as: |
-        SELECT 
-            t.verdict AS verdict_id,
-            v.code AS verdict,
-            v.description AS verdict_description,
-            t.identified_format,
-            f.display_name AS format_name,
-            t.mime_type,
-            m.file_size,
-            m.highest_root_end,
-            (SELECT COUNT(*) FROM audit_findings) AS total_findings,
-            (SELECT COUNT(*) FROM audit_findings WHERE severity >= 2) AS critical_high_findings
-        FROM file_triage t
-        LEFT JOIN enum_verdict v ON t.verdict = v.id
-        LEFT JOIN container_metadata m ON 1=1
-        LEFT JOIN enum_container_format f ON m.detected_format = f.id
-        LIMIT 1
+      seeds:
+        - { id: 0, code: unknown, description: "Uncategorized container structure" }
+        - { id: 1, code: container, description: "Top-level or nested container structural header" }
+        - { id: 2, code: media_data, description: "Raw elementary audio/video/subtitle stream payload" }
+        - { id: 3, code: padding, description: "Safe zero or filler padding byte sequence" }
+        - { id: 4, code: sample_table, description: "Frame indexing and sample offset/chunk metadata" }
+        - { id: 5, code: codec_config, description: "Decoder configuration record (AVCC, HEVC, Vorbis)" }
+        - { id: 6, code: metadata, description: "Tags, chapters, user comments, or editorial metadata" }
+        - { id: 7, code: attachment, description: "Embedded auxiliary file or font attachment" }
+        - { id: 8, code: external_ref, description: "URL or external file path reference" }
 
   # 1. Pre-Triage Domain (Format Family, Magic Spoofing, Entropy & Polyglot Gatekeeper)
   triage:

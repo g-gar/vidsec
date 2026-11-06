@@ -8,7 +8,7 @@ const yaml_core = vidsec.yaml;
 const PipelineEngine = pipeline.PipelineEngine;
 const ModuleRegistry = pipeline.ModuleRegistry;
 const RepositoryRegistry = pipeline.repository.RepositoryRegistry;
-const MemoryRepository = pipeline.repository.MemoryRepository;
+const MemoryRepository = vidsec.extensions.datasources.MemoryRepository;
 const PayloadHandle = dataflow.PayloadHandle;
 
 const TriageInput = struct {

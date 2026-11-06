@@ -18,4 +18,4 @@ This directory contains formal specifications and architectural documentation fo
 
 ## Reference Implementations
 
-- **[configs/pipeline.next.yaml](../../configs/pipeline.next.yaml):** Canonical reference pipeline demonstrating the practical application of these specifications for Vidsec video forensics.
+- **[configs/pipeline.yaml](../../configs/pipeline.yaml):** Canonical reference pipeline demonstrating the practical application of these specifications for Vidsec video forensics.

@@ -1,11 +1,23 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const StorageRepository = @import("storage_repository.zig").StorageRepository;
-const ast = @import("../ast/ast.zig");
+
+/// Generic key-value configuration parameter for initializing storage datasources.
+pub const ConfigParam = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
+/// Open-ended datasource configuration specification.
+pub const DatasourceConfig = struct {
+    id: []const u8,
+    driver: []const u8,
+    params: []const ConfigParam = &.{},
+};
 
 pub const DatasourceFactoryFn = *const fn (
     allocator: Allocator,
-    params: []const ast.KeyValueParam,
+    params: []const ConfigParam,
 ) anyerror!StorageRepository;
 
 /// IoC Registry mapping logical repository names to StorageRepository instances,
@@ -53,7 +65,7 @@ pub const RepositoryRegistry = struct {
     }
 
     /// Resolves an existing repository by ID, or instantiates it using the registered driver factory.
-    pub fn resolveOrCreate(self: *RepositoryRegistry, spec: ast.DatasourceSpec) !StorageRepository {
+    pub fn resolveOrCreate(self: *RepositoryRegistry, spec: anytype) !StorageRepository {
         if (self.get(spec.id)) |existing| {
             return existing;
         }

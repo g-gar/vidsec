@@ -206,12 +206,12 @@ test "YAML to AST: Semantic validation detects router cycle from YAML" {
     try std.testing.expectError(error.CircularRouterReference, res);
 }
 
-test "YAML to AST: Parse actual configs/pipeline.next.yaml" {
+test "YAML to AST: Parse actual configs/pipeline.yaml" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const file_content = try vidsec.pipeline.readFileBytes(alloc, "configs/pipeline.next.yaml");
+    const file_content = try vidsec.pipeline.readFileBytes(alloc, "configs/pipeline.yaml");
 
     var interp = yaml_mod.EnvInterpolator.init(false);
     defer interp.deinit(alloc);
@@ -224,4 +224,8 @@ test "YAML to AST: Parse actual configs/pipeline.next.yaml" {
     try std.testing.expect(ast.getPipeline("main") != null);
     try std.testing.expect(ast.getPipeline("mp4_pipeline") != null);
     try std.testing.expect(ast.getPipeline("quarantine_flow") != null);
+}
+
+test "Schema Loader: run all tests in schema_loader" {
+    std.testing.refAllDecls(yaml_mod.schema_loader);
 }

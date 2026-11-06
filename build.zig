@@ -19,7 +19,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    flowdata_mod.linkSystemLibrary("sqlite3", .{});
 
     // 1. Standalone C-ABI & Plugin SDK module (Flowdata ABI)
     const abi_mod = b.addModule("vidsec_abi", .{
@@ -30,84 +29,84 @@ pub fn build(b: *std.Build) void {
     });
     abi_mod.addImport("flowdata", flowdata_mod);
 
-    // 2. Standalone zero-allocation Magic Number & MIME Type detection module (`src/lib/magic/mod.zig`)
+    // 2. Standalone zero-allocation Magic Number & MIME Type detection module (`src/plugin/magic/mod.zig`)
     const magic_mod = b.addModule("vidsec_magic", .{
-        .root_source_file = b.path("src/lib/magic/mod.zig"),
+        .root_source_file = b.path("src/plugin/magic/mod.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    // 3. Standalone zero-allocation Math, Shannon Entropy, Statistics, Intervals & Matrix module (`src/lib/math/mod.zig`)
+    // 3. Standalone zero-allocation Math, Shannon Entropy, Statistics, Intervals & Matrix module (`src/plugin/math/mod.zig`)
     const math_mod = b.addModule("vidsec_math", .{
-        .root_source_file = b.path("src/lib/math/mod.zig"),
+        .root_source_file = b.path("src/plugin/math/mod.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    // 4. Standalone Video Intermediate Representation module (`src/lib/ir/mod.zig`)
+    // 4. Standalone Video Intermediate Representation module (`src/plugin/ir/mod.zig`)
     const ir_mod = b.addModule("vidsec_ir", .{
-        .root_source_file = b.path("src/lib/ir/mod.zig"),
+        .root_source_file = b.path("src/plugin/ir/mod.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    // 5. Standalone Common Format Abstractions module (`src/lib/formats/common/mod.zig`)
+    // 5. Standalone Common Format Abstractions module (`src/plugin/formats/common/mod.zig`)
     const formats_common_mod = b.addModule("vidsec_formats_common", .{
-        .root_source_file = b.path("src/lib/formats/common/mod.zig"),
+        .root_source_file = b.path("src/plugin/formats/common/mod.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
     formats_common_mod.addImport("vidsec_ir", ir_mod);
 
-    // 6. Standalone ISOBMFF parsing & structural triage module (`src/lib/formats/isobmff/mod.zig`)
+    // 6. Standalone ISOBMFF parsing & structural triage module (`src/plugin/formats/isobmff/mod.zig`)
     const isobmff_mod = b.addModule("vidsec_isobmff", .{
-        .root_source_file = b.path("src/lib/formats/isobmff/mod.zig"),
+        .root_source_file = b.path("src/plugin/formats/isobmff/mod.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
     isobmff_mod.addImport("vidsec_formats_common", formats_common_mod);
 
-    // 7. Standalone MP4 inspection, brand & track decoding module (`src/lib/formats/mp4/mod.zig`)
+    // 7. Standalone MP4 inspection, brand & track decoding module (`src/plugin/formats/mp4/mod.zig`)
     const mp4_mod = b.addModule("vidsec_mp4", .{
-        .root_source_file = b.path("src/lib/formats/mp4/mod.zig"),
+        .root_source_file = b.path("src/plugin/formats/mp4/mod.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
     mp4_mod.addImport("vidsec_isobmff", isobmff_mod);
 
-    // 8. Standalone EBML grammar & element hierarchy parsing module (`src/lib/formats/ebml/mod.zig`)
+    // 8. Standalone EBML grammar & element hierarchy parsing module (`src/plugin/formats/ebml/mod.zig`)
     const ebml_mod = b.addModule("vidsec_ebml", .{
-        .root_source_file = b.path("src/lib/formats/ebml/mod.zig"),
+        .root_source_file = b.path("src/plugin/formats/ebml/mod.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
     ebml_mod.addImport("vidsec_formats_common", formats_common_mod);
 
-    // 9. Standalone MKV track & cluster inspection module (`src/lib/formats/mkv/mod.zig`)
+    // 9. Standalone MKV track & cluster inspection module (`src/plugin/formats/mkv/mod.zig`)
     const mkv_mod = b.addModule("vidsec_mkv", .{
-        .root_source_file = b.path("src/lib/formats/mkv/mod.zig"),
+        .root_source_file = b.path("src/plugin/formats/mkv/mod.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
     mkv_mod.addImport("vidsec_ebml", ebml_mod);
 
-    // 10. Standalone RIFF container & chunk hierarchy parsing module (`src/lib/formats/riff/mod.zig`)
+    // 10. Standalone RIFF container & chunk hierarchy parsing module (`src/plugin/formats/riff/mod.zig`)
     const riff_mod = b.addModule("vidsec_riff", .{
-        .root_source_file = b.path("src/lib/formats/riff/mod.zig"),
+        .root_source_file = b.path("src/plugin/formats/riff/mod.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
     riff_mod.addImport("vidsec_formats_common", formats_common_mod);
 
-    // 11. Standalone Abstract Forensics library module (`src/lib/forensics/mod.zig`)
+    // 11. Standalone Abstract Forensics library module (`src/plugin/forensics/mod.zig`)
     const forensics_mod = b.addModule("vidsec_forensics", .{
-        .root_source_file = b.path("src/lib/forensics/mod.zig"),
+        .root_source_file = b.path("src/plugin/forensics/mod.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -122,7 +121,44 @@ pub fn build(b: *std.Build) void {
     });
     dataflow_mod.addImport("flowdata", flowdata_mod);
 
-    // 13. Vidsec core framework library module (`src/root.zig`)
+    // 13. Independent Flowdata Datasource Extension Modules
+    const ds_memory_mod = b.addModule("flowdata_datasource_memory", .{
+        .root_source_file = b.path("packages/extensions/datasource/memory/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    ds_memory_mod.addImport("flowdata", flowdata_mod);
+
+    const ds_file_store_mod = b.addModule("flowdata_datasource_file_store", .{
+        .root_source_file = b.path("packages/extensions/datasource/file_store/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    ds_file_store_mod.addImport("flowdata", flowdata_mod);
+
+    const ds_sqlite_mod = b.addModule("flowdata_datasource_sqlite", .{
+        .root_source_file = b.path("packages/extensions/datasource/sqlite/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    ds_sqlite_mod.addImport("flowdata", flowdata_mod);
+    ds_sqlite_mod.linkSystemLibrary("sqlite3", .{});
+
+    const extensions_mod = b.addModule("vidsec_extensions", .{
+        .root_source_file = b.path("packages/extensions/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    extensions_mod.addImport("flowdata", flowdata_mod);
+    extensions_mod.addImport("flowdata_datasource_memory", ds_memory_mod);
+    extensions_mod.addImport("flowdata_datasource_file_store", ds_file_store_mod);
+    extensions_mod.addImport("flowdata_datasource_sqlite", ds_sqlite_mod);
+    extensions_mod.linkSystemLibrary("sqlite3", .{});
+
+    // 14. Vidsec core framework library module (`src/root.zig`)
     const root_mod = b.addModule("vidsec", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -132,6 +168,7 @@ pub fn build(b: *std.Build) void {
     root_mod.linkSystemLibrary("sqlite3", .{});
     root_mod.addImport("build_options", options_mod);
     root_mod.addImport("flowdata", flowdata_mod);
+    root_mod.addImport("vidsec_extensions", extensions_mod);
     root_mod.addImport("vidsec_abi", abi_mod);
     root_mod.addImport("vidsec_magic", magic_mod);
     root_mod.addImport("vidsec_math", math_mod);
@@ -141,11 +178,12 @@ pub fn build(b: *std.Build) void {
     root_mod.addImport("vidsec_mkv", mkv_mod);
     root_mod.addImport("vidsec_riff", riff_mod);
     root_mod.addImport("vidsec_ir", ir_mod);
+    root_mod.addImport("vidsec_formats_common", formats_common_mod);
     root_mod.addImport("vidsec_forensics", forensics_mod);
     root_mod.addImport("vidsec_dataflow", dataflow_mod);
 
     // 10. Official `.so` Plugin Shared Libraries (`src/plugin/*`)
-    _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, ir_mod, forensics_mod, "analyzer", "src/plugin/analyzer/mod.zig");
+    _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, ir_mod, forensics_mod, "analyzer", "src/plugin/analysis/mod.zig");
     _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, ir_mod, forensics_mod, "remediation", "src/plugin/remediation/mod.zig");
 
     // 6. Main CLI executable (`vidsec`)
@@ -211,6 +249,7 @@ pub fn build(b: *std.Build) void {
     test_suite_mod.addImport("vidsec_ir", ir_mod);
     test_suite_mod.addImport("vidsec_forensics", forensics_mod);
     test_suite_mod.addImport("vidsec_dataflow", dataflow_mod);
+    test_suite_mod.addImport("vidsec_extensions", extensions_mod);
 
     const test_suite = b.addTest(.{
         .root_module = test_suite_mod,
@@ -218,9 +257,16 @@ pub fn build(b: *std.Build) void {
     const run_test_suite = b.addRunArtifact(test_suite);
     run_test_suite.setCwd(b.path("."));
 
+    const run_ds_memory_check = b.addRunArtifact(b.addTest(.{ .root_module = ds_memory_mod }));
+    const run_ds_file_store_check = b.addRunArtifact(b.addTest(.{ .root_module = ds_file_store_mod }));
+    const run_ds_sqlite_check = b.addRunArtifact(b.addTest(.{ .root_module = ds_sqlite_mod }));
+
     const test_step = b.step("test", "Run all tests in the tests/ suite");
     test_step.dependOn(&run_unit_check.step);
     test_step.dependOn(&run_flowdata_unit_check.step);
+    test_step.dependOn(&run_ds_memory_check.step);
+    test_step.dependOn(&run_ds_file_store_check.step);
+    test_step.dependOn(&run_ds_sqlite_check.step);
     test_step.dependOn(&run_test_suite.step);
 }
 

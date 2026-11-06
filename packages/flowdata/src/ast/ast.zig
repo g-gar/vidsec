@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const repository = @import("../repository/mod.zig");
 
 // =============================================================================
 // RUNTIME AND DATASOURCE SPECIFICATIONS
@@ -11,10 +12,8 @@ pub const RuntimeConfig = struct {
     workers: usize = 1,
 };
 
-pub const KeyValueParam = struct {
-    key: []const u8,
-    value: []const u8,
-};
+pub const ConfigParam = repository.ConfigParam;
+pub const KeyValueParam = ConfigParam;
 
 /// Specification for an open-ended storage datasource (memory, sqlite, elasticsearch, kafka, s3, etc.).
 /// Driver resolution is handled dynamically via registry without requiring core recompilation.
@@ -162,14 +161,28 @@ pub const PipelineDecl = struct {
     steps: []const StepNode = &.{},
 };
 
+/// Specification for an external plugin module (.so).
+pub const ModuleSpec = struct {
+    name: []const u8,
+    path: []const u8,
+};
+
 // =============================================================================
 // UNIFIED PIPELINE AST (CANONICAL IN-MEMORY EXECUTION PLAN)
 // =============================================================================
 
 pub const PipelineAST = struct {
     runtime: RuntimeConfig = .{},
+    modules: []const ModuleSpec = &.{},
     datasources: []const DatasourceSpec = &.{},
     pipelines: []const PipelineDecl = &.{},
+
+    pub fn getModule(self: PipelineAST, name: []const u8) ?ModuleSpec {
+        for (self.modules) |m| {
+            if (std.mem.eql(u8, m.name, name)) return m;
+        }
+        return null;
+    }
 
     pub fn getPipeline(self: PipelineAST, name: []const u8) ?PipelineDecl {
         for (self.pipelines) |p| {
@@ -192,6 +205,7 @@ pub const PipelineAST = struct {
 
 pub const ValidationError = error{
     OutOfMemory,
+    DuplicateModuleName,
     DuplicateDatasourceId,
     DuplicatePipelineName,
     DuplicateStepId,
@@ -204,6 +218,7 @@ pub const ValidationError = error{
 pub const PipelineBuilder = struct {
     arena: std.heap.ArenaAllocator,
     runtime: RuntimeConfig = .{},
+    modules: std.ArrayListUnmanaged(ModuleSpec) = .empty,
     datasources: std.ArrayListUnmanaged(DatasourceSpec) = .empty,
     pipelines: std.ArrayListUnmanaged(PipelineDecl) = .empty,
 
@@ -223,6 +238,16 @@ pub const PipelineBuilder = struct {
 
     pub fn setWorkers(self: *PipelineBuilder, workers: usize) void {
         self.runtime.workers = workers;
+    }
+
+    pub fn addModule(self: *PipelineBuilder, spec: ModuleSpec) ValidationError!void {
+        const alloc = self.allocator();
+        for (self.modules.items) |m| {
+            if (std.mem.eql(u8, m.name, spec.name)) {
+                return error.DuplicateModuleName;
+            }
+        }
+        try self.modules.append(alloc, spec);
     }
 
     pub fn addDatasource(self: *PipelineBuilder, spec: DatasourceSpec) ValidationError!void {
@@ -299,6 +324,7 @@ pub const PipelineBuilder = struct {
 
         return .{
             .runtime = self.runtime,
+            .modules = try self.modules.toOwnedSlice(alloc),
             .datasources = try self.datasources.toOwnedSlice(alloc),
             .pipelines = try self.pipelines.toOwnedSlice(alloc),
         };

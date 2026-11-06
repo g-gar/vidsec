@@ -59,7 +59,7 @@ test "E2E: Dynamic libanalyzer.so loading, probe_file Black Box task, and RAM ro
 
     var repos = RepositoryRegistry.init(alloc);
     defer repos.deinit();
-    try pipeline.repository.registerDefaultDrivers(&repos);
+    try vidsec.extensions.datasources.registerDefaultDrivers(&repos);
 
     var engine = PipelineEngine.init(alloc, ast, &modules, &repos);
 
@@ -132,7 +132,7 @@ test "E2E: Clean MP4 file passes probe_file and routes to clean_flow" {
 
     var repos = RepositoryRegistry.init(alloc);
     defer repos.deinit();
-    try pipeline.repository.registerDefaultDrivers(&repos);
+    try vidsec.extensions.datasources.registerDefaultDrivers(&repos);
 
     var engine = PipelineEngine.init(alloc, ast, &modules, &repos);
 

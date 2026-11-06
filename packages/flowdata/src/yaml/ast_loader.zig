@@ -342,7 +342,27 @@ pub fn loadPipelineAstFromYaml(
         }
     }
 
-    // 2. Datasources (Open-ended drivers)
+    // 2. Modules (Dynamic or static plugins)
+    const modules_node = root_node.get("modules");
+    if (modules_node) |mods_node| {
+        if (mods_node.asMap()) |entries| {
+            for (entries) |entry| {
+                const mod_path = if (entry.value.asMap()) |_|
+                    (if (entry.value.get("path")) |p| p.asScalar() orelse "" else "")
+                else
+                    entry.value.asScalar() orelse "";
+
+                if (mod_path.len > 0) {
+                    try builder.addModule(.{
+                        .name = entry.key,
+                        .path = mod_path,
+                    });
+                }
+            }
+        }
+    }
+
+    // 3. Datasources (Open-ended drivers)
     const datasources_node = root_node.get("datasources") orelse root_node.get("storages");
     if (datasources_node) |ds_node| {
         if (ds_node.asMap()) |entries| {

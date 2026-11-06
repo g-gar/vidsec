@@ -3,12 +3,12 @@ const Allocator = std.mem.Allocator;
 const abi = @import("../abi/mod.zig");
 const dataflow = @import("../dataflow/mod.zig");
 const ast_mod = @import("../ast/ast.zig");
-const loader_mod = @import("loader/mod.zig");
+const modules_mod = @import("../modules/mod.zig");
 const repository_mod = @import("../repository/mod.zig");
 const tracer_mod = @import("tracer.zig");
 
 pub const PipelineAST = ast_mod.PipelineAST;
-pub const ModuleRegistry = loader_mod.ModuleRegistry;
+pub const ModuleRegistry = modules_mod.ModuleRegistry;
 pub const RepositoryRegistry = repository_mod.RepositoryRegistry;
 pub const PayloadHandle = dataflow.PayloadHandle;
 pub const TaskDescriptor_ABI = abi.TaskDescriptor_ABI;
@@ -27,6 +27,109 @@ pub const EngineError = error{
     UnknownTaskEntrypoint,
     TaskExecutionFailed,
     OutOfMemory,
+};
+
+const EngineHostState = struct {
+    input_slice: []const u8,
+    params: []const ast_mod.KeyValueParam,
+    repos: *RepositoryRegistry,
+    default_datasource: ?[]const u8,
+
+    fn streamSize(raw_ctx: *abi.TaskContext_ABI) callconv(.c) u64 {
+        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
+        return self.input_slice.len;
+    }
+
+    fn streamReadAt(raw_ctx: *abi.TaskContext_ABI, offset: u64, dest_ptr: [*]u8, len: usize) callconv(.c) abi.HostError_ABI {
+        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
+        const end = std.math.add(u64, offset, len) catch return .out_of_bounds;
+        if (end > self.input_slice.len) return .out_of_bounds;
+        const start: usize = @intCast(offset);
+        @memcpy(dest_ptr[0..len], self.input_slice[start .. start + len]);
+        return .ok;
+    }
+
+    fn nextWindow(_: *abi.TaskContext_ABI, _: ?[*:0]const u8, _: *abi.WindowView_ABI) callconv(.c) abi.HostError_ABI {
+        return .end_of_stream;
+    }
+
+    fn windowReadAt(_: *abi.TaskContext_ABI, _: *const abi.WindowView_ABI, _: u64, _: [*]u8, _: usize) callconv(.c) abi.HostError_ABI {
+        return .out_of_bounds;
+    }
+
+    fn nextRow(_: *abi.TaskContext_ABI, _: [*:0]const u8, _: *abi.RowView_ABI) callconv(.c) abi.HostError_ABI {
+        return .end_of_stream;
+    }
+
+    fn getParam(raw_ctx: *abi.TaskContext_ABI, key_ptr: [*:0]const u8, out_val: *abi.Value_ABI) callconv(.c) abi.HostError_ABI {
+        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
+        const key = std.mem.span(key_ptr);
+        for (self.params) |p| {
+            if (std.mem.eql(u8, p.key, key)) {
+                if (std.mem.eql(u8, p.value, "true")) {
+                    out_val.* = abi.Value_ABI.fromBool(true);
+                    return .ok;
+                }
+                if (std.mem.eql(u8, p.value, "false")) {
+                    out_val.* = abi.Value_ABI.fromBool(false);
+                    return .ok;
+                }
+                if (std.fmt.parseInt(i64, p.value, 10)) |iv| {
+                    out_val.* = abi.Value_ABI.fromInt(iv);
+                    return .ok;
+                } else |_| {}
+                if (std.fmt.parseFloat(f64, p.value)) |fv| {
+                    out_val.* = abi.Value_ABI.fromFloat(fv);
+                    return .ok;
+                } else |_| {}
+                out_val.* = abi.Value_ABI.fromText(p.value);
+                return .ok;
+            }
+        }
+        return .not_found;
+    }
+
+    fn emitRow(raw_ctx: *abi.TaskContext_ABI, channel_ptr: ?[*:0]const u8, fields_ptr: [*]const abi.NamedField_ABI, fields_len: usize) callconv(.c) abi.HostError_ABI {
+        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
+        _ = self;
+        _ = channel_ptr;
+        _ = fields_ptr;
+        _ = fields_len;
+        return .ok;
+    }
+
+    fn artifactWriteAt(_: *abi.TaskContext_ABI, _: u64, _: [*]const u8, _: usize) callconv(.c) abi.HostError_ABI {
+        return .ok;
+    }
+
+    fn artifactZeroRange(_: *abi.TaskContext_ABI, _: u64, _: u64) callconv(.c) abi.HostError_ABI {
+        return .ok;
+    }
+
+    fn artifactTruncate(_: *abi.TaskContext_ABI, _: u64) callconv(.c) abi.HostError_ABI {
+        return .ok;
+    }
+
+    fn carveToQuarantine(_: *abi.TaskContext_ABI, _: u64, _: u64, _: [*:0]const u8, _: *[64]u8) callconv(.c) abi.HostError_ABI {
+        return .ok;
+    }
+
+    fn logEvent(_: *abi.TaskContext_ABI, _: abi.LogLevel_ABI, _: [*]const u8, _: usize) callconv(.c) void {}
+
+    const vtable = abi.HostApiVTable_ABI{
+        .stream_size = &streamSize,
+        .stream_read_at = &streamReadAt,
+        .next_window = &nextWindow,
+        .window_read_at = &windowReadAt,
+        .next_row = &nextRow,
+        .get_param = &getParam,
+        .emit_row = &emitRow,
+        .artifact_write_at = &artifactWriteAt,
+        .artifact_zero_range = &artifactZeroRange,
+        .artifact_truncate = &artifactTruncate,
+        .carve_to_quarantine = &carveToQuarantine,
+        .log_event = &logEvent,
+    };
 };
 
 /// Modern Black Box Native Zig Pipeline Execution Engine.
@@ -160,7 +263,7 @@ pub const PipelineEngine = struct {
                     var task_output: PayloadHandle = undefined;
 
                     if (desc.execute_blackbox) |bb_fn| {
-                        const mem = abi.MemContext_ABI.fromAllocator(&self.allocator);
+                        var mem = abi.MemContext_ABI.fromAllocator(&outputs_alloc);
                         const in_abi = abi.PayloadHandle_ABI{
                             .ptr = step_input.ptr,
                             .len = step_input.len,
@@ -194,7 +297,35 @@ pub const PipelineEngine = struct {
                             .reflect_abi_fn = res.payload.reflect_fn,
                         };
                     } else {
-                        return error.TaskExecutionFailed;
+                        // Bound task entrypoint via C-ABI TaskContext_ABI
+                        const byte_count = step_input.len * step_input.element_size;
+                        const input_bytes: []const u8 = if (byte_count > 0)
+                            @as([*]const u8, @ptrCast(step_input.ptr))[0..byte_count]
+                        else
+                            &.{};
+
+                        var host_state = EngineHostState{
+                            .input_slice = input_bytes,
+                            .params = task_spec.static_params,
+                            .repos = self.repos,
+                            .default_datasource = null,
+                        };
+
+                        var raw_ctx = abi.TaskContext_ABI{
+                            .opaque_host_state = &host_state,
+                            .host = &EngineHostState.vtable,
+                        };
+
+                        const status = desc.execute(&raw_ctx);
+                        switch (status) {
+                            .ok, .recoverable_warning => {},
+                            .halt_pipeline => {
+                                summary.halted_early = true;
+                            },
+                            .fatal_error => return error.TaskExecutionFailed,
+                        }
+
+                        task_output = step_input;
                     }
 
                     // Store output by task ID
