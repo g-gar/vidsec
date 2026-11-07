@@ -106,6 +106,10 @@ inputs:
 ```yaml
       - id: <step_identifier>
         uses: <module>/<task_name>
+
+        # Optional virtual network adapter binding (inherits from runtime.default_network):
+        network: <network_id> # or `networks: [<net_a>, <net_b>]` for multi-homing (see `v2/specs/networks.md`)
+
         inputs:
           # Direct parameters or multi-stream algebra:
           <param_name>: <data_source> | merge(...) | zip(...) | join(...)
@@ -113,7 +117,7 @@ inputs:
         # Optional declarative filter:
         where: <predicate_expression>
 
-        # Optional concurrency quota (inherits from runtime.workers):
+        # Optional concurrency quota (inherits from runtime.workers, see `v2/specs/runtime.md`):
         concurrency: 1 | auto | max | <thread_count>
         
         # Static task configuration parameters:
@@ -123,7 +127,7 @@ inputs:
         # Output dispatch channels:
         outputs:
           <channel_name>:
-            from: <task_output_field>
+            from: <task_output_field | network.captured_events>
             schema: <schema_reference | inline_schema>
             datasource: <logical_datasource_id>
             filter: <optional_filter_expression>

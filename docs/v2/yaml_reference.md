@@ -1,253 +1,333 @@
-# Declarative Configuration Reference (`schemas.yaml`, `pipeline.yaml`, and `.env`)
+# Unified Declarative Specification (`v2/yaml_reference.md`)
 
-This document specifies the complete grammar of configuration files in `vidsec v2`, all capabilities expressible via YAML, and the modular Zig decoding architecture designed to avoid a monolithic *God Module*.
+This document serves as the **Master Specification Aggregator** for `flowdata` / `vidsec v2`. It defines how the six top-level sections of `pipeline.yaml` compose together, how external modularization (`$ref`) splits configurations across files, and how the modular Zig YAML decoder (`src/yaml/`) compiles them into the canonical `PipelineAST`.
+
+For the in-depth formal specification of each individual subsystem, consult its dedicated document in [`docs/v2/specs/`](./specs/README.md):
+
+| Top-Level Block | Dedicated Specification | Core Responsibility |
+| :--- | :--- | :--- |
+| **`runtime:` & `.env`** | **[`v2/specs/runtime.md`](./specs/runtime.md)** | Worker thread budgets (`workers`), default network isolation (`default_network`), memory envelopes, and `.env` variable expansion. |
+| **`modules:`** | **[`v2/specs/runtime.md`](./specs/runtime.md#3-dynamic-module-catalog-modules)** | Registration of C-ABI native plugins (`.so` / `.dylib`) and pre-flight permission verification. |
+| **`networks:`** | **[`v2/specs/networks.md`](./specs/networks.md)** | Reactive L4/L7 Virtual Network Adapters (`none`, `ingress_only`, `egress`, `sinkhole`), L7 ACLs, Anti-SSRF, connection pooling, TCP window backpressure, Token Bucket rate-limiting, multi-proxy balancing, DoH/DNS, and Wireshark `.pcapng` persistence. |
+| **`datasources:`** | **[`v2/specs/datasources.md`](./specs/datasources.md)** | Polymorphic storage backends (`memory`, `sqlite`, `file_store`, `amqp`). |
+| **`pipelines:`** | **[`v2/specs/pipeline_and_tasks.md`](./specs/pipeline_and_tasks.md)** | DAG orchestration via pure Black Box `steps` (`uses`, `inputs` stream algebra, `where`, `network`, `concurrency`, `outputs`) and $O(1)$ `router` nodes. |
+| **`components.schemas:`** | **[`v2/specs/schemas.md`](./specs/schemas.md)** | Unified 1:1 C-ABI $\leftrightarrow$ SQLite `STRICT` type system, relational primary/foreign keys, indexes, seed catalogs, and inline step schemas. |
 
 ---
 
-## 1. Environment Variable Interpolation (`.env`)
+## 1. Document Anatomy (`pipeline.yaml`)
 
-Before parsing scalar values in `pipeline.yaml`, the environment preprocessor (`src/core/yaml/env.zig`) resolves variables from `.env` files or the operating system environment:
-* `${VAR_NAME}`: Replaced by the variable value; fails at pre-flight (`error.MissingRequiredEnvVar`) if undefined.
-* `${VAR_NAME:-default_value}`: Replaced by the variable value, or falls back to `default_value` if undefined.
+A complete `flowdata` / `vidsec v2` pipeline document follows a strict, declarative top-down hierarchy inspired by **Docker Compose** ([`dsl_and_cli_rationale.md`](./specs/dsl_and_cli_rationale.md)):
 
-Example `.env`:
-```dotenv
-VIDSEC_DB_MODE=memory
-VIDSEC_DB_TIMEOUT=5000
-VIDSEC_MAX_MEM_MB=256
-VIDSEC_QUARANTINE_DIR=/var/vidsec/quarantine
-VIDSEC_WORK_DIR=/tmp/vidsec_work
+```
+pipeline.yaml
+├── version: 2
+├── runtime:             # Global execution budget & defaults  -> specs/runtime.md
+├── modules:             # Dynamic C-ABI plugin catalog (.so)  -> specs/runtime.md
+├── networks:            # Virtual L4/L7 network adapters      -> specs/networks.md
+├── datasources:         # Storage & memory repositories       -> specs/datasources.md
+├── pipelines:           # Execution graphs (main + sub-flows) -> specs/pipeline_and_tasks.md
+│   └── <pipeline_id>:
+│       └── steps:       # Task steps & conditional routers
+└── components:
+    └── schemas:         # Canonical relational/memory schemas -> specs/schemas.md
 ```
 
----
-
-## 2. Specification of `schemas.yaml` (Domain Schema Catalog)
-
-The `schemas.yaml` file defines the shared relational structure consumed by pipeline tasks. It maintains a **1:1 bijection with C-ABI types (`ValueTag_ABI`) and SQLite `STRICT` mode**, eliminating complex runtime type conversions.
-
-### 2.1. Supported Column Types and Modifiers
-
-| Type in `schemas.yaml` | Type in C-ABI (`ValueTag_ABI`) | Type in SQLite (`STRICT`) | Description |
-| :--- | :--- | :--- | :--- |
-| `int64` | `.int64` (`i64`) | `INTEGER` | Signed 64-bit integers (offsets, sizes, IDs, severities). |
-| `float64` | `.float64` (`f64`) | `REAL` | IEEE-754 64-bit floating point (entropy, metrics, ratios). |
-| `bool` | `.boolean` (`bool`) | `INTEGER` | Boolean (`0` or `1`, with `CHECK (col IN (0, 1))`). |
-| `text` | `.text` (`[]const u8`) | `TEXT` | Validated UTF-8 string. |
-| `blob` | `.blob` (`[]const u8`) | `BLOB` | Arbitrary raw byte sequence. |
-
-**Column Attributes:**
-* `type` *(mandatory)*: `int64` | `float64` | `bool` | `text` | `blob`.
-* `pk` *(optional, bool)*: If `true`, generates a `PRIMARY KEY` (for `int64`, acts as an autoincrementing `ROWID` alias in SQLite).
-* `nullable` *(optional, bool)*: Defaults to `false` (all columns are `NOT NULL` unless explicitly marked `nullable: true`).
-* `default` *(optional, literal)*: Default value for the column (`0`, `false`, `'unknown'`).
-* `ref` *(optional, `<table_name>.<column_name>`)*: Foreign key reference (`REFERENCES <table>(<column>)`).
-
-**Table Attributes:**
-* `columns`: Dictionary of column definitions.
-* `indexes` *(optional)*: List of index definitions (columns, unique, expressions, where).
-* `primary_key` *(optional)*: Explicit single or composite primary key `[<col1>, <col2>]`.
-* `unique_keys` *(optional)*: List of composite unique constraints.
-* `checks` *(optional)*: Table-level `CHECK` expressions.
-* `seeds` *(optional, list of mappings)*: Initial static rows for lookup and enum tables (`- { col1: val1, col2: val2 }`). Every column name must exist in `columns`.
-
-### 2.2. Complete `schemas.yaml` Example
+### Multi-File Modularization (`$ref`)
+Any top-level catalog (`networks:`, `datasources:`, `modules:`, or `components.schemas:`) can be kept inline in a single self-contained `pipeline.yaml` or factored out into dedicated YAML files via `$ref`:
 
 ```yaml
 version: 2
 
-schemas:
-  # Domain 1: Structural Intermediate Representation (Basic ContainerIR)
-  ir_core:
-    container_metadata:
-      columns:
-        file_size:        { type: int64 }
-        detected_format:  { type: int64 }
-        true_magic:       { type: int64 }
-        true_magic_name:  { type: text }
-        highest_root_end: { type: int64 }
+runtime:
+  workers: "${VIDSEC_WORKERS:-auto}"
+  default_network: isolated
 
-    ir_regions:
-      columns:
-        region_id:                { type: int64, pk: true }
-        parent_region_id:         { type: int64, nullable: true, ref: ir_regions.region_id }
-        tag_name:                 { type: text }
-        role:                     { type: text }
-        header_offset:            { type: int64 }
-        payload_offset:           { type: int64 }
-        effective_end_offset:     { type: int64 }
-        is_truncated_or_overflow: { type: bool, default: false }
-      indexes:
-        - role
-        - tag_name
+networks:
+  $ref: "./configs/networks.yaml"
 
-  # Domain 2: Forensic Security Findings and Quarantine
-  audit:
-    audit_findings:
-      columns:
-        finding_id:     { type: int64, pk: true }
-        rule_id:        { type: text }
-        severity:       { type: int64 }
-        file_offset:    { type: int64 }
-        region_tag:     { type: text, nullable: true }
-        measured_value: { type: float64, nullable: true }
-        message:        { type: text, nullable: true }
-      indexes:
-        - rule_id
-        - severity
-```
-
----
-
-## 3. Specification of `pipeline.yaml`
-
-The `pipeline.yaml` definition contains three top-level blocks: `engine`, `modules`, and `pipelines`.
-
-### 3.1. `engine` and `modules` Blocks
-
-```yaml
-version: 2
-
-engine:
-  schemas: "./configs/schemas.yaml"
-  trace_file: "${VIDSEC_TRACE_FILE:-./logs/trace.jsonl}"
-  db_mode: "${VIDSEC_DB_MODE:-memory}"          # "memory" | "wal_file"
-  db_busy_timeout_ms: "${VIDSEC_DB_TIMEOUT:-5000}"
-  max_task_memory_mb: "${VIDSEC_MAX_MEM_MB:-256}"
-  allowed_dirs:
-    quarantine: "${VIDSEC_QUARANTINE_DIR:-/var/vidsec/quarantine}"
-    work: "${VIDSEC_WORK_DIR:-/tmp/vidsec_work}"
+datasources:
+  $ref: "./configs/datasources.yaml"
 
 modules:
-  ir_builder:     { path: "./plugins/libm1_ir.so" }
-  deep_extract:   { path: "./plugins/libm3_deep.so" }
-  byte_scanners:  { path: "./plugins/libfn_scanners.so" } # Houses tasks e.g. `entropy_scan` and `sig_scan`
-  quarantine:     { path: "./plugins/libfn_quarantine.so" }
-  surgical_cdr:   { path: "./plugins/libm4_cdr.so" }
-```
+  $ref: "./configs/modules.yaml"
 
-**Module Reference Syntax in `use:`:**
-1. `use: sql_rule`: Built-in declarative SQL executor (requires no external `.so`).
-2. `use: <module_name>`: Invokes the default task (`tasks_ptr[0]`) from the module `.so` (e.g. `use: ir_builder`).
-3. `use: <module_name>/<task_name>`: Invokes a specific named task from a multi-task module (e.g. `use: byte_scanners/entropy_scan`).
+components:
+  schemas:
+    $ref: "./configs/schemas.yaml"
+
+pipelines:
+  main:
+    steps:
+      # ...
+```
 
 ---
 
-### 3.2. Five Canonical Step Patterns (`steps`) in `pipelines:`
+## 2. Complete End-to-End Unified Example
 
-#### Pattern 1: Full Domain Schema Producer (`output.schema`)
-Designed for IR lowering tasks (`ir_builder`, `deep_extract`) that emit records into multiple tables across a domain schema defined in `schemas.yaml` without manual column-by-column mapping:
-
-```yaml
-      - task: build_ir
-        use: ir_builder
-        input:
-          stream: { from: file }
-        output:
-          schema: ir_core
-```
-
-#### Pattern 2: Pure Declarative SQL Rule (`use: sql_rule`)
-Executes a read-only `SELECT` query across existing tables and inserts the resulting rows into the table specified in `output.into`:
+The following canonical configuration illustrates how **all six specifications** (`runtime`, `modules`, `networks`, `datasources`, `pipelines`, and `components.schemas`) interact in a single coherent pipeline—combining controlled L7 API egress (rate-limited, proxy-balanced, and captured to Wireshark `.pcapng`), parallel page ingestion, air-gapped archive packaging, and virtual sinkhole security detonation:
 
 ```yaml
-      - task: check_magic_and_bounds
-        use: sql_rule
-        query: |
-          SELECT 'R01' AS rule_id, 2 AS severity, 0 AS file_offset, true_magic_name AS region_tag,
-                 'Executable or unknown format disguised as video' AS message
-          FROM container_metadata WHERE true_magic >= 10 OR detected_format = 0
-          UNION ALL
-          SELECT 'R03', 2, header_offset, tag_name, 'Region overflows parent limit'
-          FROM ir_regions WHERE is_truncated_or_overflow = 1
-        output:
-          into: audit_findings
-```
+version: 2
 
-#### Pattern 3: Generic Task with Symmetric Declarative Mapping (`input.map` + `output.map`)
-Allows re-using generic functions (such as `entropy_scan`) without writing SQL in task inputs. The engine compiles `table` + `filter` + `map` into `SELECT <expr> AS <plugin_field> FROM <table> WHERE <filter>` and delivers windows lazily:
+# =============================================================================
+# 1. RUNTIME & GLOBAL DEFAULTS (See: v2/specs/runtime.md)
+# =============================================================================
+runtime:
+  workers: "${VIDSEC_WORKERS:-auto}"
+  default_network: isolated
+  max_task_memory_mb: 512
+  trace_file: "./logs/trace.jsonl"
 
-```yaml
-      - task: scan_padding_r07
-        use: byte_scanners/entropy_scan
-        input:
-          windows:
-            from: file
-            table: ir_regions
-            filter: "role IN ('padding', 'unknown', 'metadata') AND (effective_end_offset - payload_offset) >= 64"
-            map:
-              id: region_id
-              offset: payload_offset
-              length: "effective_end_offset - payload_offset"
-              tag: tag_name
+# =============================================================================
+# 2. DYNAMIC MODULE CATALOG (See: v2/specs/runtime.md)
+# =============================================================================
+modules:
+  mangadex: { path: "./plugins/libmangadex.so" }
+  archiver: { path: "./plugins/libarchiver.so" }
+  sandbox:  { path: "./plugins/libsandbox.so" }
+
+# =============================================================================
+# 3. REACTIVE VIRTUAL NETWORK ADAPTERS (See: v2/specs/networks.md)
+# =============================================================================
+networks:
+  # Air-gapped default for pure computation steps
+  isolated:
+    driver: none
+
+  # Inbound-only adapter for local stream/webhook consumers
+  broker_ingress:
+    driver: ingress_only
+
+  # Controlled L4/L7 Egress adapter for MangaDex API & @Home CDN
+  api_egress:
+    driver: egress
+    policy:
+      block_private_ranges: true
+      allow_rules:
+        - schemes: [https]
+          hosts: ["api.mangadex.org", "uploads.mangadex.org"]
+          ports: [443]
+          operations: [GET]
+          resources: ["/manga/*", "/chapter/*", "/at-home/server/*", "/covers/*"]
+        - schemes: [https]
+          hosts: ["*.mangadex.network"]
+          ports: [443]
+          operations: [GET]
+          resources: ["/data/*", "/data-saver/*"]
+
+    pool:
+      max_connections: 32
+      max_pending_acquires: 128
+      acquire_timeout_ms: 2000
+      alpn: [h2, http1_1]
+
+    timeouts:
+      connect_ms: 3000
+      tls_handshake_ms: 3000
+      read_idle_ms: 10000
+      write_idle_ms: 5000
+
+    backpressure:
+      bind_tcp_window: true
+      so_rcvbuf_bytes: 262144
+      max_buffer_memory_mb: 64
+
+    rate_limit:
+      requests_per_second: 5
+      burst: 5
+      max_inflight: 8
+      respect_retry_after: true
+
+    proxies:
+      strategy: round_robin # round_robin | weighted | failover | least_latency | sticky_host | random
+      health_check_interval_ms: 15000
+      circuit_breaker:
+        failure_threshold: 3
+        cooldown_ms: 30000
+        half_open_max_calls: 2
+        failover_on_status: [403, 429, 502, 503, 504]
+      endpoints:
+        - url: "http://proxy-eu-1.internal:8080"
+          weight: 3
+        - url: "http://proxy-eu-2.internal:8080"
+          weight: 3
+        - url: "socks5://proxy-backup.internal:1080"
+          weight: 1
+
+    dns:
+      doh_endpoint: "https://1.1.1.1/dns-query"
+      min_ttl_sec: 60
+      max_ttl_sec: 3600
+      stale_while_revalidate_sec: 120
+
+    routes:
+      - match_host: "*.mangadex.network"
+        proxy_strategy: least_latency
+        rate_limit:
+          requests_per_second: 20
+          burst: 10
+
+    capture:
+      enabled: true
+      format: pcapng
+      path: "./logs/mangadex_egress.pcapng"
+      snaplen: 4096
+      include_tls_keys: true
+
+  # Virtual sinkhole adapter for offline detonation & telemetry
+  virtual_tap:
+    driver: sinkhole
+    subnet: "10.254.0.0/24"
+    capture_protocols: [dns, http, smb, tcp, udp]
+    emulate_responses: false
+    isolation: runtime
+    capture:
+      enabled: true
+      format: pcapng
+      path: "./logs/sinkhole_detonation.pcapng"
+      snaplen: 65535
+      include_tls_keys: true
+
+# =============================================================================
+# 4. STORAGE DATASOURCES (See: v2/specs/datasources.md)
+# =============================================================================
+datasources:
+  pipeline_memory:
+    type: memory
+  state_db:
+    type: sqlite
+    path: "${VIDSEC_DB_PATH:-./pipeline_state.db}"
+  cbz_store:
+    type: file_store
+    directory: "./downloads/cbz/"
+
+# =============================================================================
+# 5. PIPELINE EXECUTION GRAPH (See: v2/specs/pipeline_and_tasks.md)
+# =============================================================================
+pipelines:
+  main:
+    steps:
+      # Step 1: Fetch chapter feed (1 -> N expansion, governed by api_egress)
+      - id: fetch_chapters
+        uses: mangadex/fetch_feed
+        network: api_egress
         params:
-          entropy_threshold: 7.2
-        output:
-          into: audit_findings
-          map:
-            rule_id: "'R07'"           # Literal constant string
-            file_offset: offset        # Field emitted by the plugin
-            region_tag: tag
-            severity: severity
-            measured_value: entropy
-```
+          manga_id: "a96676e5-8ae2-425e-b549-7f15dd34a6d8"
+          translated_language: "es"
+        outputs:
+          chapters:
+            from: chapters
+            schema: components/schemas/chapter_meta
+            datasource: pipeline_memory
 
-#### Pattern 4: Output-Less Sink Task (Controlled Side-Effect / Pipeline Halt)
-The `output:` block is **optional**. Tasks such as `move_to_quarantine` consume file streams and findings, carve payloads to disk, and return `TaskStatus_ABI.halt_pipeline` to cleanly stop execution:
+      # Step 2: Resolve MangaDex@Home server nodes (lifted element-by-element)
+      - id: resolve_pages
+        uses: mangadex/resolve_at_home
+        network: api_egress
+        inputs:
+          chapter: fetch_chapters.chapters
+        outputs:
+          page_tasks:
+            from: pages
+            datasource: pipeline_memory
 
-```yaml
-      - task: move_to_quarantine
-        use: quarantine
-        input:
-          stream: { from: file }
-          findings:
-            table: audit_findings
-            filter: "severity = 2"
-            map:
-              rule_id: rule_id
-              offset: file_offset
-              message: message
-        params:
-          quarantine_dir: "${VIDSEC_QUARANTINE_DIR}/rejected"
-        # No `output:` block (clean terminal sink)
-```
+      # Step 3: Download page images in parallel (governed by *.mangadex.network route)
+      - id: download_pages
+        uses: mangadex/download_page
+        network: api_egress
+        concurrency: 8
+        inputs:
+          page: resolve_pages.page_tasks
+        outputs:
+          raw_images:
+            from: image
+            datasource: pipeline_memory
 
-#### Pattern 5: Conditional Router (`router`)
-Branches execution between sub-pipelines by evaluating SQL conditions sequentially:
+      # Step 4: Pure offline CBZ bundling (N -> 1 aggregation, air-gapped)
+      - id: package_cbz
+        uses: archiver/bundle_cbz
+        network: isolated
+        inputs:
+          images: download_pages.raw_images
+        outputs:
+          cbz_archive:
+            from: archive
+            datasource: cbz_store
 
-```yaml
-      - router: triage_gate
+      # Step 5: Verify generated archive inside the virtual sinkhole tap
+      - id: verify_archive
+        uses: sandbox/inspect_payload
+        network: virtual_tap
+        inputs:
+          payload: package_cbz.cbz_archive
+        outputs:
+          net_events:
+            from: network.captured_events
+            schema: components/schemas/network_event
+            datasource: pipeline_memory
+
+      # Router branching in O(1) from RAM
+      - router: check_unexpected_egress
         cases:
-          - when: "SELECT 1 FROM audit_findings WHERE rule_id = 'R01' AND severity = 2"
-            goto: quarantine_full_file
-        default: deep_audit_flow
+          - when: "count(verify_archive.net_events) > 0"
+            goto: quarantine_flow
+        default: finalize_flow
+
+  quarantine_flow:
+    steps: []
+
+  finalize_flow:
+    steps: []
+
+# =============================================================================
+# 6. CANONICAL ENTITY SCHEMAS (See: v2/specs/schemas.md)
+# =============================================================================
+components:
+  schemas:
+    chapter_meta:
+      primary_key: chapter_id
+      columns:
+        chapter_id: { type: text, pk: true }
+        volume:     { type: text, nullable: true }
+        chapter:    { type: text, nullable: true }
+        title:      { type: text, nullable: true }
+        pages:      { type: int64 }
+
+    network_event:
+      primary_key: event_id
+      columns:
+        event_id:    { type: int64, pk: true }
+        step_id:     { type: text }
+        timestamp:   { type: int64 }
+        protocol:    { type: text }
+        http_method: { type: text, nullable: true }
+        dst_host:    { type: text }
+        dst_port:    { type: int64 }
+        uri_path:    { type: text, nullable: true }
+        proxy_used:  { type: text, nullable: true }
+        status_code: { type: int64, nullable: true }
+        latency_ms:  { type: int64, nullable: true }
+        verdict:     { type: text }
 ```
 
 ---
 
-## 4. Modular YAML Decoding Architecture in Zig (Avoiding God Modules)
+## 3. Modular YAML Decoding Architecture in Zig (`src/yaml/`)
 
-Following Docker Compose (`compose-go`) architectural patterns, YAML parsing is split across small, single-responsibility loaders under `src/core/yaml/`:
+Just as the specification documentation is split into single-responsibility modules under `docs/v2/specs/`, the Zig parser (`src/yaml/`) decomposes YAML loading into isolated, single-responsibility loaders:
 
 ```mermaid
 flowchart LR
     RawYAML[".yaml Text + .env"] --> Env["1. env.zig\nInterpolates ${VAR}"]
-    Env --> AST["2. ast.zig\nPure Syntactic Tree (YamlNode)\non temporary ArenaAllocator"]
+    Env --> AST["2. lib/ast.zig\nPure Syntactic Tree (YamlNode)\non temporary ArenaAllocator"]
 
-    AST --> L1["schema_loader.zig\n-> SchemaCatalog"]
-    AST --> L2["engine_loader.zig\n-> EngineSettings"]
-    AST --> L3["module_loader_spec.zig\n-> ModuleDeclMap"]
-    AST --> L4["step_loader.zig\n-> SubPipelineMap"]
+    AST --> L1["loaders/runtime_loader.zig\n-> RuntimeConfig & ModuleSpec[]"]
+    AST --> L2["loaders/network_loader.zig\n-> NetworkSpec[]"]
+    AST --> L3["loaders/datasource_loader.zig\n-> DatasourceSpec[]"]
+    AST --> L4["loaders/schema_loader.zig\n-> SchemaCatalog"]
+    AST --> L5["loaders/pipeline_loader.zig\n-> PipelineDecl[] (Steps & Routers)"]
 
-    L4 --> L4A["input_spec.zig\n(stream / windows / rows + map)"]
-    L4 --> L4B["output_spec.zig\n(schema / into + map / none)"]
-    L4 --> L4C["router_spec.zig\n(cases / when / goto)"]
+    L1 & L2 & L3 & L4 & L5 --> Builder["PipelineBuilder.finish()\nHolistic Pre-Flight Validation\n-> Canonical PipelineAST"]
 ```
-
-| Zig Submodule (`src/core/yaml/`) | Single Responsibility |
-| :--- | :--- |
-| `env.zig` | Loads `.env` and expands `${VAR}` / `${VAR:-default}` over an `ArenaAllocator`. |
-| `ast.zig` | Converts raw YAML text into generic `YamlNode` elements (`map`, `seq`, `scalar`) with line/column tracking for compiler-grade error reporting. Free of Vidsec domain knowledge. |
-| `loaders/schema_loader.zig` | Traverses the `schemas.yaml` AST, validates the 5 primitive types, and constructs `SchemaCatalog`. |
-| `loaders/input_spec.zig` | Decodes `input:` (`stream`, `windows`, table cursors with `filter` and `map`) and generates `InputSpec`. |
-| `loaders/output_spec.zig` | Decodes optional `output:` structures (`schema:`, or `into:` + `mode:` + `map:` + `artifact:`). |
-| `loaders/step_loader.zig` | Decodes `steps:` list entries, discriminating between `task:` and `router:` step definitions. |

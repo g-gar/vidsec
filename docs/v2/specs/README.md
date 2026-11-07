@@ -1,21 +1,26 @@
 # Pipeline Engine Specifications (`vidsec v2`)
 
-This directory contains formal specifications and architectural documentation for pipeline orchestration, schemas, datasources, and grammar in `vidsec v2`.
+This directory contains the modular formal specifications for each building block of `flowdata` / `vidsec v2`.
+
+For the unified master document that aggregates all sections (`runtime:`, `networks:`, `datasources:`, `modules:`, `pipelines:`, and `components.schemas:`) into a complete `pipeline.yaml` reference, see:
+👉 **[Unified Declarative Reference (`v2/yaml_reference.md`)](../yaml_reference.md)**
 
 ---
 
-## Specification Index
+## Modular Specification Index
 
-| Document | Language | Description |
+| Document | Scope (`pipeline.yaml` Section) | Description |
 | :--- | :--- | :--- |
-| **[dsl_and_cli_rationale.md](./dsl_and_cli_rationale.md)** | EN | Architectural Rationale: From verbose YAML to clean dataflow, Docker CLI analogies, and Unix / GStreamer pipe model. |
-| **[grammar_ebnf.md](./grammar_ebnf.md)** | EN | Formal EBNF Specification (ISO/IEC 14977): Lexical, syntactic grammar, AST structure, stream algebra, and runtime options. |
-| **[schemas.md](./schemas.md)** | EN | Unified type system, canonical `components.schemas` catalog, composite primary keys, deferred FKs, and inline schemas. |
-| **[datasources.md](./datasources.md)** | EN | Decoupled storage sinks: in-memory (`type: memory`), relational SQLite (`type: sqlite`), file stores, and message queues. |
-| **[pipeline_and_tasks.md](./pipeline_and_tasks.md)** | EN | Black Box task model, step syntax, multi-stream operations (`merge`/`zip`/`join`), concurrency budgets, and RAM routers. |
+| **[runtime.md](./runtime.md)** | `runtime:` & `modules:` | Environment interpolation (`.env`), worker thread budgets, default network isolation, memory quotas, and C-ABI `.so` module catalog. |
+| **[networks.md](./networks.md)** | `networks:` & `step.network` | Reactive L4/L7 Virtual Network Adapters (`none`, `ingress_only`, `egress`, `sinkhole`), L7 ACLs, Anti-SSRF, connection pooling, TCP window backpressure, Token Bucket rate-limiting, multi-proxy routing (`round_robin`, `weighted`, `failover`, `least_latency`, `sticky_host`, `random`), async DoH/DNS, and Wireshark `PCAPNG` capture with embedded TLS `DSB` keys. |
+| **[datasources.md](./datasources.md)** | `datasources:` | Decoupled storage sinks: zero-copy in-memory (`type: memory`), relational SQLite (`type: sqlite`), file stores (`type: file_store`), and message brokers (`type: amqp`). |
+| **[schemas.md](./schemas.md)** | `components.schemas:` & `step.schema` | Unified type system, canonical relational/in-memory schemas, composite primary keys, deferred FKs, seed rows, and inline step schemas. |
+| **[pipeline_and_tasks.md](./pipeline_and_tasks.md)** | `pipelines:`, `steps:` & `router:` | Black Box task model, cardinality matrix & automatic lifting, multi-stream algebra (`merge`/`zip`/`join`), concurrency overrides, and $O(1)$ routers. |
+| **[grammar_ebnf.md](./grammar_ebnf.md)** | Formal Grammar (EBNF) | ISO/IEC 14977 EBNF lexical & syntactic grammar mapping both Compact DSL and YAML into the canonical `PipelineAST`. |
+| **[dsl_and_cli_rationale.md](./dsl_and_cli_rationale.md)** | Rationale & CLI | Architectural rationale: Docker Compose / Unix / GStreamer analogies and 1:1 CLI equivalence. |
 
 ---
 
 ## Reference Implementations
 
-- **[configs/pipeline.yaml](../../configs/pipeline.yaml):** Canonical reference pipeline demonstrating the practical application of these specifications for Vidsec video forensics.
+- **[configs/pipeline.yaml](../../../apps/vidsec/configs/pipeline.yaml):** Canonical reference pipeline demonstrating the practical application of these specifications.

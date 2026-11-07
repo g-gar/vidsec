@@ -54,12 +54,25 @@ comment              = "#", { ? any character except newline ? }, ? newline ? ;
    =========================================================================== *)
 
 PipelineDocument     = [ RuntimeSection ]
+                     , [ NetworksSection ]
                      , [ DatasourcesSection ]
                      , [ ModulesSection ]
                      , PipelinesSection
                      , [ ComponentsSection ] ;
 
-RuntimeSection       = "runtime", ":", "workers", ":", ( "auto" | integer_literal ) ;
+RuntimeSection       = "runtime", ":", "workers", ":", ( "auto" | integer_literal )
+                     , [ "default_network", ":", NetworkId ] ;
+
+NetworksSection      = "networks", ":", { NetworkDecl } ;
+
+NetworkDecl          = NetworkId, ":"
+                     , "driver", ":", NetworkDriver
+                     , { NetworkOption } ;
+
+NetworkId            = identifier ;
+NetworkDriver        = "none" | "ingress_only" | "egress" | "sinkhole" ;
+ProxyStrategy        = "round_robin" | "weighted" | "failover" | "least_latency" | "sticky_host" | "random" ;
+NetworkOption        = identifier, ":", ( literal_value | qualified_name | ProxyStrategy ) ;
 
 DatasourcesSection   = "datasources", ":" , { DatasourceDecl } ;
 
@@ -145,6 +158,7 @@ TaskStep             = [ StepId, ":" ]
                      , [ StreamPipeline, "->" ]
                      , TaskTarget
                      , [ "(", [ ParameterList ], ")" ]
+                     , [ "@net", "(", NetworkId, { ",", NetworkId }, ")" ]
                      , [ "where", FilterPredicate ]
                      , [ "concurrency", ":", ConcurrencySpec ]
                      , [ "=>", OutputDispatchList ] ;
