@@ -14,4 +14,6 @@ pub const Slice_ABI = extern struct {
         if (self.len == 0) return &.{};
         return self.ptr[0..self.len];
     }
+
+    pub const asSlice = toSlice;
 };

@@ -3,10 +3,12 @@ const Allocator = std.mem.Allocator;
 const yaml_lib = @import("lib/mod.zig");
 const ast = @import("../ast/ast.zig");
 const env = @import("env.zig");
+const network_loader = @import("loaders/network_loader.zig");
 
 pub const PipelineAST = ast.PipelineAST;
 pub const PipelineBuilder = ast.PipelineBuilder;
 pub const DatasourceSpec = ast.DatasourceSpec;
+pub const NetworkSpec = ast.NetworkSpec;
 pub const KeyValueParam = ast.KeyValueParam;
 pub const TaskStepSpec = ast.TaskStepSpec;
 pub const RouterStepSpec = ast.RouterStepSpec;
@@ -21,7 +23,7 @@ pub const YamlAstLoaderError = error{
     MissingPipelinesSection,
     MissingStepIdentifier,
     InvalidConcurrencyValue,
-} || ast.ValidationError || yaml_lib.YamlAstError || Allocator.Error;
+} || ast.ValidationError || network_loader.NetworkLoaderError || yaml_lib.YamlAstError || Allocator.Error;
 
 pub const AstLoadOptions = struct {
     env_interpolator: ?*const env.EnvInterpolator = null,
@@ -256,10 +258,13 @@ fn parseTaskStep(alloc: Allocator, step_node: yaml_lib.Node) !TaskStepSpec {
     else
         &.{};
 
+    const networks = try network_loader.parseStepNetworks(alloc, step_node);
+
     return .{
         .id = id,
         .module = module,
         .task = task,
+        .networks = networks,
         .inputs = inputs,
         .where_filter = where_filter,
         .concurrency = concurrency,
@@ -338,6 +343,21 @@ pub fn loadPipelineAstFromYaml(
                 } else if (std.fmt.parseInt(usize, w_str, 10)) |w_val| {
                     builder.setWorkers(w_val);
                 } else |_| {}
+            }
+        }
+        if (rt.get("default_network")) |dn_node| {
+            if (dn_node.asScalar()) |dn_str| {
+                builder.setDefaultNetwork(dn_str);
+            }
+        }
+    }
+
+    // 2. Virtual Network Adapters (`networks:`)
+    if (root_node.get("networks")) |nets_node| {
+        if (nets_node.asMap()) |entries| {
+            for (entries) |entry| {
+                const net_spec = try network_loader.parseNetworkDecl(allocator, entry.key, entry.value);
+                try builder.addNetwork(net_spec);
             }
         }
     }

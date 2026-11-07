@@ -5,6 +5,10 @@ const Value_ABI = @import("value_abi.zig").Value_ABI;
 const NamedField_ABI = @import("named_field_abi.zig").NamedField_ABI;
 const LogLevel_ABI = @import("log_level_abi.zig").LogLevel_ABI;
 const TaskContext_ABI = @import("task_context_abi.zig").TaskContext_ABI;
+const net_abi = @import("net_abi.zig");
+const NetRequest_ABI = net_abi.NetRequest_ABI;
+const NetResponse_ABI = net_abi.NetResponse_ABI;
+const NetStreamHandle_ABI = net_abi.NetStreamHandle_ABI;
 
 /// Host API Virtual Method Table (`VTable`).
 /// Plugins are 100% SQL-free and OS-agnostic; they interact with streams, windows,
@@ -104,4 +108,45 @@ pub const HostApiVTable_ABI = extern struct {
         message_ptr: [*]const u8,
         message_len: usize,
     ) callconv(.c) void,
+
+    // --- 8. Mediated Virtual Network Adapter Operations (`networks:`) ---
+    /// Executes a protocol-agnostic transactional request (`http`, `https`, `grpc` unary, etc.)
+    /// through the step's bound Virtual Network Adapter (enforcing L4/L7 ACLs, Anti-SSRF,
+    /// Token Bucket rate-limiting, Proxy Pool rotation, and `.pcapng` packet persistence).
+    net_request: ?*const fn (
+        ctx: *TaskContext_ABI,
+        req: *const NetRequest_ABI,
+        out_resp: *NetResponse_ABI,
+    ) callconv(.c) HostError_ABI = null,
+
+    /// Opens a stateful bidirectional stream or datagram channel (`ws`, `rtmp`, `tcp`, `udp`, `tls`, `quic`)
+    /// governed by the step's Virtual Network Adapter.
+    net_connect: ?*const fn (
+        ctx: *TaskContext_ABI,
+        req: *const NetRequest_ABI,
+        out_handle: *NetStreamHandle_ABI,
+    ) callconv(.c) HostError_ABI = null,
+
+    /// Sends `len` bytes over an active virtual network stream, subject to adapter bandwidth shaping (`max_bandwidth_mbps`).
+    net_send: ?*const fn (
+        ctx: *TaskContext_ABI,
+        handle: NetStreamHandle_ABI,
+        src_ptr: [*]const u8,
+        len: usize,
+    ) callconv(.c) HostError_ABI = null,
+
+    /// Receives up to `max_len` bytes from an active virtual network stream, propagating TCP window backpressure.
+    net_recv: ?*const fn (
+        ctx: *TaskContext_ABI,
+        handle: NetStreamHandle_ABI,
+        dest_ptr: [*]u8,
+        max_len: usize,
+        out_read_len: *usize,
+    ) callconv(.c) HostError_ABI = null,
+
+    /// Deterministically releases a virtual network stream and its pooled socket/buffers.
+    net_close: ?*const fn (
+        ctx: *TaskContext_ABI,
+        handle: NetStreamHandle_ABI,
+    ) callconv(.c) HostError_ABI = null,
 };

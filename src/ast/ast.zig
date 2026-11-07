@@ -3,17 +3,181 @@ const Allocator = std.mem.Allocator;
 const repository = @import("../repository/mod.zig");
 
 // =============================================================================
-// RUNTIME AND DATASOURCE SPECIFICATIONS
+// RUNTIME, NETWORK, AND DATASOURCE SPECIFICATIONS
 // =============================================================================
 
 pub const RuntimeConfig = struct {
     /// Worker thread quota for multi-core data parallelism.
     /// Default is 1 (deterministic single-threaded).
     workers: usize = 1,
+    /// Default virtual network adapter assigned to steps that omit `network:`.
+    default_network: []const u8 = "isolated",
 };
 
 pub const ConfigParam = repository.ConfigParam;
 pub const KeyValueParam = ConfigParam;
+
+pub const NetworkDriver = enum {
+    none,
+    ingress_only,
+    egress,
+    sinkhole,
+
+    pub fn fromString(s: []const u8) ?NetworkDriver {
+        if (std.mem.eql(u8, s, "none") or std.mem.eql(u8, s, "isolated")) return .none;
+        if (std.mem.eql(u8, s, "ingress_only") or std.mem.eql(u8, s, "ingress")) return .ingress_only;
+        if (std.mem.eql(u8, s, "egress")) return .egress;
+        if (std.mem.eql(u8, s, "sinkhole") or std.mem.eql(u8, s, "tap")) return .sinkhole;
+        return null;
+    }
+};
+
+pub const ProxyStrategy = enum {
+    round_robin,
+    weighted,
+    failover,
+    least_latency,
+    sticky_host,
+    random,
+
+    pub fn fromString(s: []const u8) ?ProxyStrategy {
+        if (std.mem.eql(u8, s, "round_robin")) return .round_robin;
+        if (std.mem.eql(u8, s, "weighted")) return .weighted;
+        if (std.mem.eql(u8, s, "failover")) return .failover;
+        if (std.mem.eql(u8, s, "least_latency")) return .least_latency;
+        if (std.mem.eql(u8, s, "sticky_host")) return .sticky_host;
+        if (std.mem.eql(u8, s, "random")) return .random;
+        return null;
+    }
+};
+
+pub const PortRangeSpec = struct {
+    min: u16,
+    max: u16,
+
+    pub fn single(port: u16) PortRangeSpec {
+        return .{ .min = port, .max = port };
+    }
+
+    pub fn contains(self: PortRangeSpec, port: u16) bool {
+        return port >= self.min and port <= self.max;
+    }
+};
+
+pub const AllowRuleSpec = struct {
+    schemes: []const []const u8 = &.{},
+    hosts: []const []const u8 = &.{},
+    ports: []const PortRangeSpec = &.{},
+    operations: []const []const u8 = &.{},
+    resources: []const []const u8 = &.{},
+};
+
+pub const NetworkPolicySpec = struct {
+    block_private_ranges: bool = true,
+    allow_rules: []const AllowRuleSpec = &.{},
+};
+
+pub const PoolSpec = struct {
+    max_connections: usize = 32,
+    max_pending_acquires: usize = 128,
+    acquire_timeout_ms: u64 = 2000,
+    alpn: []const []const u8 = &.{},
+};
+
+pub const TimeoutsSpec = struct {
+    connect_ms: u64 = 3000,
+    tls_handshake_ms: u64 = 3000,
+    read_idle_ms: u64 = 10000,
+    write_idle_ms: u64 = 5000,
+};
+
+pub const BackpressureSpec = struct {
+    bind_tcp_window: bool = true,
+    so_rcvbuf_bytes: usize = 262144,
+    max_buffer_memory_mb: usize = 64,
+};
+
+pub const RateLimitSpec = struct {
+    requests_per_second: f64 = 0.0,
+    burst: usize = 0,
+    connections_per_second: f64 = 0.0,
+    max_bandwidth_mbps: f64 = 0.0,
+    max_inflight: usize = 0,
+    respect_retry_after: bool = true,
+};
+
+pub const CircuitBreakerSpec = struct {
+    failure_threshold: u32 = 3,
+    cooldown_ms: u64 = 30000,
+    half_open_max_calls: u32 = 2,
+    failover_on_status: []const u16 = &.{ 403, 429, 502, 503, 504 },
+};
+
+pub const ProxyEndpointSpec = struct {
+    url: []const u8,
+    weight: u32 = 1,
+};
+
+pub const ProxyPoolSpec = struct {
+    strategy: ProxyStrategy = .round_robin,
+    health_check_interval_ms: u64 = 15000,
+    circuit_breaker: CircuitBreakerSpec = .{},
+    endpoints: []const ProxyEndpointSpec = &.{},
+};
+
+pub const DnsSpec = struct {
+    doh_endpoint: ?[]const u8 = null,
+    min_ttl_sec: u64 = 60,
+    max_ttl_sec: u64 = 3600,
+    stale_while_revalidate_sec: u64 = 120,
+    overrides: []const KeyValueParam = &.{},
+};
+
+pub const TlsSpec = struct {
+    verify_certificates: bool = true,
+    pinned_sha256: []const []const u8 = &.{},
+};
+
+pub const RedirectRuleSpec = struct {
+    from: []const u8,
+    to: []const []const u8 = &.{},
+    strategy: ProxyStrategy = .round_robin,
+};
+
+pub const RouteRuleSpec = struct {
+    match_host: []const u8,
+    proxy_strategy: ?ProxyStrategy = null,
+    rate_limit: ?RateLimitSpec = null,
+};
+
+pub const CaptureSpec = struct {
+    enabled: bool = false,
+    format: []const u8 = "pcapng",
+    path: ?[]const u8 = null,
+    snaplen: u32 = 65535,
+    include_tls_keys: bool = false,
+    max_file_size_mb: usize = 100,
+    max_files: usize = 5,
+};
+
+/// Declarative specification for a Reactive L4/L7 Virtual Network Adapter (`networks:`).
+pub const NetworkSpec = struct {
+    id: []const u8,
+    driver: NetworkDriver = .none,
+    policy: NetworkPolicySpec = .{},
+    pool: PoolSpec = .{},
+    timeouts: TimeoutsSpec = .{},
+    backpressure: BackpressureSpec = .{},
+    rate_limit: RateLimitSpec = .{},
+    proxies: ProxyPoolSpec = .{},
+    dns: DnsSpec = .{},
+    tls: TlsSpec = .{},
+    redirects: []const RedirectRuleSpec = &.{},
+    routes: []const RouteRuleSpec = &.{},
+    capture: CaptureSpec = .{},
+    emulate_responses: bool = false,
+    isolation: []const u8 = "runtime",
+};
 
 /// Specification for an open-ended storage datasource (memory, sqlite, elasticsearch, kafka, s3, etc.).
 /// Driver resolution is handled dynamically via registry without requiring core recompilation.
@@ -118,6 +282,8 @@ pub const TaskStepSpec = struct {
     id: []const u8,
     module: []const u8,
     task: []const u8,
+    /// Virtual network adapter bindings (single or multi-homed). Empty inherits `runtime.default_network`.
+    networks: []const []const u8 = &.{},
     inputs: []const InputBindingSpec = &.{},
     where_filter: ?[]const u8 = null,
     /// Concurrency override for this task (null = inherit runtime.workers)
@@ -130,6 +296,11 @@ pub const TaskStepSpec = struct {
             if (std.mem.eql(u8, in.param_name, param_name)) return in.expr;
         }
         return null;
+    }
+
+    pub fn primaryNetwork(self: TaskStepSpec, default_network: []const u8) []const u8 {
+        if (self.networks.len > 0) return self.networks[0];
+        return default_network;
     }
 };
 
@@ -174,12 +345,20 @@ pub const ModuleSpec = struct {
 pub const PipelineAST = struct {
     runtime: RuntimeConfig = .{},
     modules: []const ModuleSpec = &.{},
+    networks: []const NetworkSpec = &.{},
     datasources: []const DatasourceSpec = &.{},
     pipelines: []const PipelineDecl = &.{},
 
     pub fn getModule(self: PipelineAST, name: []const u8) ?ModuleSpec {
         for (self.modules) |m| {
             if (std.mem.eql(u8, m.name, name)) return m;
+        }
+        return null;
+    }
+
+    pub fn getNetwork(self: PipelineAST, id: []const u8) ?NetworkSpec {
+        for (self.networks) |n| {
+            if (std.mem.eql(u8, n.id, id)) return n;
         }
         return null;
     }
@@ -206,9 +385,11 @@ pub const PipelineAST = struct {
 pub const ValidationError = error{
     OutOfMemory,
     DuplicateModuleName,
+    DuplicateNetworkId,
     DuplicateDatasourceId,
     DuplicatePipelineName,
     DuplicateStepId,
+    UnknownNetworkAdapter,
     UnknownTargetSubPipeline,
     CircularRouterReference,
     EmptyPipeline,
@@ -219,6 +400,7 @@ pub const PipelineBuilder = struct {
     arena: std.heap.ArenaAllocator,
     runtime: RuntimeConfig = .{},
     modules: std.ArrayListUnmanaged(ModuleSpec) = .empty,
+    networks: std.ArrayListUnmanaged(NetworkSpec) = .empty,
     datasources: std.ArrayListUnmanaged(DatasourceSpec) = .empty,
     pipelines: std.ArrayListUnmanaged(PipelineDecl) = .empty,
 
@@ -240,6 +422,10 @@ pub const PipelineBuilder = struct {
         self.runtime.workers = workers;
     }
 
+    pub fn setDefaultNetwork(self: *PipelineBuilder, net_id: []const u8) void {
+        self.runtime.default_network = net_id;
+    }
+
     pub fn addModule(self: *PipelineBuilder, spec: ModuleSpec) ValidationError!void {
         const alloc = self.allocator();
         for (self.modules.items) |m| {
@@ -248,6 +434,16 @@ pub const PipelineBuilder = struct {
             }
         }
         try self.modules.append(alloc, spec);
+    }
+
+    pub fn addNetwork(self: *PipelineBuilder, spec: NetworkSpec) ValidationError!void {
+        const alloc = self.allocator();
+        for (self.networks.items) |n| {
+            if (std.mem.eql(u8, n.id, spec.id)) {
+                return error.DuplicateNetworkId;
+            }
+        }
+        try self.networks.append(alloc, spec);
     }
 
     pub fn addDatasource(self: *PipelineBuilder, spec: DatasourceSpec) ValidationError!void {
@@ -283,7 +479,7 @@ pub const PipelineBuilder = struct {
     /// Performs holistic semantic validation and freezes the AST.
     /// Checks:
     /// 1. Presence of "main" pipeline.
-    /// 2. Router destinations exist.
+    /// 2. Router destinations and step network references exist.
     /// 3. Absence of recursive router cycles (DFS graph color marking).
     pub fn finish(self: *PipelineBuilder) ValidationError!PipelineAST {
         const alloc = self.allocator();
@@ -298,7 +494,7 @@ pub const PipelineBuilder = struct {
         }
         if (!found_main) return error.MissingMainPipeline;
 
-        // 2. Verify router destination pipelines exist
+        // 2. Verify router destination pipelines and step network bindings exist
         for (self.pipelines.items) |p| {
             for (p.steps) |step| {
                 switch (step) {
@@ -314,7 +510,13 @@ pub const PipelineBuilder = struct {
                             }
                         }
                     },
-                    .task => {},
+                    .task => |t| {
+                        for (t.networks) |net_id| {
+                            if (!self.hasNetworkOrBuiltin(net_id)) {
+                                return error.UnknownNetworkAdapter;
+                            }
+                        }
+                    },
                 }
             }
         }
@@ -325,9 +527,18 @@ pub const PipelineBuilder = struct {
         return .{
             .runtime = self.runtime,
             .modules = try self.modules.toOwnedSlice(alloc),
+            .networks = try self.networks.toOwnedSlice(alloc),
             .datasources = try self.datasources.toOwnedSlice(alloc),
             .pipelines = try self.pipelines.toOwnedSlice(alloc),
         };
+    }
+
+    fn hasNetworkOrBuiltin(self: *PipelineBuilder, id: []const u8) bool {
+        if (std.mem.eql(u8, id, "isolated") or std.mem.eql(u8, id, "none")) return true;
+        for (self.networks.items) |n| {
+            if (std.mem.eql(u8, n.id, id)) return true;
+        }
+        return false;
     }
 
     fn hasPipeline(self: *PipelineBuilder, name: []const u8) bool {

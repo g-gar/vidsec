@@ -12,5 +12,9 @@ pub fn mapHostError(err: types.HostError_ABI) SdkError!void {
         .db_constraint_error => error.DbConstraintError,
         .permission_denied => error.PermissionDenied,
         .out_of_memory => error.OutOfMemory,
+        .network_policy_denied => error.NetworkPolicyDenied,
+        .network_rate_limited => error.NetworkRateLimited,
+        .network_acquire_timeout => error.NetworkAcquireTimeout,
+        .network_upstream_error => error.NetworkUpstreamError,
     };
 }

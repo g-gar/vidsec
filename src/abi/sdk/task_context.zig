@@ -10,6 +10,10 @@ const RowView_ABI = types.RowView_ABI;
 const Value_ABI = types.Value_ABI;
 const NamedField_ABI = types.NamedField_ABI;
 const LogLevel_ABI = types.LogLevel_ABI;
+const Slice_ABI = types.Slice_ABI;
+const NetRequest_ABI = types.NetRequest_ABI;
+const NetResponse_ABI = types.NetResponse_ABI;
+const NetStreamHandle_ABI = types.NetStreamHandle_ABI;
 const BoundedStreamReader = reader.BoundedStreamReader;
 const WindowReader = reader.WindowReader;
 
@@ -221,5 +225,60 @@ pub const TaskContext = struct {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, fmt, args) catch "log_event_truncated";
         self.log(.err, msg);
+    }
+
+    // --- 8. Mediated Virtual Network Operations (`networks:`) ---
+
+    /// Executes a protocol-agnostic request through the step's bound Virtual Network Adapter.
+    pub fn netRequest(self: TaskContext, req: NetRequest_ABI) SdkError!NetResponse_ABI {
+        const net_fn = self.raw.host.net_request orelse return error.NetworkPolicyDenied;
+        var resp = NetResponse_ABI{};
+        const rc = net_fn(self.raw, &req, &resp);
+        try mapHostError(rc);
+        return resp;
+    }
+
+    /// Convenience helper for GET/read operations on a URI through the step's Virtual Network Adapter.
+    pub fn netFetch(self: TaskContext, url: []const u8) SdkError!NetResponse_ABI {
+        return self.netRequest(.{
+            .url = Slice_ABI.fromSlice(url),
+            .operation = Slice_ABI.fromSlice("GET"),
+        });
+    }
+
+    /// Opens a stateful bidirectional stream (`ws`, `rtmp`, `tcp`, `udp`, `tls`, `quic`) via the step's Virtual Network Adapter.
+    pub fn netConnect(self: TaskContext, url: []const u8, operation: []const u8) SdkError!NetStreamHandle_ABI {
+        const connect_fn = self.raw.host.net_connect orelse return error.NetworkPolicyDenied;
+        const req = NetRequest_ABI{
+            .url = Slice_ABI.fromSlice(url),
+            .operation = Slice_ABI.fromSlice(operation),
+        };
+        var handle: NetStreamHandle_ABI = 0;
+        const rc = connect_fn(self.raw, &req, &handle);
+        try mapHostError(rc);
+        return handle;
+    }
+
+    pub fn netSend(self: TaskContext, handle: NetStreamHandle_ABI, data: []const u8) SdkError!void {
+        if (data.len == 0) return;
+        const send_fn = self.raw.host.net_send orelse return error.NetworkPolicyDenied;
+        const rc = send_fn(self.raw, handle, data.ptr, data.len);
+        try mapHostError(rc);
+    }
+
+    pub fn netRecv(self: TaskContext, handle: NetStreamHandle_ABI, dest: []u8) SdkError!usize {
+        if (dest.len == 0) return 0;
+        const recv_fn = self.raw.host.net_recv orelse return error.NetworkPolicyDenied;
+        var read_len: usize = 0;
+        const rc = recv_fn(self.raw, handle, dest.ptr, dest.len, &read_len);
+        if (rc == .end_of_stream) return 0;
+        try mapHostError(rc);
+        return read_len;
+    }
+
+    pub fn netClose(self: TaskContext, handle: NetStreamHandle_ABI) SdkError!void {
+        const close_fn = self.raw.host.net_close orelse return error.NetworkPolicyDenied;
+        const rc = close_fn(self.raw, handle);
+        try mapHostError(rc);
     }
 };

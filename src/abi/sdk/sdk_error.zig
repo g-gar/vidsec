@@ -6,6 +6,10 @@ pub const SdkError = error{
     DbConstraintError,
     PermissionDenied,
     OutOfMemory,
+    NetworkPolicyDenied,
+    NetworkRateLimited,
+    NetworkAcquireTimeout,
+    NetworkUpstreamError,
     TypeMismatch,
     UnexpectedHostError,
 };

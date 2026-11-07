@@ -23,6 +23,7 @@ pub const payload_handle_abi = @import("payload_handle_abi.zig");
 pub const execution_options_abi = @import("execution_options_abi.zig");
 pub const task_result_abi = @import("task_result_abi.zig");
 pub const task_fn_abi = @import("task_fn_abi.zig");
+pub const net_abi = @import("net_abi.zig");
 
 pub const VIDSEC_ABI_VERSION = vidsec_abi_version.VIDSEC_ABI_VERSION;
 pub const MANIFEST_SYMBOL_NAME = manifest_symbol_name.MANIFEST_SYMBOL_NAME;
@@ -52,3 +53,7 @@ pub const LogFn_ABI = execution_options_abi.LogFn_ABI;
 pub const ExecutionOptions_ABI = execution_options_abi.ExecutionOptions_ABI;
 pub const TaskResult_ABI = task_result_abi.TaskResult_ABI;
 pub const TaskFn_ABI = task_fn_abi.TaskFn_ABI;
+pub const NetRequest_ABI = net_abi.NetRequest_ABI;
+pub const NetResponse_ABI = net_abi.NetResponse_ABI;
+pub const NetStreamHandle_ABI = net_abi.NetStreamHandle_ABI;
+pub const NetRequestFn_ABI = net_abi.NetRequestFn_ABI;

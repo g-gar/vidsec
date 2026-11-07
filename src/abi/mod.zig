@@ -34,6 +34,10 @@ pub const LogFn_ABI = types.LogFn_ABI;
 pub const ExecutionOptions_ABI = types.ExecutionOptions_ABI;
 pub const TaskResult_ABI = types.TaskResult_ABI;
 pub const TaskFn_ABI = types.TaskFn_ABI;
+pub const NetRequest_ABI = types.NetRequest_ABI;
+pub const NetResponse_ABI = types.NetResponse_ABI;
+pub const NetStreamHandle_ABI = types.NetStreamHandle_ABI;
+pub const NetRequestFn_ABI = types.NetRequestFn_ABI;
 
 // Pure Plugin SDK & Stream/Window Readers
 pub const BoundedStreamReader = reader.BoundedStreamReader;

@@ -4,6 +4,7 @@ const Allocator = std.mem.Allocator;
 pub const yaml_lib = @import("lib/mod.zig");
 pub const env = @import("env.zig");
 pub const schema_loader = @import("loaders/schema_loader.zig");
+pub const network_loader = @import("loaders/network_loader.zig");
 pub const ast_loader = @import("ast_loader.zig");
 
 pub const EnvInterpolator = env.EnvInterpolator;

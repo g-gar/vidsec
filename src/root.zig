@@ -5,6 +5,7 @@ pub const ast = @import("ast/ast.zig");
 pub const dataflow = @import("dataflow/mod.zig");
 pub const yaml = @import("yaml/mod.zig");
 pub const repository = @import("repository/mod.zig");
+pub const network = @import("network/mod.zig");
 pub const engine = @import("engine/engine.zig");
 pub const runner = @import("engine/runner.zig");
 pub const modules = @import("modules/mod.zig");
@@ -27,6 +28,9 @@ pub const LoaderError = modules.LoaderError;
 pub const ExecutionSummary = engine.ExecutionSummary;
 pub const StorageRepository = repository.StorageRepository;
 pub const RepositoryRegistry = repository.RepositoryRegistry;
+pub const NetworkAdapter = network.NetworkAdapter;
+pub const NetworkRegistry = network.NetworkRegistry;
+pub const NetworkEvent = network.NetworkEvent;
 pub const PayloadHandle = dataflow.PayloadHandle;
 
 // Artifact exports

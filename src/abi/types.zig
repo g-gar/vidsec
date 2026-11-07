@@ -28,3 +28,7 @@ pub const LogFn_ABI = types_mod.LogFn_ABI;
 pub const ExecutionOptions_ABI = types_mod.ExecutionOptions_ABI;
 pub const TaskResult_ABI = types_mod.TaskResult_ABI;
 pub const TaskFn_ABI = types_mod.TaskFn_ABI;
+pub const NetRequest_ABI = types_mod.NetRequest_ABI;
+pub const NetResponse_ABI = types_mod.NetResponse_ABI;
+pub const NetStreamHandle_ABI = types_mod.NetStreamHandle_ABI;
+pub const NetRequestFn_ABI = types_mod.NetRequestFn_ABI;

@@ -289,7 +289,12 @@ fn resolveOperandHandle(payload: types.PayloadHandle, token: []const u8) Reflect
         return ReflectedValue.fromFloat(fv);
     } else |_| {}
 
-    // 5. Field access on the type-erased payload handle
+    // 5. Built-in `count(...)` aggregation function over the active stream/slice
+    if (std.mem.startsWith(u8, t, "count(") and std.mem.endsWith(u8, t, ")")) {
+        return ReflectedValue.fromInt(@as(i64, @intCast(payload.len)));
+    }
+
+    // 6. Field access on the type-erased payload handle
     var field_name = t;
     if (std.mem.lastIndexOf(u8, t, ".")) |dot_idx| {
         field_name = t[dot_idx + 1 ..];

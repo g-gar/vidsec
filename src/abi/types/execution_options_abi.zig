@@ -1,4 +1,6 @@
 const LogLevel_ABI = @import("log_level_abi.zig").LogLevel_ABI;
+const net_abi = @import("net_abi.zig");
+const NetRequestFn_ABI = net_abi.NetRequestFn_ABI;
 
 /// C-ABI callback signature for structured logging and telemetry.
 pub const LogFn_ABI = *const fn (
@@ -15,4 +17,8 @@ pub const ExecutionOptions_ABI = extern struct {
     flags: u32 = 0,
     /// Optional host logging callback.
     log_fn: ?LogFn_ABI = null,
+    /// Opaque pointer to the step's bound Virtual Network Adapter state.
+    opaque_net_ctx: ?*anyopaque = null,
+    /// Optional host network request callback for tasks bound to a `network:` adapter.
+    net_request_fn: ?NetRequestFn_ABI = null,
 };

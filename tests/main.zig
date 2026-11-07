@@ -6,4 +6,5 @@ test {
     _ = @import("core/artifact_test.zig");
     _ = @import("core/dataflow_test.zig");
     _ = @import("core/pipeline_yaml_ast_test.zig");
+    _ = @import("core/network_test.zig");
 }

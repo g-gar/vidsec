@@ -9,4 +9,8 @@ pub const HostError_ABI = enum(u32) {
     db_constraint_error = 6,
     permission_denied = 7,
     out_of_memory = 8,
+    network_policy_denied = 9,
+    network_rate_limited = 10,
+    network_acquire_timeout = 11,
+    network_upstream_error = 12,
 };
