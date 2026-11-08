@@ -7,7 +7,7 @@ const input_injector = @import("input_injector.zig");
 const TaskDescriptor_ABI = types.TaskDescriptor_ABI;
 const TaskContext_ABI = types.TaskContext_ABI;
 const TaskStatus_ABI = types.TaskStatus_ABI;
-const VIDSEC_ABI_VERSION = types.VIDSEC_ABI_VERSION;
+const FLOWDATA_ABI_VERSION = types.FLOWDATA_ABI_VERSION;
 
 /// Wraps a `BoundTaskSpec(Inputs)` at compile time into a C-ABI `TaskDescriptor_ABI`,
 /// automatically injecting `inputs: Inputs` from the host context (`params:` and `inputs:`)
@@ -18,7 +18,7 @@ pub fn defineBoundTask(comptime Inputs: type, comptime spec: BoundTaskSpec(Input
     const Trampoline = struct {
         pub fn execute(raw_ctx: *TaskContext_ABI) callconv(.c) TaskStatus_ABI {
             const ctx = TaskContext.init(raw_ctx);
-            if (raw_ctx.abi_version != VIDSEC_ABI_VERSION) {
+            if (raw_ctx.abi_version != FLOWDATA_ABI_VERSION) {
                 ctx.logError("ABI version mismatch in TaskContext_ABI");
                 return .fatal_error;
             }

@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const abi = @import("../abi/mod.zig");
+const abi = @import("flowdata_plugin");
 const LoaderError = @import("loader_error.zig").LoaderError;
 
 /// Represents a loaded module (backed either by an OS `std.DynLib` handle or a static/in-process manifest).

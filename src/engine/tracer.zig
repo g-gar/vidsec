@@ -1,9 +1,22 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const abi = @import("../abi/mod.zig");
 
-pub const LogLevel_ABI = abi.LogLevel_ABI;
-pub const TaskStatus_ABI = abi.TaskStatus_ABI;
+pub const LogLevel = enum(u32) {
+    debug = 0,
+    info = 1,
+    warn = 2,
+    err = 3,
+};
+
+pub const TaskStatus = enum(i32) {
+    ok = 0,
+    recoverable_warning = 1,
+    halt_pipeline = 2,
+    fatal_error = -1,
+};
+
+pub const LogLevel_ABI = LogLevel;
+pub const TaskStatus_ABI = TaskStatus;
 
 pub const TraceEvent = union(enum) {
     step_start: struct {

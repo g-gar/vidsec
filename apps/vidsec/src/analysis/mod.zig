@@ -1,5 +1,5 @@
 const std = @import("std");
-const abi = @import("vidsec_abi");
+const abi = @import("flowdata_abi");
 const magic = @import("vidsec_magic");
 const math = @import("vidsec_math");
 const ir = @import("vidsec_ir");
@@ -882,7 +882,7 @@ pub const manifest: abi.ModuleManifest_ABI = abi.defineManifest(
     &tasks,
 );
 
-// Exports the `vidsec_module_manifest` C-ABI symbol when compiled as a standalone `.so` plugin (`libanalyzer.so`)
+// Exports the `flowdata_module_manifest` C-ABI symbol when compiled as a standalone `.so` plugin (`libanalyzer.so`)
 comptime {
     if (@import("root") == @This()) {
         @export(&manifest, .{ .name = abi.MANIFEST_SYMBOL_NAME, .linkage = .strong });

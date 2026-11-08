@@ -3,7 +3,7 @@ const types = @import("../types/mod.zig");
 const ModuleManifest_ABI = types.ModuleManifest_ABI;
 const TaskDescriptor_ABI = types.TaskDescriptor_ABI;
 const SemVer_ABI = types.SemVer_ABI;
-const VIDSEC_ABI_VERSION = types.VIDSEC_ABI_VERSION;
+const FLOWDATA_ABI_VERSION = types.FLOWDATA_ABI_VERSION;
 
 /// Builds a `ModuleManifest_ABI` at compile time from a module name, semantic version, and slice of tasks.
 pub fn defineManifest(
@@ -15,7 +15,7 @@ pub fn defineManifest(
         @compileError("ModuleManifest_ABI must expose at least one TaskDescriptor_ABI");
     }
     return .{
-        .abi_version = VIDSEC_ABI_VERSION,
+        .abi_version = FLOWDATA_ABI_VERSION,
         .module_name = module_name.ptr,
         .module_version = version,
         .tasks_ptr = tasks.ptr,

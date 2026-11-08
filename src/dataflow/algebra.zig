@@ -136,7 +136,8 @@ pub fn slicePayload(payload: types.PayloadHandle, offset: usize, count: usize) t
             .element_size = payload.element_size,
             .element_align = payload.element_align,
             .reflect_fn = payload.reflect_fn,
-            .reflect_abi_fn = payload.reflect_abi_fn,
+            .reflect_ctx = payload.reflect_ctx,
+            .reflect_ctx_fn = payload.reflect_ctx_fn,
         };
     }
     const end = @min(offset + count, payload.len);
@@ -153,7 +154,8 @@ pub fn slicePayload(payload: types.PayloadHandle, offset: usize, count: usize) t
         .element_size = payload.element_size,
         .element_align = payload.element_align,
         .reflect_fn = payload.reflect_fn,
-        .reflect_abi_fn = payload.reflect_abi_fn,
+        .reflect_ctx = payload.reflect_ctx,
+        .reflect_ctx_fn = payload.reflect_ctx_fn,
     };
 }
 
@@ -204,6 +206,7 @@ pub fn mergePayloads(allocator: Allocator, payloads: []const types.PayloadHandle
         .element_size = elem_size,
         .element_align = elem_align,
         .reflect_fn = first.reflect_fn,
-        .reflect_abi_fn = first.reflect_abi_fn,
+        .reflect_ctx = first.reflect_ctx,
+        .reflect_ctx_fn = first.reflect_ctx_fn,
     };
 }

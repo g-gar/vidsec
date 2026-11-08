@@ -1,5 +1,5 @@
 const std = @import("std");
-const abi = @import("vidsec_abi");
+const abi = @import("flowdata_abi");
 
 /// Task `remediation/sanitize`:
 /// Performs Content Disarm & Reconstruction (CDR) on the media container:

@@ -1,12 +1,12 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const abi = @import("../abi/mod.zig");
+const abi = @import("flowdata_plugin");
 const LoaderError = @import("loader_error.zig").LoaderError;
 const LoadedModule = @import("loaded_module.zig").LoadedModule;
 const validateManifest = @import("validate_manifest.zig").validateManifest;
 const verifySafeModulePermissions = @import("verify_safe_module_permissions.zig").verifySafeModulePermissions;
 
-/// Registry and dynamic loader for `vidsec v2` plugin modules.
+/// Registry and dynamic loader for Flowdata plugin modules.
 pub const ModuleRegistry = struct {
     allocator: Allocator,
     modules: std.StringHashMapUnmanaged(LoadedModule) = .{},
@@ -24,7 +24,7 @@ pub const ModuleRegistry = struct {
     }
 
     /// Loads a `.so` plugin from `so_path`, enforcing permission checks (`mode & 0o022 == 0`),
-    /// resolving `vidsec_module_manifest`, and validating `VIDSEC_ABI_VERSION`.
+    /// resolving `flowdata_module_manifest`, and validating `FLOWDATA_ABI_VERSION`.
     pub fn loadSharedLibrary(
         self: *ModuleRegistry,
         alias_name: []const u8,

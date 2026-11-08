@@ -1,8 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const abi = @import("../abi/mod.zig");
 const ast_mod = @import("../ast/ast.zig");
-const dataflow = @import("../dataflow/mod.zig");
+const dataflow = @import("flowdata_dataflow");
 const repository_mod = @import("../repository/mod.zig");
 const network_mod = @import("../network/mod.zig");
 const runner_mod = @import("runner.zig");
@@ -11,6 +10,8 @@ pub const NetworkRegistry = network_mod.NetworkRegistry;
 pub const NetworkAdapter = network_mod.NetworkAdapter;
 pub const CapturedExchangeRecord = network_mod.CapturedExchangeRecord;
 pub const NetStreamId = network_mod.NetStreamId;
+pub const NetResult = network_mod.NetResult;
+pub const NetError = network_mod.NetError;
 pub const RepositoryRegistry = repository_mod.RepositoryRegistry;
 pub const PayloadHandle = dataflow.PayloadHandle;
 
@@ -45,11 +46,11 @@ pub const EngineNetworkController = struct {
     allocator: Allocator,
     arena: std.heap.ArenaAllocator,
     owned_registry: ?NetworkRegistry = null,
-    active_registry: *NetworkRegistry = undefined,
+    external_registry: ?*NetworkRegistry = null,
     default_network_id: []const u8 = "isolated",
     network_specs: []const ast_mod.NetworkSpec = &.{},
-    stream_table: std.AutoHashMapUnmanaged(abi.NetStreamHandle_ABI, ActiveStreamEntry) = .empty,
-    next_abi_stream_handle: abi.NetStreamHandle_ABI = 1,
+    stream_table: std.AutoHashMapUnmanaged(u64, ActiveStreamEntry) = .empty,
+    next_stream_handle: u64 = 1,
 
     pub fn init(
         allocator: Allocator,
@@ -59,24 +60,33 @@ pub const EngineNetworkController = struct {
         var self = EngineNetworkController{
             .allocator = allocator,
             .arena = std.heap.ArenaAllocator.init(allocator),
+            .external_registry = external_registry,
             .default_network_id = ast.runtime.default_network,
             .network_specs = ast.networks,
         };
         errdefer self.deinit();
 
-        if (external_registry) |ext| {
-            self.active_registry = ext;
-        } else {
+        if (external_registry == null) {
             self.owned_registry = NetworkRegistry.init(allocator);
-            self.active_registry = &self.owned_registry.?;
         }
 
+        const reg = self.registry();
         for (ast.networks) |net_spec| {
-            _ = try self.active_registry.resolveOrCreate(net_spec);
+            _ = try reg.resolveOrCreate(net_spec);
         }
-        _ = try self.active_registry.ensureBuiltinIsolated(ast.runtime.default_network);
+        _ = try reg.ensureBuiltinIsolated(ast.runtime.default_network);
 
         return self;
+    }
+
+    pub fn registry(self: *EngineNetworkController) *NetworkRegistry {
+        if (self.external_registry) |ext| return ext;
+        return &self.owned_registry.?;
+    }
+
+    pub fn registryConst(self: *const EngineNetworkController) *const NetworkRegistry {
+        if (self.external_registry) |ext| return ext;
+        return &self.owned_registry.?;
     }
 
     pub fn deinit(self: *EngineNetworkController) void {
@@ -94,17 +104,18 @@ pub const EngineNetworkController = struct {
     /// Resolves the primary `NetworkAdapter` bound to a pipeline task step.
     pub fn resolveStepAdapter(self: *EngineNetworkController, task_spec: ast_mod.TaskStepSpec) !NetworkAdapter {
         const net_id = task_spec.primaryNetwork(self.default_network_id);
-        return self.active_registry.get(net_id) orelse try self.active_registry.ensureBuiltinIsolated(net_id);
+        const reg = self.registry();
+        return reg.get(net_id) orelse try reg.ensureBuiltinIsolated(net_id);
     }
 
-    /// Resolves either the explicit `network_id` requested in `NetRequest_ABI` or falls back to `primary_adapter`.
+    /// Resolves either the explicit `network_id` requested or falls back to `primary_adapter`.
     pub fn resolveRequestAdapter(
         self: *const EngineNetworkController,
         primary_adapter: ?NetworkAdapter,
         explicit_network_id: []const u8,
     ) ResultAdapter {
         if (explicit_network_id.len > 0) {
-            if (self.active_registry.get(explicit_network_id)) |ad| {
+            if (self.registryConst().get(explicit_network_id)) |ad| {
                 return .{ .adapter = ad };
             }
             return .not_found;
@@ -130,115 +141,85 @@ pub const EngineNetworkController = struct {
         ) catch "";
     }
 
-    /// Executes a transactional `net_request` across the C-ABI boundary.
+    /// Executes a transactional network request on the resolved step adapter.
     pub fn executeRequest(
         self: *EngineNetworkController,
         step_id: []const u8,
         task_name: []const u8,
         primary_adapter: ?NetworkAdapter,
-        req_ptr: *const abi.NetRequest_ABI,
-        out_resp: *abi.NetResponse_ABI,
-    ) abi.HostError_ABI {
-        const req = req_ptr.*;
-        const target = switch (self.resolveRequestAdapter(primary_adapter, req.network_id.asSlice())) {
+        network_id: []const u8,
+        url: []const u8,
+        operation: []const u8,
+        body: []const u8,
+    ) NetError!NetResult {
+        const target = switch (self.resolveRequestAdapter(primary_adapter, network_id)) {
             .adapter => |a| a,
-            .not_found => return .not_found,
-            .denied => return .network_policy_denied,
+            .not_found => return error.StreamNotFound,
+            .denied => return error.NetworkPolicyDenied,
         };
 
         const trace_tag = self.formatTraceTag(step_id, task_name);
-        const res = target.execute(
-            req.url.asSlice(),
-            req.operation.asSlice(),
-            req.body.asSlice(),
-            trace_tag,
-        ) catch |err| return mapNetErrorToHostError(err);
-
-        out_resp.* = .{
-            .status_code = res.status_code,
-            .body = abi.Slice_ABI.fromSlice(res.body),
-            .effective_url = abi.Slice_ABI.fromSlice(res.effective_url),
-            .proxy_used = abi.Slice_ABI.fromSlice(res.proxy_used),
-            .latency_ms = res.latency_ms,
-        };
-        return .ok;
+        return target.execute(url, operation, body, trace_tag);
     }
 
-    /// Opens a stateful stream (`net_connect`) across the C-ABI boundary (`ws`, `rtmp`, `grpc`, `tcp`, `udp`, `tls`).
+    /// Opens a stateful stream (`ws`, `rtmp`, `grpc`, `tcp`, `udp`, `tls`).
     pub fn connectStream(
         self: *EngineNetworkController,
         step_id: []const u8,
         task_name: []const u8,
         primary_adapter: ?NetworkAdapter,
-        req_ptr: *const abi.NetRequest_ABI,
-        out_handle: *abi.NetStreamHandle_ABI,
-    ) abi.HostError_ABI {
-        const req = req_ptr.*;
-        const target = switch (self.resolveRequestAdapter(primary_adapter, req.network_id.asSlice())) {
+        network_id: []const u8,
+        url: []const u8,
+        operation: []const u8,
+    ) NetError!u64 {
+        const target = switch (self.resolveRequestAdapter(primary_adapter, network_id)) {
             .adapter => |a| a,
-            .not_found => return .not_found,
-            .denied => return .network_policy_denied,
+            .not_found => return error.StreamNotFound,
+            .denied => return error.NetworkPolicyDenied,
         };
 
         const trace_tag = self.formatTraceTag(step_id, task_name);
-        const adapter_stream_id = target.connectStream(
-            req.url.asSlice(),
-            req.operation.asSlice(),
-            trace_tag,
-        ) catch |err| return mapNetErrorToHostError(err);
+        const adapter_stream_id = try target.connectStream(url, operation, trace_tag);
 
-        const abi_handle = self.next_abi_stream_handle;
-        self.next_abi_stream_handle += 1;
+        const stream_handle = self.next_stream_handle;
+        self.next_stream_handle += 1;
 
-        self.stream_table.put(self.allocator, abi_handle, .{
+        try self.stream_table.put(self.allocator, stream_handle, .{
             .adapter = target,
             .stream_id = adapter_stream_id,
-        }) catch return .out_of_memory;
+        });
 
-        out_handle.* = abi_handle;
-        return .ok;
+        return stream_handle;
     }
 
-    /// Sends bytes over an active stream (`net_send`).
+    /// Sends bytes over an active stream.
     pub fn sendStream(
         self: *EngineNetworkController,
-        handle: abi.NetStreamHandle_ABI,
-        src_ptr: [*]const u8,
-        len: usize,
-    ) abi.HostError_ABI {
-        const entry = self.stream_table.get(handle) orelse return .not_found;
-        const payload = if (len > 0) src_ptr[0..len] else &.{};
-        _ = entry.adapter.streamSend(entry.stream_id, payload) catch |err| return mapNetErrorToHostError(err);
-        return .ok;
+        handle: u64,
+        payload: []const u8,
+    ) NetError!void {
+        const entry = self.stream_table.get(handle) orelse return error.StreamNotFound;
+        _ = try entry.adapter.streamSend(entry.stream_id, payload);
     }
 
-    /// Receives bytes from an active stream (`net_recv`).
+    /// Receives bytes from an active stream.
     pub fn recvStream(
         self: *EngineNetworkController,
-        handle: abi.NetStreamHandle_ABI,
-        dest_ptr: [*]u8,
-        max_len: usize,
-        out_read_len: *usize,
-    ) abi.HostError_ABI {
-        const entry = self.stream_table.get(handle) orelse return .not_found;
-        if (max_len == 0) {
-            out_read_len.* = 0;
-            return .ok;
-        }
-        const n = entry.adapter.streamRecv(entry.stream_id, dest_ptr[0..max_len]) catch |err| return mapNetErrorToHostError(err);
-        out_read_len.* = n;
-        if (n == 0) return .end_of_stream;
-        return .ok;
+        handle: u64,
+        dest: []u8,
+    ) NetError!usize {
+        const entry = self.stream_table.get(handle) orelse return error.StreamNotFound;
+        if (dest.len == 0) return 0;
+        return entry.adapter.streamRecv(entry.stream_id, dest);
     }
 
-    /// Closes an active stream (`net_close`).
+    /// Closes an active stream.
     pub fn closeStream(
         self: *EngineNetworkController,
-        handle: abi.NetStreamHandle_ABI,
-    ) abi.HostError_ABI {
-        const kv = self.stream_table.fetchRemove(handle) orelse return .not_found;
+        handle: u64,
+    ) NetError!void {
+        const kv = self.stream_table.fetchRemove(handle) orelse return error.StreamNotFound;
         kv.value.adapter.streamClose(kv.value.stream_id);
-        return .ok;
     }
 
     /// Materializes `NetworkEvent` rows from the adapter's domain-agnostic `CapturedExchangeRecord` slice
@@ -279,9 +260,10 @@ pub const EngineNetworkController = struct {
     /// 1. `capture.datasource` (`RepositoryRegistry` channel `capture.channel`, default `"pcap_packets"`)
     /// 2. `capture.path` on disk (with ring-buffer rotation `max_file_size_mb` / `max_files`).
     pub fn flushCaptures(self: *EngineNetworkController, repos: *RepositoryRegistry) !void {
+        const reg = self.registryConst();
         for (self.network_specs) |net_spec| {
             if (!net_spec.capture.enabled) continue;
-            const adapter = self.active_registry.get(net_spec.id) orelse continue;
+            const adapter = reg.get(net_spec.id) orelse continue;
             const pcap_bytes = adapter.pcapBytes() orelse continue;
             if (pcap_bytes.len == 0) continue;
 
@@ -338,18 +320,6 @@ fn extractStepIdFromTraceTag(trace_tag: []const u8) ?[]const u8 {
     const end_idx = std.mem.indexOfScalar(u8, after, ' ') orelse after.len;
     const val = after[0..end_idx];
     return if (val.len > 0) val else null;
-}
-
-pub fn mapNetErrorToHostError(err: network_mod.NetError) abi.HostError_ABI {
-    return switch (err) {
-        error.InvalidUri => .invalid_argument,
-        error.NetworkPolicyDenied, error.UnsupportedProtocolScheme => .network_policy_denied,
-        error.NetworkRateLimited => .network_rate_limited,
-        error.NetworkAcquireTimeout => .network_acquire_timeout,
-        error.NetworkUpstreamError => .network_upstream_error,
-        error.StreamNotFound => .not_found,
-        error.OutOfMemory => .out_of_memory,
-    };
 }
 
 fn writePcapWithRotation(

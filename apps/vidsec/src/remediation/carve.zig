@@ -1,5 +1,5 @@
 const std = @import("std");
-const abi = @import("vidsec_abi");
+const abi = @import("flowdata_abi");
 
 /// Task `remediation/carve_quarantine`:
 /// Scans critical findings in `audit_findings` (e.g. polyglot overlays, unreferenced scripts)

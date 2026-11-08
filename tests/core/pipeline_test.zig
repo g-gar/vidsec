@@ -1,6 +1,6 @@
 const std = @import("std");
 const vidsec = @import("vidsec");
-const abi_lib = @import("vidsec_abi");
+const abi_lib = @import("flowdata_abi");
 const dataflow = vidsec.dataflow;
 const pipeline = vidsec.pipeline;
 const yaml_core = vidsec.yaml;

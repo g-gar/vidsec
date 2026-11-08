@@ -4,30 +4,32 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // 1. Core Flowdata Engine module
+    // 1. Standalone Flowdata Plugin C-ABI & Guest SDK module (zero dependencies)
+    const plugin_mod = b.addModule("flowdata_plugin", .{
+        .root_source_file = b.path("src/plugin.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    b.modules.put(b.allocator, b.dupe("flowdata_abi"), plugin_mod) catch @panic("OOM");
+
+    // 2. Standalone Flowdata Reactive Dataflow module (zero dependencies, zero ABI coupling)
+    const dataflow_mod = b.addModule("flowdata_dataflow", .{
+        .root_source_file = b.path("src/dataflow.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // 3. Core Flowdata Engine module
     const flowdata_mod = b.addModule("flowdata", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
-
-    // 2. Flowdata ABI module
-    const abi_mod = b.addModule("flowdata_abi", .{
-        .root_source_file = b.path("src/abi.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    abi_mod.addImport("flowdata", flowdata_mod);
-
-    // 3. Flowdata Dataflow module
-    const dataflow_mod = b.addModule("flowdata_dataflow", .{
-        .root_source_file = b.path("src/dataflow.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    dataflow_mod.addImport("flowdata", flowdata_mod);
+    flowdata_mod.addImport("flowdata_plugin", plugin_mod);
+    flowdata_mod.addImport("flowdata_abi", plugin_mod);
+    flowdata_mod.addImport("flowdata_dataflow", dataflow_mod);
 
     // 3b. Flowdata Network module
     const network_mod = b.addModule("flowdata_network", .{
@@ -75,6 +77,8 @@ pub fn build(b: *std.Build) void {
     extensions_mod.linkSystemLibrary("sqlite3", .{});
 
     // 5. Tests
+    const run_abi_unit = b.addRunArtifact(b.addTest(.{ .root_module = plugin_mod }));
+    const run_dataflow_unit = b.addRunArtifact(b.addTest(.{ .root_module = dataflow_mod }));
     const run_flowdata_unit = b.addRunArtifact(b.addTest(.{ .root_module = flowdata_mod }));
     const run_ds_memory = b.addRunArtifact(b.addTest(.{ .root_module = ds_memory_mod }));
     const run_ds_file_store = b.addRunArtifact(b.addTest(.{ .root_module = ds_file_store_mod }));
@@ -96,14 +100,17 @@ pub fn build(b: *std.Build) void {
 
     test_suite_mod.linkSystemLibrary("sqlite3", .{});
     test_suite_mod.addImport("flowdata", flowdata_mod);
+    test_suite_mod.addImport("flowdata_plugin", plugin_mod);
+    test_suite_mod.addImport("flowdata_abi", plugin_mod);
     test_suite_mod.addImport("vidsec", vidsec_shim_mod);
-    test_suite_mod.addImport("vidsec_abi", abi_mod);
     test_suite_mod.addImport("vidsec_dataflow", dataflow_mod);
 
     const run_test_suite = b.addRunArtifact(b.addTest(.{ .root_module = test_suite_mod }));
     run_test_suite.setCwd(b.path("."));
 
     const test_step = b.step("test", "Run Flowdata test suite");
+    test_step.dependOn(&run_abi_unit.step);
+    test_step.dependOn(&run_dataflow_unit.step);
     test_step.dependOn(&run_flowdata_unit.step);
     test_step.dependOn(&run_ds_memory.step);
     test_step.dependOn(&run_ds_file_store.step);

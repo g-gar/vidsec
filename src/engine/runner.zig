@@ -1,12 +1,12 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const abi = @import("../abi/mod.zig");
 const yaml_core = @import("../yaml/mod.zig");
 const artifact_mod = @import("artifact.zig");
 const engine_mod = @import("engine.zig");
 const ast_mod = @import("../ast/ast.zig");
+const plugin_mod = @import("../plugin/mod.zig");
 const repository_mod = @import("../repository/mod.zig");
-const dataflow = @import("../dataflow/mod.zig");
+const dataflow = @import("flowdata_dataflow");
 
 const c_stdio = @cImport({
     @cInclude("stdio.h");
@@ -85,7 +85,7 @@ pub const PipelineRunner = struct {
     config_arena: std.heap.ArenaAllocator,
     env_interp: yaml_core.EnvInterpolator,
     ast: ast_mod.PipelineAST,
-    registry: @import("../modules/mod.zig").ModuleRegistry,
+    registry: plugin_mod.ModuleRegistry,
     repos: repository_mod.RepositoryRegistry,
 
     pub fn initFromFiles(allocator: Allocator, options: RunnerOptions) anyerror!PipelineRunner {
@@ -104,7 +104,7 @@ pub const PipelineRunner = struct {
             .env_interpolator = &env_interp,
         });
 
-        var registry = @import("../modules/mod.zig").ModuleRegistry.init(allocator);
+        var registry = plugin_mod.ModuleRegistry.init(allocator);
         errdefer registry.deinit();
 
         if (options.load_shared_modules) {

@@ -120,7 +120,7 @@ pub fn build(b: *std.Build) void {
     root_mod.addImport("build_options", options_mod);
     root_mod.addImport("flowdata", flowdata_mod);
     root_mod.addImport("vidsec_extensions", extensions_mod);
-    root_mod.addImport("vidsec_abi", abi_mod);
+    root_mod.addImport("flowdata_abi", abi_mod);
     root_mod.addImport("vidsec_magic", magic_mod);
     root_mod.addImport("vidsec_math", math_mod);
     root_mod.addImport("vidsec_isobmff", isobmff_mod);
@@ -146,7 +146,7 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.addImport("build_options", options_mod);
     exe_mod.addImport("vidsec", root_mod);
-    exe_mod.addImport("vidsec_abi", abi_mod);
+    exe_mod.addImport("flowdata_abi", abi_mod);
     exe_mod.addImport("vidsec_magic", magic_mod);
     exe_mod.addImport("vidsec_math", math_mod);
 
@@ -188,7 +188,7 @@ pub fn build(b: *std.Build) void {
     test_suite_mod.addImport("build_options", options_mod);
     test_suite_mod.addImport("vidsec", root_mod);
     test_suite_mod.addImport("flowdata", flowdata_mod);
-    test_suite_mod.addImport("vidsec_abi", abi_mod);
+    test_suite_mod.addImport("flowdata_abi", abi_mod);
     test_suite_mod.addImport("vidsec_magic", magic_mod);
     test_suite_mod.addImport("vidsec_math", math_mod);
     test_suite_mod.addImport("vidsec_formats_common", formats_common_mod);
@@ -246,7 +246,7 @@ pub fn addPluginSharedLib(
         .optimize = optimize,
         .link_libc = true,
     });
-    plugin_mod.addImport("vidsec_abi", abi_mod);
+    plugin_mod.addImport("flowdata_abi", abi_mod);
     plugin_mod.addImport("vidsec_magic", magic_mod);
     plugin_mod.addImport("vidsec_math", math_mod);
     if (ir_mod) |m| {

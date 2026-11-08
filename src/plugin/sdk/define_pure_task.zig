@@ -8,7 +8,7 @@ const input_injector = @import("input_injector.zig");
 const TaskDescriptor_ABI = types.TaskDescriptor_ABI;
 const TaskContext_ABI = types.TaskContext_ABI;
 const TaskStatus_ABI = types.TaskStatus_ABI;
-const VIDSEC_ABI_VERSION = types.VIDSEC_ABI_VERSION;
+const FLOWDATA_ABI_VERSION = types.FLOWDATA_ABI_VERSION;
 
 /// Computes the list of output field names from `Outputs` at compile time.
 pub fn computeOutputFields(comptime Outputs: type) []const [*:0]const u8 {
@@ -38,7 +38,7 @@ pub fn definePureTask(
     const Trampoline = struct {
         pub fn execute(raw_ctx: *TaskContext_ABI) callconv(.c) TaskStatus_ABI {
             const ctx = TaskContext.init(raw_ctx);
-            if (raw_ctx.abi_version != VIDSEC_ABI_VERSION) {
+            if (raw_ctx.abi_version != FLOWDATA_ABI_VERSION) {
                 ctx.logError("ABI version mismatch in TaskContext_ABI");
                 return .fatal_error;
             }

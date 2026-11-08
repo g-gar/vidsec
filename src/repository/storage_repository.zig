@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const dataflow = @import("../dataflow/mod.zig");
+const dataflow = @import("flowdata_dataflow");
 const PayloadHandle = dataflow.PayloadHandle;
 
 /// Polymorphic abstract interface for storage repositories (Memory, SQLite, FileStore, Elasticsearch, etc.).

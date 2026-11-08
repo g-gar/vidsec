@@ -371,7 +371,8 @@ pub fn filterPayload(allocator: Allocator, payload: types.PayloadHandle, predica
                 .element_size = payload.element_size,
                 .element_align = payload.element_align,
                 .reflect_fn = payload.reflect_fn,
-                .reflect_abi_fn = payload.reflect_abi_fn,
+                .reflect_ctx = payload.reflect_ctx,
+                .reflect_ctx_fn = payload.reflect_ctx_fn,
             };
         }
     }
@@ -393,7 +394,8 @@ pub fn filterPayload(allocator: Allocator, payload: types.PayloadHandle, predica
             .element_size = elem_size,
             .element_align = elem_align,
             .reflect_fn = payload.reflect_fn,
-            .reflect_abi_fn = payload.reflect_abi_fn,
+            .reflect_ctx = payload.reflect_ctx,
+            .reflect_ctx_fn = payload.reflect_ctx_fn,
         };
 
         if (evaluatePredicateHandle(item_handle, expr_trimmed)) {
@@ -422,6 +424,7 @@ pub fn filterPayload(allocator: Allocator, payload: types.PayloadHandle, predica
         .element_size = elem_size,
         .element_align = elem_align,
         .reflect_fn = payload.reflect_fn,
-        .reflect_abi_fn = payload.reflect_abi_fn,
+        .reflect_ctx = payload.reflect_ctx,
+        .reflect_ctx_fn = payload.reflect_ctx_fn,
     };
 }

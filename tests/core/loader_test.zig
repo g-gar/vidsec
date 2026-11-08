@@ -1,6 +1,6 @@
 const std = @import("std");
 const vidsec = @import("vidsec");
-const abi = @import("vidsec_abi");
+const abi = @import("flowdata_abi");
 
 const pipeline = vidsec.pipeline;
 const ModuleRegistry = pipeline.ModuleRegistry;
@@ -14,7 +14,7 @@ const TaskDescriptor_ABI = abi.TaskDescriptor_ABI;
 const ModuleManifest_ABI = abi.ModuleManifest_ABI;
 const TaskContext = abi.TaskContext;
 const TaskStatus_ABI = abi.TaskStatus_ABI;
-const VIDSEC_ABI_VERSION = abi.VIDSEC_ABI_VERSION;
+const FLOWDATA_ABI_VERSION = abi.FLOWDATA_ABI_VERSION;
 
 test "Loader: ModuleRegistry static module registration and task resolution" {
     const SamplePlugin = struct {
@@ -66,7 +66,7 @@ test "Loader: Manifest validation and .so permission security checks" {
     try std.testing.expectError(error.AbiVersionMismatch, validateManifest(&bad_ver_manifest));
 
     const dup_task_manifest = ModuleManifest_ABI{
-        .abi_version = VIDSEC_ABI_VERSION,
+        .abi_version = FLOWDATA_ABI_VERSION,
         .module_name = "dup_mod",
         .module_version = .{ .major = 1, .minor = 0, .patch = 0 },
         .tasks_ptr = &Dummy.dup_tasks,

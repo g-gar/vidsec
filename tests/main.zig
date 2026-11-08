@@ -1,6 +1,7 @@
 const std = @import("std");
 
 test {
+    _ = @import("core/abi_test.zig");
     _ = @import("core/loader_test.zig");
     _ = @import("core/pipeline_test.zig");
     _ = @import("core/artifact_test.zig");

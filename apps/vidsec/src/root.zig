@@ -3,8 +3,8 @@ const std = @import("std");
 /// Flowdata: Zero-Copy Black Box Native Zig Dataflow & Pipeline Engine (`packages/flowdata/`).
 pub const flowdata = @import("flowdata");
 
-/// C-ABI Plugin Contract (`VIDSEC_ABI_VERSION = 2`), Zig Plugin SDK, and Dynamic Module Loader.
-pub const abi_lib = flowdata.abi;
+/// Flowdata C-ABI Plugin Contract (`FLOWDATA_ABI_VERSION = 2`), Zig Plugin SDK, and Dynamic Module Loader.
+pub const abi_lib = @import("flowdata_abi");
 
 /// Zero-allocation binary signature (`magic bytes`), MIME type, and container family detection library (`src/plugin/magic/`).
 pub const magic_lib = @import("vidsec_magic");

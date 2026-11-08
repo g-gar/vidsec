@@ -5,7 +5,7 @@ const ZigTaskSpec = @import("zig_task_spec.zig").ZigTaskSpec;
 const TaskDescriptor_ABI = types.TaskDescriptor_ABI;
 const TaskContext_ABI = types.TaskContext_ABI;
 const TaskStatus_ABI = types.TaskStatus_ABI;
-const VIDSEC_ABI_VERSION = types.VIDSEC_ABI_VERSION;
+const FLOWDATA_ABI_VERSION = types.FLOWDATA_ABI_VERSION;
 
 /// Wraps a `ZigTaskSpec` at compile time into a C-ABI `TaskDescriptor_ABI`, automatically
 /// logging any unhandled Zig error via `ctx.logError(@errorName(err))` and returning `.fatal_error`.
@@ -13,7 +13,7 @@ pub fn defineTask(comptime spec: ZigTaskSpec) TaskDescriptor_ABI {
     const Trampoline = struct {
         pub fn execute(raw_ctx: *TaskContext_ABI) callconv(.c) TaskStatus_ABI {
             const ctx = TaskContext.init(raw_ctx);
-            if (raw_ctx.abi_version != VIDSEC_ABI_VERSION) {
+            if (raw_ctx.abi_version != FLOWDATA_ABI_VERSION) {
                 ctx.logError("ABI version mismatch in TaskContext_ABI");
                 return .fatal_error;
             }

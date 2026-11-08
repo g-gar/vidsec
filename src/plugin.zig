@@ -1,12 +1,21 @@
+//! Flowdata Plugin C-ABI & Guest SDK Library (`flowdata_plugin`).
+//!
+//! Standalone, zero-dependency library defining the C-ABI boundary (`FLOWDATA_ABI_VERSION`),
+//! memory-safe streaming readers (`BoundedStreamReader`, `WindowReader`), and compile-time
+//! task/manifest builders (`defineTask`, `defineBoundTask`, `definePureTask`, `defineBlackBoxTask`, `defineManifest`).
+
 const std = @import("std");
 
-pub const types = @import("types.zig");
-pub const sdk = @import("sdk.zig");
-pub const reader = @import("reader.zig");
+pub const types = @import("plugin/types/mod.zig");
+pub const sdk = @import("plugin/sdk/mod.zig");
+pub const reader = @import("plugin/reader/mod.zig");
 
-// Pure C-ABI Type Definitions & Constants
-pub const VIDSEC_ABI_VERSION = types.VIDSEC_ABI_VERSION;
+// Version & Manifest Contract
+pub const FLOWDATA_ABI_VERSION = types.FLOWDATA_ABI_VERSION;
+pub const ABI_VERSION = types.ABI_VERSION;
 pub const MANIFEST_SYMBOL_NAME = types.MANIFEST_SYMBOL_NAME;
+
+// C-ABI Types
 pub const SemVer_ABI = types.SemVer_ABI;
 pub const ValueTag_ABI = types.ValueTag_ABI;
 pub const Slice_ABI = types.Slice_ABI;
@@ -24,7 +33,7 @@ pub const TaskExecuteFn_ABI = types.TaskExecuteFn_ABI;
 pub const TaskDescriptor_ABI = types.TaskDescriptor_ABI;
 pub const ModuleManifest_ABI = types.ModuleManifest_ABI;
 
-// Black Box C-ABI Types
+// Black Box C-ABI Types & Networking ABI
 pub const MemContext_ABI = types.MemContext_ABI;
 pub const PayloadHandle_ABI = types.PayloadHandle_ABI;
 pub const ReflectedTag_ABI = types.ReflectedTag_ABI;
@@ -39,10 +48,9 @@ pub const NetResponse_ABI = types.NetResponse_ABI;
 pub const NetStreamHandle_ABI = types.NetStreamHandle_ABI;
 pub const NetRequestFn_ABI = types.NetRequestFn_ABI;
 
-// Pure Plugin SDK & Stream/Window Readers
-pub const BoundedStreamReader = reader.BoundedStreamReader;
-pub const WindowReader = reader.WindowReader;
-pub const ClampedSubRegion = reader.ClampedSubRegion;
+// Plugin SDK
+pub const SdkError = sdk.SdkError;
+pub const mapHostError = sdk.mapHostError;
 pub const TaskContext = sdk.TaskContext;
 pub const ZigTaskSpec = sdk.ZigTaskSpec;
 pub const defineTask = sdk.defineTask;
@@ -56,12 +64,13 @@ pub const Logger = sdk.Logger;
 pub const PureTaskSpec = sdk.PureTaskSpec;
 pub const computeOutputFields = sdk.computeOutputFields;
 pub const definePureTask = sdk.definePureTask;
-pub const SdkError = sdk.SdkError;
-pub const mapHostError = sdk.mapHostError;
-
-// Modern Black Box Plugin SDK
 pub const AbiLogger = sdk.AbiLogger;
 pub const defineBlackBoxTask = sdk.defineBlackBoxTask;
+
+// Streaming Readers
+pub const BoundedStreamReader = reader.BoundedStreamReader;
+pub const WindowReader = reader.WindowReader;
+pub const ClampedSubRegion = reader.ClampedSubRegion;
 
 test {
     std.testing.refAllDecls(@This());

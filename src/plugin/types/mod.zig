@@ -1,4 +1,4 @@
-pub const vidsec_abi_version = @import("vidsec_abi_version.zig");
+pub const abi_version = @import("abi_version.zig");
 pub const manifest_symbol_name = @import("manifest_symbol_name.zig");
 pub const semver_abi = @import("semver_abi.zig");
 pub const value_tag_abi = @import("value_tag_abi.zig");
@@ -25,7 +25,8 @@ pub const task_result_abi = @import("task_result_abi.zig");
 pub const task_fn_abi = @import("task_fn_abi.zig");
 pub const net_abi = @import("net_abi.zig");
 
-pub const VIDSEC_ABI_VERSION = vidsec_abi_version.VIDSEC_ABI_VERSION;
+pub const FLOWDATA_ABI_VERSION = abi_version.FLOWDATA_ABI_VERSION;
+pub const ABI_VERSION = abi_version.ABI_VERSION;
 pub const MANIFEST_SYMBOL_NAME = manifest_symbol_name.MANIFEST_SYMBOL_NAME;
 pub const SemVer_ABI = semver_abi.SemVer_ABI;
 pub const ValueTag_ABI = value_tag_abi.ValueTag_ABI;

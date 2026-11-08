@@ -290,7 +290,7 @@ test "End-to-End PipelineEngine & EngineNetworkController: Isolation, Streams, S
         },
     };
     const manifest = abi.ModuleManifest_ABI{
-        .abi_version = abi.VIDSEC_ABI_VERSION,
+        .abi_version = abi.FLOWDATA_ABI_VERSION,
         .module_name = "nettest",
         .module_version = .{ .major = 1, .minor = 0, .patch = 0 },
         .tasks_ptr = &tasks,

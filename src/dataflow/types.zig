@@ -1,6 +1,5 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const abi = @import("../abi/mod.zig");
 
 /// Lightweight ephemeral view of a field value extracted via compile-time reflection.
 /// Allows zero-copy inspection of native Zig structs for filtering and serialization.
@@ -179,6 +178,9 @@ pub fn reflectAny(comptime F: type, val: F) ReflectedValue {
     }
 }
 
+pub const ReflectFn = *const fn (ptr: *const anyopaque, field_name: []const u8) ?ReflectedValue;
+pub const ContextualReflectFn = *const fn (ctx: *const anyopaque, ptr: *const anyopaque, field_name: []const u8) ?ReflectedValue;
+
 /// Zero-copy type-erased fat pointer for transporting native Zig structs or streams
 /// across pipeline task boundaries without allocating dynamic wrappers.
 pub const PayloadHandle = struct {
@@ -188,8 +190,9 @@ pub const PayloadHandle = struct {
     type_name: []const u8,
     element_size: usize,
     element_align: u29,
-    reflect_fn: ?*const fn (ptr: *const anyopaque, field_name: []const u8) ?ReflectedValue = null,
-    reflect_abi_fn: ?abi.ReflectFn_ABI = null,
+    reflect_fn: ?ReflectFn = null,
+    reflect_ctx: ?*const anyopaque = null,
+    reflect_ctx_fn: ?ContextualReflectFn = null,
 
     pub fn fromScalar(comptime T: type, item: *const T) PayloadHandle {
         const Trampoline = struct {
@@ -233,16 +236,10 @@ pub const PayloadHandle = struct {
         if (self.reflect_fn) |rf| {
             return rf(self.ptr, field_name);
         }
-        if (self.reflect_abi_fn) |rf_abi| {
-            const res = rf_abi(self.ptr, field_name.ptr, field_name.len);
-            return switch (res.tag) {
-                .none => null,
-                .int => .{ .int = res.int_val },
-                .uint => .{ .uint = @intCast(res.int_val) },
-                .float => .{ .float = res.float_val },
-                .boolean => .{ .boolean = res.int_val != 0 },
-                .string => if (res.str_ptr) |sptr| .{ .string = sptr[0..res.str_len] } else null,
-            };
+        if (self.reflect_ctx_fn) |rf_ctx| {
+            if (self.reflect_ctx) |ctx| {
+                return rf_ctx(ctx, self.ptr, field_name);
+            }
         }
         return null;
     }

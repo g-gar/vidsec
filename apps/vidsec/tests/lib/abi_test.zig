@@ -1,5 +1,5 @@
 const std = @import("std");
-const abi = @import("vidsec_abi");
+const abi = @import("flowdata_abi");
 
 const Value_ABI = abi.Value_ABI;
 const RowView_ABI = abi.RowView_ABI;
@@ -13,7 +13,7 @@ const LogLevel_ABI = abi.LogLevel_ABI;
 const HostApiVTable_ABI = abi.HostApiVTable_ABI;
 const ModuleManifest_ABI = abi.ModuleManifest_ABI;
 const TaskDescriptor_ABI = abi.TaskDescriptor_ABI;
-const VIDSEC_ABI_VERSION = abi.VIDSEC_ABI_VERSION;
+const FLOWDATA_ABI_VERSION = abi.FLOWDATA_ABI_VERSION;
 const defineTask = abi.defineTask;
 const defineManifest = abi.defineManifest;
 
@@ -367,7 +367,7 @@ test "ABI SDK: injectInputs auto-injects struct fields with defaults and convers
     };
 
     var raw_ctx = TaskContext_ABI{
-        .abi_version = VIDSEC_ABI_VERSION,
+        .abi_version = FLOWDATA_ABI_VERSION,
         .opaque_host_state = undefined,
         .host = &MockHost.vtable,
     };

@@ -1,11 +1,11 @@
 const std = @import("std");
-const abi = @import("../abi/mod.zig");
+const abi = @import("flowdata_plugin");
 const LoaderError = @import("loader_error.zig").LoaderError;
 
 /// Validates a `ModuleManifest_ABI` pointer for ABI version compatibility, non-empty task list,
 /// and unique task names.
 pub fn validateManifest(manifest: *const abi.ModuleManifest_ABI) LoaderError!void {
-    if (manifest.abi_version != abi.VIDSEC_ABI_VERSION) {
+    if (manifest.abi_version != abi.FLOWDATA_ABI_VERSION) {
         return error.AbiVersionMismatch;
     }
     const tasks = manifest.tasksSlice();

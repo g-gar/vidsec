@@ -9,7 +9,7 @@ pub const EnvError = error{
     OutOfMemory,
 };
 
-/// `vidsec` `.env` file parser and `${VAR}` / `${VAR:-default}` string interpolator.
+/// Flowdata `.env` file parser and `${VAR}` / `${VAR:-default}` string interpolator.
 /// Adapts into `lib/yaml` via `env.scalarHook()`.
 pub const EnvInterpolator = struct {
     vars: std.StringHashMapUnmanaged([]const u8) = .{},

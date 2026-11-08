@@ -1,5 +1,5 @@
 const std = @import("std");
-const abi = @import("vidsec_abi");
+const abi = @import("flowdata_abi");
 
 pub const carve = @import("carve.zig");
 pub const sanitize = @import("sanitize.zig");
@@ -34,7 +34,7 @@ pub const manifest: abi.ModuleManifest_ABI = abi.defineManifest(
     &tasks,
 );
 
-// Exports the `vidsec_module_manifest` C-ABI symbol when compiled as a standalone `.so` plugin (`libremediation.so`)
+// Exports the `flowdata_module_manifest` C-ABI symbol when compiled as a standalone `.so` plugin (`libremediation.so`)
 comptime {
     if (@import("root") == @This()) {
         @export(&manifest, .{ .name = abi.MANIFEST_SYMBOL_NAME, .linkage = .strong });

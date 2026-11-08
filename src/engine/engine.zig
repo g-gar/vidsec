@@ -1,9 +1,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const abi = @import("../abi/mod.zig");
-const dataflow = @import("../dataflow/mod.zig");
+const dataflow = @import("flowdata_dataflow");
 const ast_mod = @import("../ast/ast.zig");
-const modules_mod = @import("../modules/mod.zig");
+const modules_mod = @import("../plugin/mod.zig");
 const repository_mod = @import("../repository/mod.zig");
 const network_mod = @import("../network/mod.zig");
 const engine_net_mod = @import("network.zig");
@@ -17,7 +16,6 @@ pub const NetworkAdapter = network_mod.NetworkAdapter;
 pub const EngineNetworkController = engine_net_mod.EngineNetworkController;
 pub const NetworkEvent = engine_net_mod.NetworkEvent;
 pub const PayloadHandle = dataflow.PayloadHandle;
-pub const TaskDescriptor_ABI = abi.TaskDescriptor_ABI;
 
 pub const ExecutionSummary = struct {
     steps_executed: usize = 0,
@@ -35,153 +33,62 @@ pub const EngineError = error{
     OutOfMemory,
 };
 
-const EngineHostState = struct {
-    input_slice: []const u8,
-    params: []const ast_mod.KeyValueParam,
-    repos: *RepositoryRegistry,
-    default_datasource: ?[]const u8,
-    step_id: []const u8 = "",
-    task_name: []const u8 = "",
-    primary_adapter: ?NetworkAdapter = null,
-    net_ctrl: ?*EngineNetworkController = null,
+const StepNetworkContext = struct {
+    step_id: []const u8,
+    task_name: []const u8,
+    primary_adapter: ?NetworkAdapter,
+    net_ctrl: *EngineNetworkController,
 
-    fn streamSize(raw_ctx: *abi.TaskContext_ABI) callconv(.c) u64 {
-        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
-        return self.input_slice.len;
-    }
-
-    fn streamReadAt(raw_ctx: *abi.TaskContext_ABI, offset: u64, dest_ptr: [*]u8, len: usize) callconv(.c) abi.HostError_ABI {
-        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
-        const end = std.math.add(u64, offset, len) catch return .out_of_bounds;
-        if (end > self.input_slice.len) return .out_of_bounds;
-        const start: usize = @intCast(offset);
-        @memcpy(dest_ptr[0..len], self.input_slice[start .. start + len]);
-        return .ok;
-    }
-
-    fn nextWindow(_: *abi.TaskContext_ABI, _: ?[*:0]const u8, _: *abi.WindowView_ABI) callconv(.c) abi.HostError_ABI {
-        return .end_of_stream;
-    }
-
-    fn windowReadAt(_: *abi.TaskContext_ABI, _: *const abi.WindowView_ABI, _: u64, _: [*]u8, _: usize) callconv(.c) abi.HostError_ABI {
-        return .out_of_bounds;
-    }
-
-    fn nextRow(_: *abi.TaskContext_ABI, _: [*:0]const u8, _: *abi.RowView_ABI) callconv(.c) abi.HostError_ABI {
-        return .end_of_stream;
-    }
-
-    fn getParam(raw_ctx: *abi.TaskContext_ABI, key_ptr: [*:0]const u8, out_val: *abi.Value_ABI) callconv(.c) abi.HostError_ABI {
-        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
-        const key = std.mem.span(key_ptr);
-        for (self.params) |p| {
-            if (std.mem.eql(u8, p.key, key)) {
-                if (std.mem.eql(u8, p.value, "true")) {
-                    out_val.* = abi.Value_ABI.fromBool(true);
-                    return .ok;
-                }
-                if (std.mem.eql(u8, p.value, "false")) {
-                    out_val.* = abi.Value_ABI.fromBool(false);
-                    return .ok;
-                }
-                if (std.fmt.parseInt(i64, p.value, 10)) |iv| {
-                    out_val.* = abi.Value_ABI.fromInt(iv);
-                    return .ok;
-                } else |_| {}
-                if (std.fmt.parseFloat(f64, p.value)) |fv| {
-                    out_val.* = abi.Value_ABI.fromFloat(fv);
-                    return .ok;
-                } else |_| {}
-                out_val.* = abi.Value_ABI.fromText(p.value);
-                return .ok;
-            }
-        }
-        return .not_found;
-    }
-
-    fn emitRow(raw_ctx: *abi.TaskContext_ABI, channel_ptr: ?[*:0]const u8, fields_ptr: [*]const abi.NamedField_ABI, fields_len: usize) callconv(.c) abi.HostError_ABI {
-        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
-        _ = self;
-        _ = channel_ptr;
-        _ = fields_ptr;
-        _ = fields_len;
-        return .ok;
-    }
-
-    fn artifactWriteAt(_: *abi.TaskContext_ABI, _: u64, _: [*]const u8, _: usize) callconv(.c) abi.HostError_ABI {
-        return .ok;
-    }
-
-    fn artifactZeroRange(_: *abi.TaskContext_ABI, _: u64, _: u64) callconv(.c) abi.HostError_ABI {
-        return .ok;
-    }
-
-    fn artifactTruncate(_: *abi.TaskContext_ABI, _: u64) callconv(.c) abi.HostError_ABI {
-        return .ok;
-    }
-
-    fn carveToQuarantine(_: *abi.TaskContext_ABI, _: u64, _: u64, _: [*:0]const u8, _: *[64]u8) callconv(.c) abi.HostError_ABI {
-        return .ok;
-    }
-
-    fn logEvent(_: *abi.TaskContext_ABI, _: abi.LogLevel_ABI, _: [*]const u8, _: usize) callconv(.c) void {}
-
-    fn netRequest(raw_ctx: *abi.TaskContext_ABI, req_ptr: *const abi.NetRequest_ABI, out_resp: *abi.NetResponse_ABI) callconv(.c) abi.HostError_ABI {
-        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
-        const ctrl = self.net_ctrl orelse return .network_policy_denied;
-        return ctrl.executeRequest(self.step_id, self.task_name, self.primary_adapter, req_ptr, out_resp);
-    }
-
-    fn netRequestOpaque(opaque_ctx: ?*anyopaque, req_ptr: *const abi.NetRequest_ABI, out_resp: *abi.NetResponse_ABI) callconv(.c) abi.HostError_ABI {
-        const ptr = opaque_ctx orelse return .network_policy_denied;
+    fn request(
+        ptr: *anyopaque,
+        network_id: []const u8,
+        url: []const u8,
+        operation: []const u8,
+        body: []const u8,
+    ) network_mod.NetError!network_mod.NetResult {
         const self: *@This() = @ptrCast(@alignCast(ptr));
-        const ctrl = self.net_ctrl orelse return .network_policy_denied;
-        return ctrl.executeRequest(self.step_id, self.task_name, self.primary_adapter, req_ptr, out_resp);
+        return self.net_ctrl.executeRequest(self.step_id, self.task_name, self.primary_adapter, network_id, url, operation, body);
     }
 
-    fn netConnect(raw_ctx: *abi.TaskContext_ABI, req_ptr: *const abi.NetRequest_ABI, out_handle: *abi.NetStreamHandle_ABI) callconv(.c) abi.HostError_ABI {
-        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
-        const ctrl = self.net_ctrl orelse return .network_policy_denied;
-        return ctrl.connectStream(self.step_id, self.task_name, self.primary_adapter, req_ptr, out_handle);
+    fn connect(
+        ptr: *anyopaque,
+        network_id: []const u8,
+        url: []const u8,
+        operation: []const u8,
+    ) network_mod.NetError!u64 {
+        const self: *@This() = @ptrCast(@alignCast(ptr));
+        return self.net_ctrl.connectStream(self.step_id, self.task_name, self.primary_adapter, network_id, url, operation);
     }
 
-    fn netSend(raw_ctx: *abi.TaskContext_ABI, handle: abi.NetStreamHandle_ABI, src_ptr: [*]const u8, len: usize) callconv(.c) abi.HostError_ABI {
-        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
-        const ctrl = self.net_ctrl orelse return .network_policy_denied;
-        return ctrl.sendStream(handle, src_ptr, len);
+    fn send(ptr: *anyopaque, handle: u64, payload: []const u8) network_mod.NetError!void {
+        const self: *@This() = @ptrCast(@alignCast(ptr));
+        return self.net_ctrl.sendStream(handle, payload);
     }
 
-    fn netRecv(raw_ctx: *abi.TaskContext_ABI, handle: abi.NetStreamHandle_ABI, dest_ptr: [*]u8, max_len: usize, out_read_len: *usize) callconv(.c) abi.HostError_ABI {
-        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
-        const ctrl = self.net_ctrl orelse return .network_policy_denied;
-        return ctrl.recvStream(handle, dest_ptr, max_len, out_read_len);
+    fn recv(ptr: *anyopaque, handle: u64, dest: []u8) network_mod.NetError!usize {
+        const self: *@This() = @ptrCast(@alignCast(ptr));
+        return self.net_ctrl.recvStream(handle, dest);
     }
 
-    fn netClose(raw_ctx: *abi.TaskContext_ABI, handle: abi.NetStreamHandle_ABI) callconv(.c) abi.HostError_ABI {
-        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
-        const ctrl = self.net_ctrl orelse return .network_policy_denied;
-        return ctrl.closeStream(handle);
+    fn close(ptr: *anyopaque, handle: u64) network_mod.NetError!void {
+        const self: *@This() = @ptrCast(@alignCast(ptr));
+        return self.net_ctrl.closeStream(handle);
     }
 
-    const vtable = abi.HostApiVTable_ABI{
-        .stream_size = &streamSize,
-        .stream_read_at = &streamReadAt,
-        .next_window = &nextWindow,
-        .window_read_at = &windowReadAt,
-        .next_row = &nextRow,
-        .get_param = &getParam,
-        .emit_row = &emitRow,
-        .artifact_write_at = &artifactWriteAt,
-        .artifact_zero_range = &artifactZeroRange,
-        .artifact_truncate = &artifactTruncate,
-        .carve_to_quarantine = &carveToQuarantine,
-        .log_event = &logEvent,
-        .net_request = &netRequest,
-        .net_connect = &netConnect,
-        .net_send = &netSend,
-        .net_recv = &netRecv,
-        .net_close = &netClose,
+    const vtable = modules_mod.NetworkBridge.VTable{
+        .request = &request,
+        .connect = &connect,
+        .send = &send,
+        .recv = &recv,
+        .close = &close,
     };
+
+    pub fn bridge(self: *StepNetworkContext) modules_mod.NetworkBridge {
+        return .{
+            .ptr = @ptrCast(self),
+            .vtable = &vtable,
+        };
+    }
 };
 
 /// Modern Black Box Native Zig Pipeline Execution Engine.
@@ -330,78 +237,38 @@ pub const PipelineEngine = struct {
                     // Resolve task descriptor from module registry
                     const desc = try self.modules.resolveTask(task_spec.module, task_spec.task);
 
-                    var task_output: PayloadHandle = undefined;
-
                     const byte_count = step_input.len * step_input.element_size;
                     const input_bytes: []const u8 = if (byte_count > 0)
                         @as([*]const u8, @ptrCast(step_input.ptr))[0..byte_count]
                     else
                         &.{};
 
-                    var host_state = EngineHostState{
-                        .input_slice = input_bytes,
-                        .params = task_spec.static_params,
-                        .repos = self.repos,
-                        .default_datasource = null,
+                    var step_net_ctx = StepNetworkContext{
                         .step_id = task_spec.id,
                         .task_name = task_spec.task,
                         .primary_adapter = step_adapter,
                         .net_ctrl = net_ctrl,
                     };
 
-                    if (desc.execute_blackbox) |bb_fn| {
-                        var mem = abi.MemContext_ABI.fromAllocator(&outputs_alloc);
-                        const in_abi = abi.PayloadHandle_ABI{
-                            .ptr = step_input.ptr,
-                            .len = step_input.len,
-                            .element_size = step_input.element_size,
-                            .element_align = step_input.element_align,
-                            .is_stream = step_input.is_stream,
-                        };
+                    const workers: u32 = if (task_spec.concurrency) |c| @intCast(c) else @intCast(self.workers);
+                    const outcome = modules_mod.executeTask(desc, .{
+                        .allocator = outputs_alloc,
+                        .input_payload = step_input,
+                        .input_bytes = input_bytes,
+                        .params = task_spec.static_params,
+                        .workers = workers,
+                        .net_bridge = step_net_ctx.bridge(),
+                    });
 
-                        const workers: u32 = if (task_spec.concurrency) |c| @intCast(c) else @intCast(self.workers);
-                        const options = abi.ExecutionOptions_ABI{
-                            .workers = workers,
-                            .opaque_net_ctx = &host_state,
-                            .net_request_fn = &EngineHostState.netRequestOpaque,
-                        };
-
-                        const res = bb_fn(&mem, in_abi, options);
-                        switch (res.status) {
-                            .ok => {},
-                            .recoverable_warning => {},
-                            .halt_pipeline => {
-                                summary.halted_early = true;
-                            },
-                            .fatal_error => return error.TaskExecutionFailed,
-                        }
-
-                        task_output = .{
-                            .ptr = res.payload.ptr orelse &{},
-                            .len = res.payload.len,
-                            .element_size = res.payload.element_size,
-                            .element_align = @truncate(res.payload.element_align),
-                            .is_stream = res.payload.is_stream,
-                            .type_name = step_input.type_name,
-                            .reflect_abi_fn = res.payload.reflect_fn,
-                        };
-                    } else {
-                        var raw_ctx = abi.TaskContext_ABI{
-                            .opaque_host_state = &host_state,
-                            .host = &EngineHostState.vtable,
-                        };
-
-                        const status = desc.execute(&raw_ctx);
-                        switch (status) {
-                            .ok, .recoverable_warning => {},
-                            .halt_pipeline => {
-                                summary.halted_early = true;
-                            },
-                            .fatal_error => return error.TaskExecutionFailed,
-                        }
-
-                        task_output = step_input;
+                    switch (outcome.status) {
+                        .ok, .recoverable_warning => {},
+                        .halt_pipeline => {
+                            summary.halted_early = true;
+                        },
+                        .fatal_error => return error.TaskExecutionFailed,
                     }
+
+                    const task_output = outcome.output;
 
                     // Store output by task ID
                     try outputs.put(outputs_alloc, task_spec.id, task_output);
