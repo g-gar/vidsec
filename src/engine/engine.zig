@@ -6,6 +6,7 @@ const ast_mod = @import("../ast/ast.zig");
 const modules_mod = @import("../modules/mod.zig");
 const repository_mod = @import("../repository/mod.zig");
 const network_mod = @import("../network/mod.zig");
+const engine_net_mod = @import("network.zig");
 const tracer_mod = @import("tracer.zig");
 
 pub const PipelineAST = ast_mod.PipelineAST;
@@ -13,7 +14,8 @@ pub const ModuleRegistry = modules_mod.ModuleRegistry;
 pub const RepositoryRegistry = repository_mod.RepositoryRegistry;
 pub const NetworkRegistry = network_mod.NetworkRegistry;
 pub const NetworkAdapter = network_mod.NetworkAdapter;
-pub const NetworkEvent = network_mod.NetworkEvent;
+pub const EngineNetworkController = engine_net_mod.EngineNetworkController;
+pub const NetworkEvent = engine_net_mod.NetworkEvent;
 pub const PayloadHandle = dataflow.PayloadHandle;
 pub const TaskDescriptor_ABI = abi.TaskDescriptor_ABI;
 
@@ -40,8 +42,8 @@ const EngineHostState = struct {
     default_datasource: ?[]const u8,
     step_id: []const u8 = "",
     task_name: []const u8 = "",
-    primary_adapter: ?*NetworkAdapter = null,
-    net_registry: ?*NetworkRegistry = null,
+    primary_adapter: ?NetworkAdapter = null,
+    net_ctrl: ?*EngineNetworkController = null,
 
     fn streamSize(raw_ctx: *abi.TaskContext_ABI) callconv(.c) u64 {
         const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
@@ -126,25 +128,39 @@ const EngineHostState = struct {
 
     fn netRequest(raw_ctx: *abi.TaskContext_ABI, req_ptr: *const abi.NetRequest_ABI, out_resp: *abi.NetResponse_ABI) callconv(.c) abi.HostError_ABI {
         const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
-        return self.dispatchNetRequest(req_ptr, out_resp);
+        const ctrl = self.net_ctrl orelse return .network_policy_denied;
+        return ctrl.executeRequest(self.step_id, self.task_name, self.primary_adapter, req_ptr, out_resp);
     }
 
     fn netRequestOpaque(opaque_ctx: ?*anyopaque, req_ptr: *const abi.NetRequest_ABI, out_resp: *abi.NetResponse_ABI) callconv(.c) abi.HostError_ABI {
         const ptr = opaque_ctx orelse return .network_policy_denied;
         const self: *@This() = @ptrCast(@alignCast(ptr));
-        return self.dispatchNetRequest(req_ptr, out_resp);
+        const ctrl = self.net_ctrl orelse return .network_policy_denied;
+        return ctrl.executeRequest(self.step_id, self.task_name, self.primary_adapter, req_ptr, out_resp);
     }
 
-    fn dispatchNetRequest(self: *@This(), req_ptr: *const abi.NetRequest_ABI, out_resp: *abi.NetResponse_ABI) abi.HostError_ABI {
-        const req = req_ptr.*;
-        var adapter: ?*NetworkAdapter = self.primary_adapter;
-        if (req.network_id.len > 0) {
-            if (self.net_registry) |reg| {
-                adapter = reg.get(req.network_id.asSlice()) orelse return .not_found;
-            }
-        }
-        const active_adapter = adapter orelse return .network_policy_denied;
-        return active_adapter.executeRequest(self.step_id, self.task_name, req, out_resp);
+    fn netConnect(raw_ctx: *abi.TaskContext_ABI, req_ptr: *const abi.NetRequest_ABI, out_handle: *abi.NetStreamHandle_ABI) callconv(.c) abi.HostError_ABI {
+        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
+        const ctrl = self.net_ctrl orelse return .network_policy_denied;
+        return ctrl.connectStream(self.step_id, self.task_name, self.primary_adapter, req_ptr, out_handle);
+    }
+
+    fn netSend(raw_ctx: *abi.TaskContext_ABI, handle: abi.NetStreamHandle_ABI, src_ptr: [*]const u8, len: usize) callconv(.c) abi.HostError_ABI {
+        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
+        const ctrl = self.net_ctrl orelse return .network_policy_denied;
+        return ctrl.sendStream(handle, src_ptr, len);
+    }
+
+    fn netRecv(raw_ctx: *abi.TaskContext_ABI, handle: abi.NetStreamHandle_ABI, dest_ptr: [*]u8, max_len: usize, out_read_len: *usize) callconv(.c) abi.HostError_ABI {
+        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
+        const ctrl = self.net_ctrl orelse return .network_policy_denied;
+        return ctrl.recvStream(handle, dest_ptr, max_len, out_read_len);
+    }
+
+    fn netClose(raw_ctx: *abi.TaskContext_ABI, handle: abi.NetStreamHandle_ABI) callconv(.c) abi.HostError_ABI {
+        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
+        const ctrl = self.net_ctrl orelse return .network_policy_denied;
+        return ctrl.closeStream(handle);
     }
 
     const vtable = abi.HostApiVTable_ABI{
@@ -161,6 +177,10 @@ const EngineHostState = struct {
         .carve_to_quarantine = &carveToQuarantine,
         .log_event = &logEvent,
         .net_request = &netRequest,
+        .net_connect = &netConnect,
+        .net_send = &netSend,
+        .net_recv = &netRecv,
+        .net_close = &netClose,
     };
 };
 
@@ -204,19 +224,10 @@ pub const PipelineEngine = struct {
             _ = try self.repos.resolveOrCreate(ds_spec);
         }
 
-        // 1b. Resolve or instantiate all declared virtual network adapters
-        var fallback_nets: ?NetworkRegistry = null;
-        defer if (fallback_nets) |*fnets| fnets.deinit();
-
-        const active_nets: *NetworkRegistry = if (self.networks) |ext_nets| ext_nets else blk: {
-            fallback_nets = NetworkRegistry.init(self.allocator);
-            break :blk &fallback_nets.?;
-        };
-
-        for (self.ast.networks) |net_spec| {
-            _ = try active_nets.resolveOrCreate(net_spec);
-        }
-        _ = try active_nets.ensureBuiltinIsolated(self.ast.runtime.default_network);
+        // 1b. Initialize EngineNetworkController to coordinate all virtual network adapters,
+        // C-ABI streams, `network.captured_events`, and `.pcapng` forensic persistence.
+        var net_ctrl = try EngineNetworkController.init(self.allocator, self.ast, self.networks);
+        defer net_ctrl.deinit();
 
         // 2. Track intermediate step outputs by step ID
         var outputs_arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -226,7 +237,10 @@ pub const PipelineEngine = struct {
         var outputs: std.StringHashMapUnmanaged(PayloadHandle) = .empty;
 
         // 3. Execute main pipeline
-        try self.executeSubPipeline("main", input_payload, &outputs, outputs_alloc, active_nets, &summary);
+        try self.executeSubPipeline("main", input_payload, &outputs, outputs_alloc, &net_ctrl, &summary);
+
+        // 4. Flush any configured `.pcapng` captures to datasources and disk (`capture:`)
+        try net_ctrl.flushCaptures(self.repos);
 
         return summary;
     }
@@ -285,7 +299,7 @@ pub const PipelineEngine = struct {
         active_input: PayloadHandle,
         outputs: *std.StringHashMapUnmanaged(PayloadHandle),
         outputs_alloc: Allocator,
-        active_nets: *NetworkRegistry,
+        net_ctrl: *EngineNetworkController,
         summary: *ExecutionSummary,
     ) anyerror!void {
         const pipe = self.ast.getPipeline(name) orelse return error.UnknownSubPipeline;
@@ -309,10 +323,9 @@ pub const PipelineEngine = struct {
                         step_input = try dataflow.predicate.filterPayload(self.allocator, step_input, filter_expr);
                     }
 
-                    // Resolve task-scoped primary virtual network adapter
-                    const net_id = task_spec.primaryNetwork(self.ast.runtime.default_network);
-                    const step_adapter = active_nets.get(net_id) orelse try active_nets.ensureBuiltinIsolated(net_id);
-                    const events_before = step_adapter.capturedEventsSlice().len;
+                    // Resolve task-scoped primary virtual network adapter via EngineNetworkController
+                    const step_adapter = try net_ctrl.resolveStepAdapter(task_spec);
+                    const records_before = step_adapter.capturedRecordsSlice().len;
 
                     // Resolve task descriptor from module registry
                     const desc = try self.modules.resolveTask(task_spec.module, task_spec.task);
@@ -333,7 +346,7 @@ pub const PipelineEngine = struct {
                         .step_id = task_spec.id,
                         .task_name = task_spec.task,
                         .primary_adapter = step_adapter,
-                        .net_registry = active_nets,
+                        .net_ctrl = net_ctrl,
                     };
 
                     if (desc.execute_blackbox) |bb_fn| {
@@ -400,11 +413,7 @@ pub const PipelineEngine = struct {
 
                         if (out_ch.from_field) |src_field| {
                             if (std.mem.eql(u8, src_field, "network.captured_events")) {
-                                const all_events = step_adapter.capturedEventsSlice();
-                                const new_events = if (events_before <= all_events.len)
-                                    all_events[events_before..]
-                                else
-                                    all_events[0..0];
+                                const new_events = try net_ctrl.collectStepEvents(task_spec.id, step_adapter, records_before);
                                 channel_payload = PayloadHandle.fromSlice(NetworkEvent, new_events);
                             }
                         }
@@ -445,7 +454,7 @@ pub const PipelineEngine = struct {
                             if (std.mem.eql(u8, case.goto_pipeline, "continue")) {
                                 break;
                             } else {
-                                try self.executeSubPipeline(case.goto_pipeline, current_input, outputs, outputs_alloc, active_nets, summary);
+                                try self.executeSubPipeline(case.goto_pipeline, current_input, outputs, outputs_alloc, net_ctrl, summary);
                                 break;
                             }
                         }
@@ -454,7 +463,7 @@ pub const PipelineEngine = struct {
                     if (!branched) {
                         if (router_spec.default_pipeline) |def_pipe| {
                             if (!std.mem.eql(u8, def_pipe, "continue")) {
-                                try self.executeSubPipeline(def_pipe, current_input, outputs, outputs_alloc, active_nets, summary);
+                                try self.executeSubPipeline(def_pipe, current_input, outputs, outputs_alloc, net_ctrl, summary);
                             }
                         }
                     }

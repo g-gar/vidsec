@@ -216,4 +216,22 @@ pub const PipelineRunner = struct {
         const input_payload = dataflow.PayloadHandle.fromSlice(u8, file_bytes);
         return try eng.run(input_payload);
     }
+
+    /// Runs the pipeline on an in-memory byte slice.
+    pub fn runMemory(
+        self: *PipelineRunner,
+        bytes: []const u8,
+        options: RunnerOptions,
+    ) anyerror!engine_mod.ExecutionSummary {
+        _ = options;
+        var eng = engine_mod.PipelineEngine.init(
+            self.allocator,
+            self.ast,
+            &self.registry,
+            &self.repos,
+        );
+
+        const input_payload = dataflow.PayloadHandle.fromSlice(u8, bytes);
+        return try eng.run(input_payload);
+    }
 };

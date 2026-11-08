@@ -6,4 +6,5 @@ pub const dataflow = flowdata.dataflow;
 pub const yaml = flowdata.yaml;
 pub const network = flowdata.network;
 pub const abi = flowdata.abi;
+pub const host = flowdata.host;
 pub const extensions = @import("flowdata_extensions");

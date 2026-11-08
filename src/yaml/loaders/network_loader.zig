@@ -115,10 +115,34 @@ fn parsePolicy(alloc: Allocator, net_node: yaml_lib.Node) !ast.NetworkPolicySpec
     }
 
     if (net_node.get("policy")) |pol_node| {
+        if (pol_node.get("default_action")) |da| {
+            if (da.asScalar()) |s| {
+                if (ast.PolicyDefaultAction.fromString(s)) |act| {
+                    policy.default_action = act;
+                }
+            }
+        }
         if (pol_node.get("block_private_ranges")) |bpr| {
-            if (bpr.asScalar()) |s| policy.block_private_ranges = parseBool(s, true);
-        } else if (pol_node.get("block_private_ips")) |bpi| {
-            if (bpi.asScalar()) |s| policy.block_private_ranges = parseBool(s, true);
+            if (bpr.asScalar()) |s| {
+                const v = parseBool(s, true);
+                policy.block_private_ranges = v;
+                policy.block_private_ips = v;
+                policy.block_loopback = v;
+                policy.block_link_local = v;
+            }
+        }
+        if (pol_node.get("block_private_ips")) |bpi| {
+            if (bpi.asScalar()) |s| {
+                const v = parseBool(s, true);
+                policy.block_private_ips = v;
+                policy.block_private_ranges = v;
+            }
+        }
+        if (pol_node.get("block_loopback")) |blb| {
+            if (blb.asScalar()) |s| policy.block_loopback = parseBool(s, true);
+        }
+        if (pol_node.get("block_link_local")) |bll| {
+            if (bll.asScalar()) |s| policy.block_link_local = parseBool(s, true);
         }
         if (pol_node.get("allow_rules")) |ar_node| {
             if (ar_node.asSeq()) |seq| {
@@ -326,7 +350,7 @@ pub fn parseNetworkDecl(alloc: Allocator, id: []const u8, net_node: yaml_lib.Nod
         }
         if (dns_node.get("overrides")) |ov_node| {
             if (ov_node.asMap()) |entries| {
-                var ov_list: std.ArrayListUnmanaged(ast.KeyValueParam) = .empty;
+                var ov_list: std.ArrayListUnmanaged(std.meta.Elem(@TypeOf(spec.dns.overrides))) = .empty;
                 for (entries) |entry| {
                     if (entry.value.asScalar()) |ip_str| {
                         try ov_list.append(alloc, .{ .key = entry.key, .value = ip_str });
@@ -396,6 +420,12 @@ pub fn parseNetworkDecl(alloc: Allocator, id: []const u8, net_node: yaml_lib.Nod
         }
         if (cap_node.get("format")) |n| {
             if (n.asScalar()) |s| spec.capture.format = s;
+        }
+        if (cap_node.get("datasource")) |n| {
+            spec.capture.datasource = n.asScalar();
+        }
+        if (cap_node.get("channel")) |n| {
+            if (n.asScalar()) |s| spec.capture.channel = s;
         }
         if (cap_node.get("path")) |n| {
             spec.capture.path = n.asScalar();

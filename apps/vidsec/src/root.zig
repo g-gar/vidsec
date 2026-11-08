@@ -41,12 +41,34 @@ pub const pipeline = flowdata;
 pub const pipeline_ast = flowdata.ast;
 pub const PipelineAST = flowdata.PipelineAST;
 pub const PipelineEngine = flowdata.PipelineEngine;
+pub const host = flowdata.host;
 
 /// Flowdata Pure Dataflow Algebra, Automatic Lifting, Stream Transformation, and Multi-Core Execution.
 pub const dataflow = flowdata.dataflow;
 
-/// Official `vidsec v2` Plugin Modules (`src/plugin/`), compilable both as `.so` shared libraries and static modules.
-pub const plugin = @import("plugin/mod.zig");
+/// Official `vidsec v2` Analytical & Remediation Modules.
+pub const analysis = @import("analysis/mod.zig");
+pub const remediation = @import("remediation/mod.zig");
+
+/// Compatibility namespace for plugins and existing tests
+pub const plugin = struct {
+    pub const analysis = @import("analysis/mod.zig");
+    pub const remediation = @import("remediation/mod.zig");
+    pub const analyzer = @import("analysis/mod.zig");
+    pub const triage = @import("analysis/mod.zig");
+    pub const lib = struct {
+        pub const formats = @import("vidsec_formats_common");
+        pub const isobmff = @import("vidsec_isobmff");
+        pub const mp4 = @import("vidsec_mp4");
+        pub const ebml = @import("vidsec_ebml");
+        pub const mkv = @import("vidsec_mkv");
+        pub const riff = @import("vidsec_riff");
+        pub const ir = @import("vidsec_ir");
+        pub const forensics = @import("vidsec_forensics");
+        pub const magic = @import("vidsec_magic");
+        pub const math = @import("vidsec_math");
+    };
+};
 
 /// Vidsec Flowdata Extensions (Datasources: memory, file_store, sqlite)
 pub const extensions = @import("vidsec_extensions");

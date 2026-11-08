@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const repository = @import("../repository/mod.zig");
+const network = @import("../network/mod.zig");
 
 // =============================================================================
 // RUNTIME, NETWORK, AND DATASOURCE SPECIFICATIONS
@@ -17,167 +18,26 @@ pub const RuntimeConfig = struct {
 pub const ConfigParam = repository.ConfigParam;
 pub const KeyValueParam = ConfigParam;
 
-pub const NetworkDriver = enum {
-    none,
-    ingress_only,
-    egress,
-    sinkhole,
-
-    pub fn fromString(s: []const u8) ?NetworkDriver {
-        if (std.mem.eql(u8, s, "none") or std.mem.eql(u8, s, "isolated")) return .none;
-        if (std.mem.eql(u8, s, "ingress_only") or std.mem.eql(u8, s, "ingress")) return .ingress_only;
-        if (std.mem.eql(u8, s, "egress")) return .egress;
-        if (std.mem.eql(u8, s, "sinkhole") or std.mem.eql(u8, s, "tap")) return .sinkhole;
-        return null;
-    }
-};
-
-pub const ProxyStrategy = enum {
-    round_robin,
-    weighted,
-    failover,
-    least_latency,
-    sticky_host,
-    random,
-
-    pub fn fromString(s: []const u8) ?ProxyStrategy {
-        if (std.mem.eql(u8, s, "round_robin")) return .round_robin;
-        if (std.mem.eql(u8, s, "weighted")) return .weighted;
-        if (std.mem.eql(u8, s, "failover")) return .failover;
-        if (std.mem.eql(u8, s, "least_latency")) return .least_latency;
-        if (std.mem.eql(u8, s, "sticky_host")) return .sticky_host;
-        if (std.mem.eql(u8, s, "random")) return .random;
-        return null;
-    }
-};
-
-pub const PortRangeSpec = struct {
-    min: u16,
-    max: u16,
-
-    pub fn single(port: u16) PortRangeSpec {
-        return .{ .min = port, .max = port };
-    }
-
-    pub fn contains(self: PortRangeSpec, port: u16) bool {
-        return port >= self.min and port <= self.max;
-    }
-};
-
-pub const AllowRuleSpec = struct {
-    schemes: []const []const u8 = &.{},
-    hosts: []const []const u8 = &.{},
-    ports: []const PortRangeSpec = &.{},
-    operations: []const []const u8 = &.{},
-    resources: []const []const u8 = &.{},
-};
-
-pub const NetworkPolicySpec = struct {
-    block_private_ranges: bool = true,
-    allow_rules: []const AllowRuleSpec = &.{},
-};
-
-pub const PoolSpec = struct {
-    max_connections: usize = 32,
-    max_pending_acquires: usize = 128,
-    acquire_timeout_ms: u64 = 2000,
-    alpn: []const []const u8 = &.{},
-};
-
-pub const TimeoutsSpec = struct {
-    connect_ms: u64 = 3000,
-    tls_handshake_ms: u64 = 3000,
-    read_idle_ms: u64 = 10000,
-    write_idle_ms: u64 = 5000,
-};
-
-pub const BackpressureSpec = struct {
-    bind_tcp_window: bool = true,
-    so_rcvbuf_bytes: usize = 262144,
-    max_buffer_memory_mb: usize = 64,
-};
-
-pub const RateLimitSpec = struct {
-    requests_per_second: f64 = 0.0,
-    burst: usize = 0,
-    connections_per_second: f64 = 0.0,
-    max_bandwidth_mbps: f64 = 0.0,
-    max_inflight: usize = 0,
-    respect_retry_after: bool = true,
-};
-
-pub const CircuitBreakerSpec = struct {
-    failure_threshold: u32 = 3,
-    cooldown_ms: u64 = 30000,
-    half_open_max_calls: u32 = 2,
-    failover_on_status: []const u16 = &.{ 403, 429, 502, 503, 504 },
-};
-
-pub const ProxyEndpointSpec = struct {
-    url: []const u8,
-    weight: u32 = 1,
-};
-
-pub const ProxyPoolSpec = struct {
-    strategy: ProxyStrategy = .round_robin,
-    health_check_interval_ms: u64 = 15000,
-    circuit_breaker: CircuitBreakerSpec = .{},
-    endpoints: []const ProxyEndpointSpec = &.{},
-};
-
-pub const DnsSpec = struct {
-    doh_endpoint: ?[]const u8 = null,
-    min_ttl_sec: u64 = 60,
-    max_ttl_sec: u64 = 3600,
-    stale_while_revalidate_sec: u64 = 120,
-    overrides: []const KeyValueParam = &.{},
-};
-
-pub const TlsSpec = struct {
-    verify_certificates: bool = true,
-    pinned_sha256: []const []const u8 = &.{},
-};
-
-pub const RedirectRuleSpec = struct {
-    from: []const u8,
-    to: []const []const u8 = &.{},
-    strategy: ProxyStrategy = .round_robin,
-};
-
-pub const RouteRuleSpec = struct {
-    match_host: []const u8,
-    proxy_strategy: ?ProxyStrategy = null,
-    rate_limit: ?RateLimitSpec = null,
-};
-
-pub const CaptureSpec = struct {
-    enabled: bool = false,
-    format: []const u8 = "pcapng",
-    path: ?[]const u8 = null,
-    snaplen: u32 = 65535,
-    include_tls_keys: bool = false,
-    max_file_size_mb: usize = 100,
-    max_files: usize = 5,
-};
-
-/// Declarative specification for a Reactive L4/L7 Virtual Network Adapter (`networks:`).
-pub const NetworkSpec = struct {
-    id: []const u8,
-    driver: NetworkDriver = .none,
-    policy: NetworkPolicySpec = .{},
-    pool: PoolSpec = .{},
-    timeouts: TimeoutsSpec = .{},
-    backpressure: BackpressureSpec = .{},
-    rate_limit: RateLimitSpec = .{},
-    proxies: ProxyPoolSpec = .{},
-    dns: DnsSpec = .{},
-    tls: TlsSpec = .{},
-    redirects: []const RedirectRuleSpec = &.{},
-    routes: []const RouteRuleSpec = &.{},
-    capture: CaptureSpec = .{},
-    emulate_responses: bool = false,
-    isolation: []const u8 = "runtime",
-};
+// Canonical Network Specifications imported directly from `src/network/contracts/`
+pub const NetworkDriver = network.contracts.NetworkDriver;
+pub const ProxyStrategy = network.contracts.ProxyStrategy;
+pub const PolicyDefaultAction = network.contracts.PolicyDefaultAction;
+pub const PortRangeSpec = network.contracts.PortRangeSpec;
+pub const AllowRuleSpec = network.contracts.AllowRuleSpec;
+pub const NetworkPolicySpec = network.contracts.NetworkPolicySpec;
+pub const PoolSpec = network.contracts.PoolSpec;
+pub const TimeoutsSpec = network.contracts.TimeoutsSpec;
+pub const BackpressureSpec = network.contracts.BackpressureSpec;
+pub const RateLimitSpec = network.contracts.RateLimitSpec;
+pub const CircuitBreakerSpec = network.contracts.CircuitBreakerSpec;
+pub const ProxyEndpointSpec = network.contracts.ProxyEndpointSpec;
+pub const ProxyPoolSpec = network.contracts.ProxyPoolSpec;
+pub const DnsSpec = network.contracts.DnsSpec;
+pub const TlsSpec = network.contracts.TlsSpec;
+pub const RedirectRuleSpec = network.contracts.RedirectRuleSpec;
+pub const RouteRuleSpec = network.contracts.RouteRuleSpec;
+pub const CaptureSpec = network.contracts.CaptureSpec;
+pub const NetworkSpec = network.contracts.NetworkSpec;
 
 /// Specification for an open-ended storage datasource (memory, sqlite, elasticsearch, kafka, s3, etc.).
 /// Driver resolution is handled dynamically via registry without requiring core recompilation.

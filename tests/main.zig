@@ -7,4 +7,5 @@ test {
     _ = @import("core/dataflow_test.zig");
     _ = @import("core/pipeline_yaml_ast_test.zig");
     _ = @import("core/network_test.zig");
+    _ = @import("core/host_transport_test.zig");
 }

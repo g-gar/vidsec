@@ -29,6 +29,14 @@ pub fn build(b: *std.Build) void {
     });
     dataflow_mod.addImport("flowdata", flowdata_mod);
 
+    // 3b. Flowdata Network module
+    const network_mod = b.addModule("flowdata_network", .{
+        .root_source_file = b.path("src/network.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    network_mod.addImport("flowdata", flowdata_mod);
+
     // 4. Extensions: Datasource drivers
     const ds_memory_mod = b.addModule("flowdata_datasource_memory", .{
         .root_source_file = b.path("extensions/datasource/memory/src/root.zig"),

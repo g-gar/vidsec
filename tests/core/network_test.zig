@@ -125,11 +125,10 @@ test "YAML to AST: Reactive Virtual Network Adapters (L4/L7 Policy, Rate-Limit, 
 }
 
 const MockTasks = struct {
-    /// Task running on `isolated` (`driver: none`) - all network requests must be denied by Host.
+    /// Task running on `isolated` (`driver: none`) - all network requests and streams must be denied by Host.
     fn isolatedTask(raw_ctx: *abi.TaskContext_ABI) callconv(.c) abi.TaskStatus_ABI {
         const ctx = abi.TaskContext.init(raw_ctx);
         if (ctx.netFetch("https://api.mangadex.org/manga/123")) |_| {
-            // Should never succeed on driver: none
             return .fatal_error;
         } else |err| {
             if (err != error.NetworkPolicyDenied) return .fatal_error;
@@ -137,7 +136,7 @@ const MockTasks = struct {
         return .ok;
     }
 
-    /// Task running on `api_egress` - exercises Redirects, ACL, Proxy Pool, Rate-Limit, and PCAPNG capture.
+    /// Task running on `api_egress` - exercises Redirects, ACL, Proxy Pool, stateful stream lifecycle (`netConnect`/`netSend`/`netRecv`/`netClose`), and PCAPNG capture.
     fn egressScraperTask(raw_ctx: *abi.TaskContext_ABI) callconv(.c) abi.TaskStatus_ABI {
         const ctx = abi.TaskContext.init(raw_ctx);
 
@@ -162,6 +161,14 @@ const MockTasks = struct {
             if (err != error.NetworkPolicyDenied) return .fatal_error;
         }
 
+        // 4. Stateful bidirectional stream lifecycle (`wss://` via `net_connect` / `net_send` / `net_recv` / `net_close`)
+        const stream_h = ctx.netConnect("wss://api.mangadex.org/manga/events", "HANDSHAKE") catch return .fatal_error;
+        ctx.netSend(stream_h, "SUBSCRIBE:manga_updates") catch return .fatal_error;
+        var recv_buf: [128]u8 = undefined;
+        const read_n = ctx.netRecv(stream_h, &recv_buf) catch return .fatal_error;
+        if (read_n == 0) return .fatal_error;
+        ctx.netClose(stream_h) catch return .fatal_error;
+
         return .ok;
     }
 
@@ -178,7 +185,8 @@ const MockTasks = struct {
     }
 };
 
-test "End-to-End PipelineEngine: Network Isolation, Proxy Rotation, Sinkhole Telemetry & Router Branching, and PCAPNG" {
+test "End-to-End PipelineEngine & EngineNetworkController: Isolation, Streams, Sinkhole Telemetry, and PCAPNG Persistence (Datasource + Disk)" {
+    const pcap_disk_path = "/tmp/vidsec_test_egress_capture.pcapng";
     const yaml_text =
         \\version: 2
         \\runtime:
@@ -198,8 +206,8 @@ test "End-to-End PipelineEngine: Network Isolation, Proxy Rotation, Sinkhole Tel
         \\      allow_rules:
         \\        - hosts: ["api.mangadex.org", "local-mirror.internal"]
         \\          ports: [443]
-        \\          schemes: ["https"]
-        \\          operations: ["GET"]
+        \\          schemes: ["https", "wss"]
+        \\          operations: ["GET", "HANDSHAKE"]
         \\          resources: ["/manga/*", "/mangadex/*"]
         \\    proxies:
         \\      strategy: round_robin
@@ -212,6 +220,9 @@ test "End-to-End PipelineEngine: Network Isolation, Proxy Rotation, Sinkhole Tel
         \\    capture:
         \\      enabled: true
         \\      format: pcapng
+        \\      datasource: pipeline_memory
+        \\      channel: egress_pcap_dump
+        \\      path: /tmp/vidsec_test_egress_capture.pcapng
         \\      snaplen: 2048
         \\      include_tls_keys: true
         \\  virtual_tap:
@@ -264,7 +275,7 @@ test "End-to-End PipelineEngine: Network Isolation, Proxy Rotation, Sinkhole Tel
         },
         .{
             .task_name = "egress_scraper",
-            .description = "Verify L7 ACL, URL redirect, proxy rotation, and PCAPNG",
+            .description = "Verify L7 ACL, URL redirect, proxy rotation, stateful streams, and PCAPNG",
             .execute = &MockTasks.egressScraperTask,
         },
         .{
@@ -300,16 +311,18 @@ test "End-to-End PipelineEngine: Network Isolation, Proxy Rotation, Sinkhole Tel
     const dummy_bytes = "manga-seed-payload";
     const summary = try engine.run(pipeline.PayloadHandle.fromSlice(u8, dummy_bytes));
 
-    // All 4 steps executed (including `flag_suspicious` inside `quarantine_flow` triggered by `count(evaluate_target.net_events) > 0`)
+    // All 4 steps executed (including `flag_suspicious` inside `quarantine_flow`)
     try std.testing.expectEqual(@as(usize, 4), summary.steps_executed);
     try std.testing.expectEqual(@as(usize, 1), summary.routers_evaluated);
     try std.testing.expectEqualStrings("quarantine_flow", summary.final_pipeline);
 
-    // Inspect `api_egress` adapter telemetry & PCAPNG binary capture
+    // Inspect `api_egress` adapter telemetry & PCAPNG binary capture via VTable
     const egress_adapter = net_reg.get("api_egress").?;
-    try std.testing.expectEqual(@as(usize, 2), egress_adapter.metrics.requests_allowed);
-    try std.testing.expectEqual(@as(usize, 1), egress_adapter.metrics.requests_blocked);
-    try std.testing.expectEqual(@as(usize, 3), egress_adapter.metrics.packets_captured);
+    const egress_metrics = egress_adapter.metrics();
+    // 2 HTTP GETs + 1 WSS HANDSHAKE = 3 allowed; 1 evil-exfil POST = 1 blocked; + 1 stream_send frame = 5 packets
+    try std.testing.expectEqual(@as(usize, 3), egress_metrics.requests_allowed);
+    try std.testing.expectEqual(@as(usize, 1), egress_metrics.requests_blocked);
+    try std.testing.expectEqual(@as(usize, 5), egress_metrics.packets_captured);
 
     const pcap_bytes = egress_adapter.pcapBytes().?;
     try std.testing.expect(pcap_bytes.len > 128);
@@ -319,12 +332,92 @@ test "End-to-End PipelineEngine: Network Isolation, Proxy Rotation, Sinkhole Tel
     // Verify embedded step metadata comment in PCAPNG
     try std.testing.expect(std.mem.indexOf(u8, pcap_bytes, "step_id=step_scrape task=egress_scraper") != null);
 
-    // Inspect `net_events` persisted into `pipeline_memory` datasource
+    // Verify `EngineNetworkController.flushCaptures` persisted PCAPNG into `pipeline_memory` channel `egress_pcap_dump`
     const mem_repo = repos.get("pipeline_memory").?;
+    const stored_pcap_handle = mem_repo.readPayload("egress_pcap_dump").?;
+    try std.testing.expectEqualSlices(u8, pcap_bytes, stored_pcap_handle.asSlice(u8));
+
+    // Verify `EngineNetworkController.flushCaptures` also persisted PCAPNG to disk at `capture.path`
+    const disk_pcap = try pipeline.readFileBytes(alloc, pcap_disk_path);
+    try std.testing.expectEqualSlices(u8, pcap_bytes, disk_pcap);
+
+    // Inspect `net_events` persisted into `pipeline_memory` datasource
     const stored_events_handle = mem_repo.readPayload("net_events").?;
     try std.testing.expectEqual(@as(usize, 1), stored_events_handle.len);
-    const ev_slice = stored_events_handle.asSlice(network_mod.NetworkEvent);
+    const ev_slice = stored_events_handle.asSlice(pipeline.NetworkEvent);
     try std.testing.expectEqualStrings("evaluate_target", ev_slice[0].step_id);
     try std.testing.expectEqualStrings("c2-tracker.bad", ev_slice[0].dst_host);
     try std.testing.expectEqualStrings("MOCKED", ev_slice[0].verdict);
+}
+
+test "Standalone Lego Composition: Domain-Agnostic MiddlewareChain, Wire Framing (HTTP/1.1, SOCKS5, WS, RTMP), and VTable contracts" {
+    const alloc = std.testing.allocator;
+
+    var net_reg = network_mod.NetworkRegistry.init(alloc);
+    defer net_reg.deinit();
+
+    // Instantiate an EgressAdapter purely from `contracts.AdapterConfig` (zero YAML/AST/step_id involvement)
+    const adapter = try net_reg.resolveOrCreate(network_mod.AdapterConfig{
+        .id = "multi_proto_egress",
+        .driver_name = "egress",
+        .policy = .{
+            .block_private_ranges = true,
+            .allow_rules = &.{
+                .{
+                    .schemes = &.{ "https", "wss", "rtmps" },
+                    .hosts = &.{ "*.mangadex.org", "ingest.stream.io" },
+                    .ports = &.{
+                        .{ .min = 443, .max = 443 },
+                        .{ .min = 1935, .max = 1935 },
+                    },
+                    .operations = &.{ "GET", "HANDSHAKE", "PUBLISH" },
+                    .resources = &.{ "/manga/*", "/events", "/live/*" },
+                },
+            },
+        },
+        .proxies = .{
+            .strategy_name = "weighted",
+            .endpoints = &.{
+                .{ .url = "socks5://10.10.0.1:9050", .weight = 2 },
+                .{ .url = "socks5://10.10.0.2:9050", .weight = 1 },
+            },
+        },
+    });
+
+    // 1. Dispatches `https` to `HttpTransport` (status 200 + RFC 9112 wire frame)
+    const r_http = try adapter.execute("https://api.mangadex.org/manga/abc", "GET", "", "trace=http_1");
+    try std.testing.expectEqual(@as(u16, 200), r_http.status_code);
+    try std.testing.expectEqualStrings("socks5://10.10.0.1:9050", r_http.proxy_used);
+    try std.testing.expect(std.mem.startsWith(u8, r_http.wire_request, "GET /manga/abc HTTP/1.1\r\n"));
+
+    // 2. Dispatches `wss` to `StreamTransport` (status 101 Switching Protocols + RFC 6455 Upgrade wire frame)
+    const r_ws = try adapter.execute("wss://ws.mangadex.org/events", "HANDSHAKE", "", "trace=ws_1");
+    try std.testing.expectEqual(@as(u16, 101), r_ws.status_code);
+    try std.testing.expectEqualStrings("socks5://10.10.0.2:9050", r_ws.proxy_used);
+    try std.testing.expect(std.mem.indexOf(u8, r_ws.wire_request, "Upgrade: websocket\r\n") != null);
+
+    // 3. Dispatches `rtmps` to `StreamTransport` (status 101 + RTMP C1 handshake frame) and rotates back to weight=2 proxy
+    const r_rtmp = try adapter.execute("rtmps://ingest.stream.io:1935/live/ch1", "PUBLISH", "", "trace=rtmp_1");
+    try std.testing.expectEqual(@as(u16, 101), r_rtmp.status_code);
+    try std.testing.expectEqualStrings("socks5://10.10.0.1:9050", r_rtmp.proxy_used);
+    try std.testing.expect(std.mem.indexOf(u8, r_rtmp.wire_request, "RTMP_C1_HANDSHAKE") != null);
+
+    // 4. Verify SOCKS5 RFC 1928 and HTTP/1.1 Retry-After wire parsers directly
+    var socks_buf: [64]u8 = undefined;
+    const socks_frame = try network_mod.transports.PosixSocket.buildSocks5ConnectRequest(&socks_buf, "api.mangadex.org", 443);
+    try std.testing.expectEqual(@as(u8, 0x05), socks_frame[0]);
+    try std.testing.expectEqual(@as(u8, 0x03), socks_frame[3]);
+
+    const parsed_429 = try network_mod.transports.HttpTransport.parseHttp11Response(
+        "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 7\r\nContent-Length: 4\r\n\r\nslow",
+    );
+    try std.testing.expectEqual(@as(u16, 429), parsed_429.status_code);
+    try std.testing.expectEqual(@as(u64, 7000), parsed_429.retry_after_ms);
+    try std.testing.expectEqualStrings("slow", parsed_429.body);
+
+    // 5. Blocks SSRF attempt to cloud metadata IP (`169.254.169.254`) via `PolicyGuardMiddleware`
+    try std.testing.expectError(
+        error.NetworkPolicyDenied,
+        adapter.execute("https://169.254.169.254/latest/meta-data", "GET", "", "trace=ssrf"),
+    );
 }
