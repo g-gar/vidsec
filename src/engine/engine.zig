@@ -4,9 +4,8 @@ const dataflow = @import("flowdata_dataflow");
 const ast_mod = @import("../ast/ast.zig");
 const modules_mod = @import("../plugin/mod.zig");
 const repository_mod = @import("../repository/mod.zig");
-const network_mod = @import("../network/mod.zig");
+const network_mod = @import("../transport/outbound/mod.zig");
 const engine_net_mod = @import("network.zig");
-const tracer_mod = @import("tracer.zig");
 
 pub const PipelineAST = ast_mod.PipelineAST;
 pub const ModuleRegistry = modules_mod.ModuleRegistry;
@@ -91,6 +90,23 @@ const StepNetworkContext = struct {
     }
 };
 
+fn nowNs() u64 {
+    var ts: std.c.timespec = undefined;
+    if (std.c.clock_gettime(.REALTIME, &ts) != 0) return 0;
+    return @as(u64, @intCast(ts.sec)) * 1_000_000_000 + @as(u64, @intCast(ts.nsec));
+}
+
+var global_prng: ?std.Random.DefaultPrng = null;
+
+fn fillRandomBytes(buf: []u8) void {
+    if (global_prng == null) {
+        var seed: u64 = nowNs();
+        if (seed == 0) seed = 0x12345678_9abcdef0;
+        global_prng = std.Random.DefaultPrng.init(seed);
+    }
+    global_prng.?.random().bytes(buf);
+}
+
 /// Modern Black Box Native Zig Pipeline Execution Engine.
 /// Consumes format-agnostic PipelineAST, executes pure tasks via C-ABI,
 /// evaluates RAM predicates zero-copy, and routes payloads to polymorphic repositories.
@@ -100,6 +116,7 @@ pub const PipelineEngine = struct {
     modules: *ModuleRegistry,
     repos: *RepositoryRegistry,
     networks: ?*NetworkRegistry = null,
+    kernel: ?*@import("../kernel/mod.zig").KernelContext = null,
     workers: usize = 1,
 
     pub fn init(
@@ -115,6 +132,8 @@ pub const PipelineEngine = struct {
             .ast = ast,
             .modules = modules,
             .repos = repos,
+            .networks = null,
+            .kernel = null,
             .workers = w,
         };
     }
@@ -123,8 +142,29 @@ pub const PipelineEngine = struct {
         self.networks = nets;
     }
 
+    pub fn withKernel(self: *PipelineEngine, k: ?*@import("../kernel/mod.zig").KernelContext) void {
+        self.kernel = k;
+    }
+
     pub fn run(self: *PipelineEngine, input_payload: PayloadHandle) anyerror!ExecutionSummary {
         var summary = ExecutionSummary{};
+        const start_ns: u64 = nowNs();
+        var trace_id: [16]u8 = undefined;
+        var root_span_id: [8]u8 = undefined;
+        fillRandomBytes(&trace_id);
+        fillRandomBytes(&root_span_id);
+
+        if (self.kernel) |k| {
+            k.telemetry.emit(.{
+                .pipeline_start = .{
+                    .trace_id = trace_id,
+                    .span_id = root_span_id,
+                    .timestamp_ns = start_ns,
+                    .ast = &self.ast,
+                    .input_bytes_len = input_payload.len * input_payload.element_size,
+                },
+            });
+        }
 
         // 1. Resolve or instantiate all declared datasources
         for (self.ast.datasources) |ds_spec| {
@@ -132,7 +172,7 @@ pub const PipelineEngine = struct {
         }
 
         // 1b. Initialize EngineNetworkController to coordinate all virtual network adapters,
-        // C-ABI streams, `network.captured_events`, and `.pcapng` forensic persistence.
+        // C-ABI streams, and `network.captured_events`.
         var net_ctrl = try EngineNetworkController.init(self.allocator, self.ast, self.networks);
         defer net_ctrl.deinit();
 
@@ -144,10 +184,24 @@ pub const PipelineEngine = struct {
         var outputs: std.StringHashMapUnmanaged(PayloadHandle) = .empty;
 
         // 3. Execute main pipeline
-        try self.executeSubPipeline("main", input_payload, &outputs, outputs_alloc, &net_ctrl, &summary);
+        try self.executeSubPipeline("main", input_payload, &outputs, outputs_alloc, &net_ctrl, &summary, trace_id, root_span_id);
 
-        // 4. Flush any configured `.pcapng` captures to datasources and disk (`capture:`)
-        try net_ctrl.flushCaptures(self.repos);
+        if (self.kernel) |k| {
+            const end_ns: u64 = nowNs();
+            k.telemetry.emit(.{
+                .pipeline_end = .{
+                    .trace_id = trace_id,
+                    .span_id = root_span_id,
+                    .timestamp_ns = end_ns,
+                    .duration_ns = end_ns - start_ns,
+                    .steps_executed = summary.steps_executed,
+                    .routers_evaluated = summary.routers_evaluated,
+                    .halted_early = summary.halted_early,
+                    .final_pipeline = summary.final_pipeline,
+                },
+            });
+            try k.telemetry.flushAll(self.repos);
+        }
 
         return summary;
     }
@@ -208,6 +262,8 @@ pub const PipelineEngine = struct {
         outputs_alloc: Allocator,
         net_ctrl: *EngineNetworkController,
         summary: *ExecutionSummary,
+        trace_id: [16]u8,
+        parent_span_id: [8]u8,
     ) anyerror!void {
         const pipe = self.ast.getPipeline(name) orelse return error.UnknownSubPipeline;
         summary.final_pipeline = name;
@@ -219,10 +275,30 @@ pub const PipelineEngine = struct {
 
             switch (step) {
                 .task => |task_spec| {
+                    var step_span_id: [8]u8 = undefined;
+                    fillRandomBytes(&step_span_id);
+                    const step_start_ns: u64 = nowNs();
+
                     // Resolve input stream expression via Dataflow algebra
                     var step_input = current_input;
                     if (task_spec.inputs.len > 0) {
                         step_input = try self.resolveStreamExpr(task_spec.inputs[0].expr, current_input, outputs);
+                    }
+
+                    if (self.kernel) |k| {
+                        k.telemetry.emit(.{
+                            .step_start = .{
+                                .trace_id = trace_id,
+                                .span_id = step_span_id,
+                                .parent_span_id = parent_span_id,
+                                .timestamp_ns = step_start_ns,
+                                .pipeline_name = name,
+                                .step_id = task_spec.id,
+                                .module_name = task_spec.module,
+                                .task_name = task_spec.task,
+                                .input_count = step_input.len,
+                            },
+                        });
                     }
 
                     // Apply step-level declarative predicate filter if configured
@@ -270,6 +346,22 @@ pub const PipelineEngine = struct {
 
                     const task_output = outcome.output;
 
+                    if (self.kernel) |k| {
+                        const step_end_ns: u64 = nowNs();
+                        k.telemetry.emit(.{
+                            .step_end = .{
+                                .trace_id = trace_id,
+                                .span_id = step_span_id,
+                                .timestamp_ns = step_end_ns,
+                                .duration_ns = step_end_ns - step_start_ns,
+                                .pipeline_name = name,
+                                .step_id = task_spec.id,
+                                .status = if (outcome.status == .ok) "ok" else "warning",
+                                .output_count = task_output.len,
+                            },
+                        });
+                    }
+
                     // Store output by task ID
                     try outputs.put(outputs_alloc, task_spec.id, task_output);
                     current_input = task_output;
@@ -307,6 +399,8 @@ pub const PipelineEngine = struct {
                 .router => |router_spec| {
                     summary.routers_evaluated += 1;
                     var branched = false;
+                    var matched_expr: ?[]const u8 = null;
+                    var target_pipe: ?[]const u8 = null;
 
                     for (router_spec.cases) |case| {
                         var eval_handle = current_input;
@@ -318,10 +412,27 @@ pub const PipelineEngine = struct {
                         const matched = dataflow.predicate.evaluatePredicateHandle(eval_handle, case.when_predicate);
                         if (matched) {
                             branched = true;
+                            matched_expr = case.when_predicate;
+                            target_pipe = case.goto_pipeline;
+                            if (self.kernel) |k| {
+                                var router_span_id: [8]u8 = undefined;
+                                fillRandomBytes(&router_span_id);
+                                k.telemetry.emit(.{
+                                    .router_decision = .{
+                                        .trace_id = trace_id,
+                                        .span_id = router_span_id,
+                                        .timestamp_ns = nowNs(),
+                                        .pipeline_name = name,
+                                        .router_id = router_spec.id,
+                                        .matched_expression = matched_expr,
+                                        .target_pipeline = target_pipe,
+                                    },
+                                });
+                            }
                             if (std.mem.eql(u8, case.goto_pipeline, "continue")) {
                                 break;
                             } else {
-                                try self.executeSubPipeline(case.goto_pipeline, current_input, outputs, outputs_alloc, net_ctrl, summary);
+                                try self.executeSubPipeline(case.goto_pipeline, current_input, outputs, outputs_alloc, net_ctrl, summary, trace_id, parent_span_id);
                                 break;
                             }
                         }
@@ -329,8 +440,24 @@ pub const PipelineEngine = struct {
 
                     if (!branched) {
                         if (router_spec.default_pipeline) |def_pipe| {
+                            target_pipe = def_pipe;
+                            if (self.kernel) |k| {
+                                var router_span_id: [8]u8 = undefined;
+                                fillRandomBytes(&router_span_id);
+                                k.telemetry.emit(.{
+                                    .router_decision = .{
+                                        .trace_id = trace_id,
+                                        .span_id = router_span_id,
+                                        .timestamp_ns = nowNs(),
+                                        .pipeline_name = name,
+                                        .router_id = router_spec.id,
+                                        .matched_expression = null,
+                                        .target_pipeline = target_pipe,
+                                    },
+                                });
+                            }
                             if (!std.mem.eql(u8, def_pipe, "continue")) {
-                                try self.executeSubPipeline(def_pipe, current_input, outputs, outputs_alloc, net_ctrl, summary);
+                                try self.executeSubPipeline(def_pipe, current_input, outputs, outputs_alloc, net_ctrl, summary, trace_id, parent_span_id);
                             }
                         }
                     }

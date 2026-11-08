@@ -9,4 +9,7 @@ test {
     _ = @import("core/pipeline_yaml_ast_test.zig");
     _ = @import("core/network_test.zig");
     _ = @import("core/host_transport_test.zig");
+    _ = @import("core/kernel_extension_test.zig");
+    _ = @import("core/otel_extension_test.zig");
+    _ = @import("core/dag_viz_extension_test.zig");
 }

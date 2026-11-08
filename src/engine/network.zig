@@ -3,7 +3,7 @@ const Allocator = std.mem.Allocator;
 const ast_mod = @import("../ast/ast.zig");
 const dataflow = @import("flowdata_dataflow");
 const repository_mod = @import("../repository/mod.zig");
-const network_mod = @import("../network/mod.zig");
+const network_mod = @import("../transport/outbound/mod.zig");
 const runner_mod = @import("runner.zig");
 
 pub const NetworkRegistry = network_mod.NetworkRegistry;
@@ -41,7 +41,7 @@ pub const ActiveStreamEntry = struct {
 
 /// Engine-level coordinator bridging `PipelineAST` (`networks:` + `runtime.default_network`),
 /// step-scoped C-ABI network operations (`net_request`, `net_connect`, `net_send`, `net_recv`, `net_close`),
-/// `network.captured_events` dataflow materialization, and `.pcapng` forensic persistence to datasources and disk.
+/// and `network.captured_events` dataflow materialization.
 pub const EngineNetworkController = struct {
     allocator: Allocator,
     arena: std.heap.ArenaAllocator,
@@ -255,44 +255,6 @@ pub const EngineNetworkController = struct {
         }
         return events;
     }
-
-    /// Flushes and persists all `.pcapng` forensic captures configured in `ast.networks` to:
-    /// 1. `capture.datasource` (`RepositoryRegistry` channel `capture.channel`, default `"pcap_packets"`)
-    /// 2. `capture.path` on disk (with ring-buffer rotation `max_file_size_mb` / `max_files`).
-    pub fn flushCaptures(self: *EngineNetworkController, repos: *RepositoryRegistry) !void {
-        const reg = self.registryConst();
-        for (self.network_specs) |net_spec| {
-            if (!net_spec.capture.enabled) continue;
-            const adapter = reg.get(net_spec.id) orelse continue;
-            const pcap_bytes = adapter.pcapBytes() orelse continue;
-            if (pcap_bytes.len == 0) continue;
-
-            // 1. Persist to configured Datasource Repository (`capture.datasource`)
-            if (net_spec.capture.datasource) |ds_name| {
-                if (repos.get(ds_name)) |repo| {
-                    const ch_name = if (net_spec.capture.channel.len > 0)
-                        net_spec.capture.channel
-                    else
-                        "pcap_packets";
-                    const handle = PayloadHandle.fromSlice(u8, pcap_bytes);
-                    try repo.writePayload(ch_name, handle);
-                }
-            }
-
-            // 2. Persist to configured File Path (`capture.path`) with ring-buffer rotation
-            if (net_spec.capture.path) |file_path| {
-                if (file_path.len > 0) {
-                    try writePcapWithRotation(
-                        self.allocator,
-                        file_path,
-                        pcap_bytes,
-                        net_spec.capture.max_file_size_mb,
-                        net_spec.capture.max_files,
-                    );
-                }
-            }
-        }
-    }
 };
 
 pub fn mapRecordToNetworkEvent(rec: CapturedExchangeRecord, fallback_step_id: []const u8) NetworkEvent {
@@ -320,38 +282,4 @@ fn extractStepIdFromTraceTag(trace_tag: []const u8) ?[]const u8 {
     const end_idx = std.mem.indexOfScalar(u8, after, ' ') orelse after.len;
     const val = after[0..end_idx];
     return if (val.len > 0) val else null;
-}
-
-fn writePcapWithRotation(
-    allocator: Allocator,
-    base_path: []const u8,
-    pcap_bytes: []const u8,
-    max_file_size_mb: usize,
-    max_files: usize,
-) !void {
-    const max_bytes: usize = if (max_file_size_mb > 0)
-        max_file_size_mb * 1024 * 1024
-    else
-        pcap_bytes.len;
-
-    if (max_bytes == 0 or pcap_bytes.len <= max_bytes or max_files <= 1) {
-        try runner_mod.writeFileBytes(allocator, base_path, pcap_bytes);
-        return;
-    }
-
-    // Ring-buffer rotation across `<base_path>.0`, `<base_path>.1`, ... up to `max_files`
-    var offset: usize = 0;
-    var part_idx: usize = 0;
-    while (offset < pcap_bytes.len) : (part_idx += 1) {
-        const chunk_len = @min(max_bytes, pcap_bytes.len - offset);
-        const slot = part_idx % max_files;
-        const rotated_path = try std.fmt.allocPrint(allocator, "{s}.{d}", .{ base_path, slot });
-        defer allocator.free(rotated_path);
-
-        try runner_mod.writeFileBytes(allocator, rotated_path, pcap_bytes[offset .. offset + chunk_len]);
-        offset += chunk_len;
-    }
-
-    // Also write the primary file so tools inspecting `base_path` directly find valid PCAPNG data
-    try runner_mod.writeFileBytes(allocator, base_path, pcap_bytes);
 }

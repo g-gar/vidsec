@@ -169,3 +169,88 @@ test "HostApp: Declarative Entrypoint Execution" {
     );
     try std.testing.expectEqual(@as(u8, 0), rc_val);
 }
+
+test "Inbound: Dynamic Inbound Transport Registration and Custom Command Dispatch" {
+    const alloc = std.testing.allocator;
+
+    // 1. Custom Command registration on InboundDispatcher
+    var dispatcher = host.InboundDispatcher.init(alloc, .{
+        .app_name = "test_app",
+        .version = "1.0.0",
+    });
+    defer dispatcher.deinit();
+
+    const DummyCustom = struct {
+        fn handleCmd(_: ?*anyopaque, a: std.mem.Allocator, req: host.InvocationRequest) anyerror!host.InvocationResponse {
+            const out = try std.fmt.allocPrint(a, "Executed custom {s}", .{req.custom_command_name});
+            return .{
+                .status = .ok,
+                .message = out,
+                .output_bytes = out,
+                .exit_code = 0,
+            };
+        }
+    };
+
+    try dispatcher.registerCommand("my-cmd", .{
+        .ptr = null,
+        .handler = &DummyCustom.handleCmd,
+    });
+
+    const res = try dispatcher.handle(.{
+        .command = .custom,
+        .custom_command_name = "my-cmd",
+        .options = .{ .pipeline_yaml_path = "" },
+    });
+    try std.testing.expectEqual(host.InvocationStatus.ok, res.status);
+    try std.testing.expectEqualStrings("Executed custom my-cmd", res.message);
+
+    // 2. Custom Inbound Transport registration on InboundRegistry
+    const MockInboundTransport = struct {
+        invoked: bool = false,
+
+        pub fn inboundTransport(self: *@This()) host.InboundTransport {
+            const Self = @This();
+            const Trampoline = struct {
+                fn doName(_: *const anyopaque) []const u8 {
+                    return "mock_inbound";
+                }
+                fn doServe(ctx: *anyopaque, _: host.DispatcherPtr, _: host.DispatchFn) anyerror!u8 {
+                    const s: *Self = @ptrCast(@alignCast(ctx));
+                    s.invoked = true;
+                    return 42;
+                }
+                fn doDeinit(ctx: *anyopaque, a: std.mem.Allocator) void {
+                    const s: *Self = @ptrCast(@alignCast(ctx));
+                    a.destroy(s);
+                }
+                const vtable = host.InboundTransport.VTable{
+                    .name = &doName,
+                    .serve = &doServe,
+                    .deinit = &doDeinit,
+                };
+            };
+            return .{ .ptr = self, .vtable = &Trampoline.vtable };
+        }
+
+        pub fn createDaemon(a: std.mem.Allocator, _: host.InboundTransportConfig) anyerror!host.InboundTransport {
+            const s = try a.create(@This());
+            s.* = .{ .invoked = false };
+            return s.inboundTransport();
+        }
+    };
+
+    var inbound_reg = try host.InboundRegistry.init(alloc);
+    defer inbound_reg.deinit();
+
+    try inbound_reg.register("mock_inbound", &MockInboundTransport.createDaemon);
+
+    var custom_transport = try inbound_reg.create("mock_inbound", .{
+        .listen_address = "custom://socket",
+    });
+    defer custom_transport.deinit(alloc);
+
+    try std.testing.expectEqualStrings("mock_inbound", custom_transport.name());
+    const rc = try custom_transport.serve(&dispatcher, &host.InboundDispatcher.dispatchOpaque);
+    try std.testing.expectEqual(@as(u8, 42), rc);
+}

@@ -3,7 +3,7 @@ const Allocator = std.mem.Allocator;
 const abi = @import("flowdata_plugin");
 const dataflow = @import("flowdata_dataflow");
 const ast_mod = @import("../../ast/ast.zig");
-const network_mod = @import("../../network/mod.zig");
+const network_mod = @import("../../transport/outbound/mod.zig");
 
 pub const PayloadHandle = dataflow.PayloadHandle;
 pub const ReflectedValue = dataflow.ReflectedValue;

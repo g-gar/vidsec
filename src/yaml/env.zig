@@ -9,16 +9,20 @@ pub const EnvError = error{
     OutOfMemory,
 };
 
+pub const SchemeResolverFn = *const fn (allocator: Allocator, scheme: []const u8, key: []const u8) ?[]const u8;
+
 /// Flowdata `.env` file parser and `${VAR}` / `${VAR:-default}` string interpolator.
 /// Adapts into `lib/yaml` via `env.scalarHook()`.
 pub const EnvInterpolator = struct {
     vars: std.StringHashMapUnmanaged([]const u8) = .{},
     use_process_env: bool = true,
+    scheme_resolver: ?SchemeResolverFn = null,
 
     pub fn init(use_process_env: bool) EnvInterpolator {
         return .{
             .vars = .{},
             .use_process_env = use_process_env,
+            .scheme_resolver = null,
         };
     }
 
@@ -126,6 +130,18 @@ pub const EnvInterpolator = struct {
                         }
                     } else {
                         try out.appendSlice(arena, default_val);
+                    }
+                } else if (std.mem.indexOfScalar(u8, expr, ':')) |colon_idx| {
+                    const scheme = expr[0..colon_idx];
+                    const key = expr[colon_idx + 1 ..];
+                    if (self.scheme_resolver) |resolver| {
+                        if (resolver(arena, scheme, key)) |resolved| {
+                            try out.appendSlice(arena, resolved);
+                        } else {
+                            return error.MissingRequiredEnvVar;
+                        }
+                    } else {
+                        return error.MissingRequiredEnvVar;
                     }
                 } else {
                     const var_name = expr;

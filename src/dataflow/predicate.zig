@@ -14,6 +14,9 @@ pub const ComparisonOp = enum {
     truthy,
 };
 
+pub const CustomPredicateEvaluatorFn = *const fn (fn_name: []const u8, arg: ReflectedValue, param_literal: []const u8) ?bool;
+pub var global_custom_predicate_evaluator: ?CustomPredicateEvaluatorFn = null;
+
 /// Evaluates a declarative predicate condition (e.g. `role == 'padding' and score >= 0.8`)
 /// directly against any native Zig struct using compile-time reflection (zero boxing).
 pub fn evaluatePredicate(comptime T: type, item: *const T, expr: []const u8) bool {
@@ -123,6 +126,24 @@ fn evaluateSingleComparison(comptime T: type, item: *const T, raw_clause: []cons
     }
 
     if (op == .truthy) {
+        if (std.mem.indexOfScalar(u8, c, '(')) |open_paren| {
+            if (std.mem.endsWith(u8, c, ")")) {
+                const fn_name = std.mem.trim(u8, c[0..open_paren], " \t");
+                const inner = std.mem.trim(u8, c[open_paren + 1 .. c.len - 1], " \t");
+                var field_name = inner;
+                var param_literal: []const u8 = "";
+                if (std.mem.indexOfScalar(u8, inner, ',')) |comma| {
+                    field_name = std.mem.trim(u8, inner[0..comma], " \t");
+                    param_literal = std.mem.trim(u8, inner[comma + 1 ..], " \t'\"");
+                }
+                const val = resolveOperand(T, item, field_name);
+                if (global_custom_predicate_evaluator) |evaluator| {
+                    if (evaluator(fn_name, val, param_literal)) |res| {
+                        return res;
+                    }
+                }
+            }
+        }
         const val = resolveOperand(T, item, c);
         return val.isTruthy();
     }
@@ -179,6 +200,24 @@ fn evaluateSingleComparisonHandle(payload: types.PayloadHandle, raw_clause: []co
     }
 
     if (op == .truthy) {
+        if (std.mem.indexOfScalar(u8, c, '(')) |open_paren| {
+            if (std.mem.endsWith(u8, c, ")")) {
+                const fn_name = std.mem.trim(u8, c[0..open_paren], " \t");
+                const inner = std.mem.trim(u8, c[open_paren + 1 .. c.len - 1], " \t");
+                var field_name = inner;
+                var param_literal: []const u8 = "";
+                if (std.mem.indexOfScalar(u8, inner, ',')) |comma| {
+                    field_name = std.mem.trim(u8, inner[0..comma], " \t");
+                    param_literal = std.mem.trim(u8, inner[comma + 1 ..], " \t'\"");
+                }
+                const val = resolveOperandHandle(payload, field_name);
+                if (global_custom_predicate_evaluator) |evaluator| {
+                    if (evaluator(fn_name, val, param_literal)) |res| {
+                        return res;
+                    }
+                }
+            }
+        }
         const val = resolveOperandHandle(payload, c);
         return val.isTruthy();
     }

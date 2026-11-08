@@ -1,4 +1,5 @@
 const std = @import("std");
+const flowdata = @import("flowdata");
 const vidsec = @import("vidsec");
 const yaml_mod = vidsec.yaml;
 const ast_mod = vidsec.pipeline_ast;
@@ -304,9 +305,15 @@ test "End-to-End PipelineEngine & EngineNetworkController: Isolation, Streams, S
 
     var net_reg = network_mod.NetworkRegistry.init(alloc);
     defer net_reg.deinit();
+    try extensions.pcapng.registerOutboundSink(&net_reg);
+
+    var k = try flowdata.kernel.KernelContext.init(alloc);
+    defer k.deinit();
+    try k.use(extensions.pcapng.extension);
 
     var engine = pipeline.PipelineEngine.init(alloc, parsed_ast, &modules, &repos);
     engine.withNetworks(&net_reg);
+    engine.withKernel(&k);
 
     const dummy_bytes = "manga-seed-payload";
     const summary = try engine.run(pipeline.PayloadHandle.fromSlice(u8, dummy_bytes));
@@ -420,4 +427,85 @@ test "Standalone Lego Composition: Domain-Agnostic MiddlewareChain, Wire Framing
         error.NetworkPolicyDenied,
         adapter.execute("https://169.254.169.254/latest/meta-data", "GET", "", "trace=ssrf"),
     );
+}
+
+test "Outbound: Dynamic Protocol and Middleware Registration in OutboundRegistry" {
+    const alloc = std.testing.allocator;
+
+    const CustomProtocol = struct {
+        invoked: bool = false,
+        pub fn protocolTransport(self: *@This()) network_mod.ProtocolTransport {
+            const Self = @This();
+            const Trampoline = struct {
+                const schemes_arr = [_][]const u8{"customproto"};
+                fn doSchemes(_: *const anyopaque) []const []const u8 {
+                    return &schemes_arr;
+                }
+                fn doRoundTrip(ctx: *anyopaque, exchange: *network_mod.NetExchange) network_mod.NetError!network_mod.NetResult {
+                    const s: *Self = @ptrCast(@alignCast(ctx));
+                    s.invoked = true;
+                    return network_mod.NetResult{
+                        .status_code = 200,
+                        .effective_url = exchange.effective_url,
+                        .body = "customproto_response",
+                        .verdict = .allowed,
+                    };
+                }
+                fn doDeinit(_: *anyopaque, _: std.mem.Allocator) void {}
+                const vtable = network_mod.ProtocolTransport.VTable{
+                    .schemes = &doSchemes,
+                    .roundTrip = &doRoundTrip,
+                    .deinit = &doDeinit,
+                };
+            };
+            return .{ .ptr = self, .vtable = &Trampoline.vtable };
+        }
+    };
+
+    const CustomMiddleware = struct {
+        invoked: bool = false,
+        pub fn netMiddleware(self: *@This()) network_mod.NetMiddleware {
+            const Self = @This();
+            const Trampoline = struct {
+                fn doIntercept(ctx: *anyopaque, exchange: *network_mod.NetExchange, next: network_mod.NextHandler) network_mod.NetError!network_mod.NetResult {
+                    const s: *Self = @ptrCast(@alignCast(ctx));
+                    s.invoked = true;
+                    return next.next(exchange);
+                }
+                fn doDeinit(_: *anyopaque, _: std.mem.Allocator) void {}
+                const vtable = network_mod.NetMiddleware.VTable{
+                    .intercept = &doIntercept,
+                    .deinit = &doDeinit,
+                };
+            };
+            return .{ .ptr = self, .vtable = &Trampoline.vtable };
+        }
+    };
+
+    var net_reg = network_mod.NetworkRegistry.init(alloc);
+    defer net_reg.deinit();
+
+    var custom_proto = CustomProtocol{};
+    try net_reg.registerProtocol(custom_proto.protocolTransport());
+
+    var custom_mw = CustomMiddleware{};
+    const MwFactory = struct {
+        var instance: *CustomMiddleware = undefined;
+        fn factory(_: std.mem.Allocator, _: network_mod.AdapterConfig) anyerror!?network_mod.NetMiddleware {
+            return instance.netMiddleware();
+        }
+    };
+    MwFactory.instance = &custom_mw;
+    try net_reg.registerMiddlewareFactory(&MwFactory.factory);
+
+    const adapter = try net_reg.resolveOrCreate(network_mod.AdapterConfig{
+        .id = "custom_egress",
+        .driver = .egress,
+    });
+
+    const res = try adapter.execute("customproto://test/item", "GET", "", "trace=123");
+    try std.testing.expectEqual(@as(u16, 200), res.status_code);
+    try std.testing.expectEqualStrings("customproto_response", res.body);
+    try std.testing.expect(custom_proto.invoked);
+    try std.testing.expect(custom_mw.invoked);
 }

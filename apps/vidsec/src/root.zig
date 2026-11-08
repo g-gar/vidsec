@@ -37,7 +37,40 @@ pub const forensics = @import("vidsec_forensics");
 pub const yaml = flowdata.yaml;
 
 /// Flowdata Pipeline Execution Engine, Managed Artifact Store, and JSONL Tracer.
-pub const pipeline = flowdata;
+pub const extensions = @import("vidsec_extensions");
+pub const artifact = extensions.artifact;
+pub const tracer = extensions.trace_jsonl;
+pub const ManagedBuffer = artifact.ManagedBuffer;
+pub const ArtifactStore = artifact.ArtifactStore;
+
+pub const pipeline = struct {
+    pub const ManagedBuffer = extensions.artifact.ManagedBuffer;
+    pub const ArtifactStore = extensions.artifact.ArtifactStore;
+    pub const artifact = extensions.artifact;
+
+    pub const PipelineAST = flowdata.PipelineAST;
+    pub const PipelineBuilder = flowdata.PipelineBuilder;
+    pub const PipelineEngine = flowdata.PipelineEngine;
+    pub const ModuleRegistry = flowdata.ModuleRegistry;
+    pub const PluginRegistry = flowdata.PluginRegistry;
+    pub const RepositoryRegistry = flowdata.RepositoryRegistry;
+    pub const validateManifest = flowdata.validateManifest;
+    pub const verifySafeModulePermissions = flowdata.verifySafeModulePermissions;
+    pub const PayloadHandle = flowdata.PayloadHandle;
+    pub const readFileBytes = flowdata.readFileBytes;
+    pub const writeFileBytes = flowdata.writeFileBytes;
+    pub const NetworkEvent = flowdata.NetworkEvent;
+    pub const ExecutionSummary = flowdata.ExecutionSummary;
+    pub const EngineNetworkController = flowdata.EngineNetworkController;
+    pub const NetworkAdapter = flowdata.NetworkAdapter;
+    pub const NetworkRegistry = flowdata.NetworkRegistry;
+    pub const repository = flowdata.repository;
+    pub const ast = flowdata.ast;
+    pub const dataflow = flowdata.dataflow;
+    pub const yaml = flowdata.yaml;
+    pub const host = flowdata.host;
+    pub const network = flowdata.network;
+};
 pub const pipeline_ast = flowdata.ast;
 pub const PipelineAST = flowdata.PipelineAST;
 pub const PipelineEngine = flowdata.PipelineEngine;
@@ -71,8 +104,6 @@ pub const plugin = struct {
 };
 
 /// Vidsec Flowdata Extensions (Datasources: memory, file_store, sqlite)
-pub const extensions = @import("vidsec_extensions");
-
 pub const EnvInterpolator = yaml.EnvInterpolator;
 pub const YamlNode = yaml.YamlNode;
 

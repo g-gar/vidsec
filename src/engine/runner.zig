@@ -1,7 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const yaml_core = @import("../yaml/mod.zig");
-const artifact_mod = @import("artifact.zig");
 const engine_mod = @import("engine.zig");
 const ast_mod = @import("../ast/ast.zig");
 const plugin_mod = @import("../plugin/mod.zig");
@@ -75,6 +74,7 @@ pub const RunnerOptions = struct {
     artifact_exports: []const ArtifactExportSpec = &.{},
     load_shared_modules: bool = true,
     driver_initializer: ?DriverInitializerFn = null,
+    kernel: ?*@import("../kernel/mod.zig").KernelContext = null,
 };
 
 /// High-level coordinator that loads `.env` and `pipeline.yaml`,
@@ -94,15 +94,33 @@ pub const PipelineRunner = struct {
         const arena = config_arena.allocator();
 
         var env_interp = yaml_core.EnvInterpolator.init(true);
+        if (options.kernel) |k| {
+            const S = struct {
+                var kernel_ptr: ?*@import("../kernel/mod.zig").KernelContext = null;
+                fn resolve(a: Allocator, scheme: []const u8, key: []const u8) ?[]const u8 {
+                    if (kernel_ptr) |kp| {
+                        return kp.dsl.resolveEnvScheme(a, scheme, key);
+                    }
+                    return null;
+                }
+            };
+            S.kernel_ptr = k;
+            env_interp.scheme_resolver = &S.resolve;
+        }
+
         if (options.dotenv_path) |env_path| {
             const env_bytes = try readFileBytes(arena, env_path);
             try env_interp.parseDotEnv(arena, env_bytes);
         }
 
         const pipeline_yaml_bytes = try readFileBytes(arena, options.pipeline_yaml_path);
-        const pipeline_ast = try yaml_core.loadPipelineAstFromYaml(arena, pipeline_yaml_bytes, .{
+        var pipeline_ast = try yaml_core.loadPipelineAstFromYaml(arena, pipeline_yaml_bytes, .{
             .env_interpolator = &env_interp,
         });
+
+        if (options.kernel) |k| {
+            try k.ast_passes.runAll(&pipeline_ast);
+        }
 
         var registry = plugin_mod.ModuleRegistry.init(allocator);
         errdefer registry.deinit();
@@ -117,6 +135,12 @@ pub const PipelineRunner = struct {
         errdefer repos.deinit();
         if (options.driver_initializer) |init_fn| {
             try init_fn(&repos);
+        }
+        if (options.kernel) |k| {
+            var it = k.datasources.drivers.iterator();
+            while (it.next()) |entry| {
+                try repos.registerDriver(entry.key_ptr.*, entry.value_ptr.*);
+            }
         }
 
         return PipelineRunner{
@@ -203,6 +227,20 @@ pub const PipelineRunner = struct {
         options: RunnerOptions,
     ) anyerror!engine_mod.ExecutionSummary {
         _ = options;
+        if (self.options.kernel) |k| {
+            const S = struct {
+                var kernel_ptr: ?*@import("../kernel/mod.zig").KernelContext = null;
+                fn eval(fn_name: []const u8, arg: dataflow.ReflectedValue, param: []const u8) ?bool {
+                    if (kernel_ptr) |kp| {
+                        return kp.dsl.evaluatePredicate(fn_name, arg, param);
+                    }
+                    return null;
+                }
+            };
+            S.kernel_ptr = k;
+            dataflow.predicate.global_custom_predicate_evaluator = &S.eval;
+        }
+
         const file_bytes = try readFileBytes(self.allocator, input_file_path);
         defer self.allocator.free(file_bytes);
 
@@ -212,6 +250,7 @@ pub const PipelineRunner = struct {
             &self.registry,
             &self.repos,
         );
+        eng.withKernel(self.options.kernel);
 
         const input_payload = dataflow.PayloadHandle.fromSlice(u8, file_bytes);
         return try eng.run(input_payload);
@@ -224,12 +263,27 @@ pub const PipelineRunner = struct {
         options: RunnerOptions,
     ) anyerror!engine_mod.ExecutionSummary {
         _ = options;
+        if (self.options.kernel) |k| {
+            const S = struct {
+                var kernel_ptr: ?*@import("../kernel/mod.zig").KernelContext = null;
+                fn eval(fn_name: []const u8, arg: dataflow.ReflectedValue, param: []const u8) ?bool {
+                    if (kernel_ptr) |kp| {
+                        return kp.dsl.evaluatePredicate(fn_name, arg, param);
+                    }
+                    return null;
+                }
+            };
+            S.kernel_ptr = k;
+            dataflow.predicate.global_custom_predicate_evaluator = &S.eval;
+        }
+
         var eng = engine_mod.PipelineEngine.init(
             self.allocator,
             self.ast,
             &self.registry,
             &self.repos,
         );
+        eng.withKernel(self.options.kernel);
 
         const input_payload = dataflow.PayloadHandle.fromSlice(u8, bytes);
         return try eng.run(input_payload);

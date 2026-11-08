@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const repository = @import("../repository/mod.zig");
-const network = @import("../network/mod.zig");
+const network = @import("../transport/outbound/mod.zig");
 
 // =============================================================================
 // RUNTIME, NETWORK, AND DATASOURCE SPECIFICATIONS

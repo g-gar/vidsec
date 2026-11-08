@@ -31,13 +31,15 @@ pub fn build(b: *std.Build) void {
     flowdata_mod.addImport("flowdata_abi", plugin_mod);
     flowdata_mod.addImport("flowdata_dataflow", dataflow_mod);
 
-    // 3b. Flowdata Network module
-    const network_mod = b.addModule("flowdata_network", .{
-        .root_source_file = b.path("src/network.zig"),
+    // 3b. Flowdata Transport module (flowdata_transport + flowdata_network alias)
+    const transport_mod = b.addModule("flowdata_transport", .{
+        .root_source_file = b.path("src/transport.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
-    network_mod.addImport("flowdata", flowdata_mod);
+    transport_mod.addImport("flowdata", flowdata_mod);
+    b.modules.put(b.allocator, b.dupe("flowdata_network"), transport_mod) catch @panic("OOM");
 
     // 4. Extensions: Datasource drivers
     const ds_memory_mod = b.addModule("flowdata_datasource_memory", .{
@@ -100,6 +102,7 @@ pub fn build(b: *std.Build) void {
 
     test_suite_mod.linkSystemLibrary("sqlite3", .{});
     test_suite_mod.addImport("flowdata", flowdata_mod);
+    test_suite_mod.addImport("flowdata_extensions", extensions_mod);
     test_suite_mod.addImport("flowdata_plugin", plugin_mod);
     test_suite_mod.addImport("flowdata_abi", plugin_mod);
     test_suite_mod.addImport("vidsec", vidsec_shim_mod);

@@ -12,3 +12,12 @@ pub fn registerDefaultDrivers(registry: *flowdata.repository.RepositoryRegistry)
     try registry.registerDriver("file_store", &file_store.FileStoreRepository.createHeap);
     try registry.registerDriver("sqlite", &sqlite.SqliteRepository.createHeap);
 }
+
+pub const extension = flowdata.kernel.Extension.fromStateless(
+    "flowdata.datasources.default",
+    &registerExtension,
+);
+
+pub fn registerExtension(kernel: *flowdata.kernel.KernelContext) anyerror!void {
+    try registerDefaultDrivers(&kernel.datasources);
+}
