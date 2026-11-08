@@ -1,7 +1,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const contracts = @import("../contracts/mod.zig");
-const registry_mod = @import("../registry.zig");
+const flowdata = @import("flowdata");
+const contracts = flowdata.transport.inbound.contracts;
+const registry_mod = flowdata.transport.inbound.registry;
 
 pub const InboundTransport = contracts.InboundTransport;
 pub const HostTransport = contracts.HostTransport;

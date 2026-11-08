@@ -8,5 +8,10 @@ pub fn main(init: std.process.Init) !u8 {
         .description = "Declarative Multimedia Security & Transformation Engine",
         .version = build_options.version_string,
         .driver_initializer = &vidsec.extensions.datasources.registerDefaultDrivers,
+        .extensions = &.{
+            vidsec.extensions.inbound_cli.extension,
+            vidsec.extensions.inbound_http.extension,
+            vidsec.extensions.inbound_grpc.extension,
+        },
     });
 }

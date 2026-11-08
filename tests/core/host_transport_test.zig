@@ -1,7 +1,7 @@
 const std = @import("std");
 const vidsec = @import("vidsec");
 const flowdata = @import("flowdata");
-const host = flowdata.host;
+const host = vidsec.host;
 const abi = vidsec.abi;
 const pipeline = vidsec.pipeline;
 
@@ -63,6 +63,9 @@ test "HttpServerTransport: REST API routing, status codes, and execution" {
         .description = "Vidsec REST Daemon",
         .version = "2.0.0",
         .driver_initializer = &vidsec.extensions.datasources.registerDefaultDrivers,
+        .extensions = &.{
+            vidsec.extensions.inbound_cli.extension,
+        },
     });
     defer dispatcher.deinit();
 
@@ -121,6 +124,9 @@ test "GrpcTransport: Binary Framing and PipelineService Dispatch" {
         .app_name = "vidsec_grpc",
         .version = "2.0.0",
         .driver_initializer = &vidsec.extensions.datasources.registerDefaultDrivers,
+        .extensions = &.{
+            vidsec.extensions.inbound_cli.extension,
+        },
     });
     defer dispatcher.deinit();
 
@@ -151,6 +157,9 @@ test "HostApp: Declarative Entrypoint Execution" {
         .description = "CLI Test App",
         .version = "2.0.0",
         .driver_initializer = &vidsec.extensions.datasources.registerDefaultDrivers,
+        .extensions = &.{
+            vidsec.extensions.inbound_cli.extension,
+        },
     };
 
     // 1. Invocation with `--version` returns 0
@@ -240,7 +249,7 @@ test "Inbound: Dynamic Inbound Transport Registration and Custom Command Dispatc
         }
     };
 
-    var inbound_reg = try host.InboundRegistry.init(alloc);
+    var inbound_reg = host.InboundRegistry.init(alloc);
     defer inbound_reg.deinit();
 
     try inbound_reg.register("mock_inbound", &MockInboundTransport.createDaemon);
@@ -253,4 +262,43 @@ test "Inbound: Dynamic Inbound Transport Registration and Custom Command Dispatc
     try std.testing.expectEqualStrings("mock_inbound", custom_transport.name());
     const rc = try custom_transport.serve(&dispatcher, &host.InboundDispatcher.dispatchOpaque);
     try std.testing.expectEqual(@as(u8, 42), rc);
+}
+
+test "NetworkTimeouts: Unified Inbound and Outbound Configuration" {
+    const NetworkTimeouts = flowdata.transport.NetworkTimeouts;
+
+    // 1. Common NetworkTimeouts defaults
+    const default_timeouts = NetworkTimeouts{};
+    try std.testing.expectEqual(@as(u64, 3_000), default_timeouts.connect_ms);
+    try std.testing.expectEqual(@as(u64, 10_000), default_timeouts.read_idle_ms);
+    try std.testing.expectEqual(@as(u64, 5_000), default_timeouts.write_idle_ms);
+    try std.testing.expectEqual(@as(u64, 3_000), default_timeouts.connectTimeoutMs());
+    try std.testing.expectEqual(@as(u64, 10_000), default_timeouts.readTimeoutMs());
+
+    // 2. Outbound AdapterConfig uses unified NetworkTimeouts
+    const out_cfg = flowdata.transport.outbound.contracts.AdapterConfig{
+        .id = "test_egress",
+        .driver = .egress,
+        .timeouts = .{
+            .connect_ms = 4_500,
+            .read_idle_ms = 12_000,
+        },
+    };
+    try std.testing.expectEqual(@as(u64, 4_500), out_cfg.timeouts.connect_ms);
+    try std.testing.expectEqual(@as(u64, 12_000), out_cfg.timeouts.read_idle_ms);
+
+    // 3. Inbound ServeConfig & InboundTransportConfig use unified NetworkTimeouts
+    const serve_cfg = flowdata.transport.inbound.ServeConfig{
+        .timeouts = .{
+            .connect_ms = 1_500,
+            .read_idle_ms = 8_000,
+        },
+    };
+    try std.testing.expectEqual(@as(u64, 1_500), serve_cfg.timeouts.connect_ms);
+    try std.testing.expectEqual(@as(u64, 8_000), serve_cfg.timeouts.read_idle_ms);
+
+    const in_trans_cfg = flowdata.transport.inbound.InboundTransportConfig{
+        .timeouts = serve_cfg.timeouts,
+    };
+    try std.testing.expectEqual(@as(u64, 1_500), in_trans_cfg.timeouts.connect_ms);
 }

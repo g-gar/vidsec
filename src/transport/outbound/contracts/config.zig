@@ -104,12 +104,9 @@ pub const PoolSpec = struct {
 };
 pub const PoolConfig = PoolSpec;
 
-pub const TimeoutsSpec = struct {
-    connect_ms: u64 = 3000,
-    tls_handshake_ms: u64 = 3000,
-    read_idle_ms: u64 = 10000,
-    write_idle_ms: u64 = 5000,
-};
+pub const NetworkTimeouts = @import("../../common/timeouts.zig").NetworkTimeouts;
+pub const TimeoutsSpec = NetworkTimeouts;
+pub const TimeoutsConfig = NetworkTimeouts;
 
 pub const BackpressureSpec = struct {
     bind_tcp_window: bool = true,

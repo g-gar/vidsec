@@ -68,13 +68,37 @@ pub const pipeline = struct {
     pub const ast = flowdata.ast;
     pub const dataflow = flowdata.dataflow;
     pub const yaml = flowdata.yaml;
-    pub const host = flowdata.host;
+    pub const host = @This().host;
     pub const network = flowdata.network;
 };
 pub const pipeline_ast = flowdata.ast;
 pub const PipelineAST = flowdata.PipelineAST;
 pub const PipelineEngine = flowdata.PipelineEngine;
-pub const host = flowdata.host;
+pub const host = struct {
+    pub const HostTransport = flowdata.host.HostTransport;
+    pub const InboundTransport = flowdata.host.InboundTransport;
+    pub const HostDispatcher = flowdata.host.HostDispatcher;
+    pub const InboundDispatcher = flowdata.host.InboundDispatcher;
+    pub const HostApp = flowdata.host.HostApp;
+    pub const TransportApp = flowdata.host.TransportApp;
+    pub const AppConfig = flowdata.host.AppConfig;
+    pub const AppInfo = flowdata.host.AppInfo;
+    pub const InboundRegistry = flowdata.host.InboundRegistry;
+    pub const InboundTransportConfig = flowdata.host.InboundTransportConfig;
+    pub const InvocationRequest = flowdata.host.InvocationRequest;
+    pub const InvocationResponse = flowdata.host.InvocationResponse;
+    pub const InvocationStatus = flowdata.host.InvocationStatus;
+    pub const InvocationCommand = flowdata.host.InvocationCommand;
+    pub const InputSource = flowdata.host.InputSource;
+    pub const OutputFormat = flowdata.host.OutputFormat;
+    pub const DispatcherPtr = flowdata.host.DispatcherPtr;
+    pub const DispatchFn = flowdata.host.DispatchFn;
+
+    pub const CliTransport = extensions.inbound_cli.CliTransport;
+    pub const HttpServerTransport = extensions.inbound_http.HttpServerTransport;
+    pub const HttpTransport = HttpServerTransport;
+    pub const GrpcTransport = extensions.inbound_grpc.GrpcTransport;
+};
 
 /// Flowdata Pure Dataflow Algebra, Automatic Lifting, Stream Transformation, and Multi-Core Execution.
 pub const dataflow = flowdata.dataflow;

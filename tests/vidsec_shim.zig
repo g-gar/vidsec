@@ -36,4 +36,30 @@ pub const dataflow = flowdata.dataflow;
 pub const yaml = flowdata.yaml;
 pub const network = flowdata.network;
 pub const abi = flowdata.abi;
-pub const host = flowdata.host;
+
+pub const host = struct {
+    pub const HostTransport = flowdata.host.HostTransport;
+    pub const InboundTransport = flowdata.host.InboundTransport;
+    pub const HostDispatcher = flowdata.host.HostDispatcher;
+    pub const InboundDispatcher = flowdata.host.InboundDispatcher;
+    pub const HostApp = flowdata.host.HostApp;
+    pub const TransportApp = flowdata.host.TransportApp;
+    pub const AppConfig = flowdata.host.AppConfig;
+    pub const AppInfo = flowdata.host.AppInfo;
+    pub const InboundRegistry = flowdata.host.InboundRegistry;
+    pub const InboundTransportConfig = flowdata.host.InboundTransportConfig;
+    pub const InvocationRequest = flowdata.host.InvocationRequest;
+    pub const InvocationResponse = flowdata.host.InvocationResponse;
+    pub const InvocationStatus = flowdata.host.InvocationStatus;
+    pub const InvocationCommand = flowdata.host.InvocationCommand;
+    pub const InputSource = flowdata.host.InputSource;
+    pub const OutputFormat = flowdata.host.OutputFormat;
+    pub const DispatcherPtr = flowdata.host.DispatcherPtr;
+    pub const DispatchFn = flowdata.host.DispatchFn;
+
+    // Inbound Drivers from modular extensions
+    pub const CliTransport = ext_mod.inbound_cli.CliTransport;
+    pub const HttpServerTransport = ext_mod.inbound_http.HttpServerTransport;
+    pub const HttpTransport = HttpServerTransport;
+    pub const GrpcTransport = ext_mod.inbound_grpc.GrpcTransport;
+};

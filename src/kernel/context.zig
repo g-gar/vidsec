@@ -38,7 +38,7 @@ pub const KernelContext = struct {
         var ds = RepositoryRegistry.init(allocator);
         errdefer ds.deinit();
 
-        var in_reg = try InboundRegistry.init(allocator);
+        var in_reg = InboundRegistry.init(allocator);
         errdefer in_reg.deinit();
 
         var out_reg = OutboundRegistry.init(allocator);

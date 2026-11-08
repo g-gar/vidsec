@@ -1,5 +1,4 @@
 pub const contracts = @import("contracts/mod.zig");
-pub const drivers = @import("drivers/mod.zig");
 pub const dispatcher = @import("dispatcher.zig");
 pub const registry = @import("registry.zig");
 pub const app = @import("app.zig");
@@ -25,12 +24,6 @@ pub const CustomCommandHandler = dispatcher.CustomCommandHandler;
 pub const AppInfo = dispatcher.AppInfo;
 pub const AppConfig = dispatcher.AppInfo;
 pub const TransportApp = app.TransportApp;
-
-// Drivers
-pub const CliTransport = drivers.CliTransport;
-pub const HttpServerTransport = drivers.HttpServerTransport;
-pub const HttpTransport = drivers.HttpTransport;
-pub const GrpcTransport = drivers.GrpcTransport;
 
 // Backward Compatibility Aliases (Host*)
 pub const HostTransport = contracts.HostTransport;

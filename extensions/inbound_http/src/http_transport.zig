@@ -1,7 +1,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const contracts = @import("../contracts/mod.zig");
-const registry_mod = @import("../registry.zig");
+const flowdata = @import("flowdata");
+const contracts = flowdata.transport.inbound.contracts;
+const registry_mod = flowdata.transport.inbound.registry;
+const posix_socket = flowdata.transport.common.posix_socket;
 
 pub const InboundTransport = contracts.InboundTransport;
 pub const HostTransport = contracts.HostTransport;
@@ -10,6 +12,7 @@ pub const InvocationResponse = contracts.InvocationResponse;
 pub const InvocationCommand = contracts.InvocationCommand;
 pub const OutputFormat = contracts.OutputFormat;
 pub const InboundTransportConfig = registry_mod.InboundTransportConfig;
+pub const NetworkTimeouts = flowdata.transport.NetworkTimeouts;
 
 const c = @cImport({
     @cInclude("sys/types.h");
@@ -31,6 +34,7 @@ pub const HttpServerTransport = struct {
     listen_host: []const u8 = "127.0.0.1",
     listen_port: u16 = 8080,
     default_pipeline_path: []const u8 = "",
+    timeouts: NetworkTimeouts = .{},
     is_heap_allocated: bool = false,
 
     pub fn init(
@@ -44,6 +48,24 @@ pub const HttpServerTransport = struct {
             .listen_host = listen_host,
             .listen_port = listen_port,
             .default_pipeline_path = default_pipeline_path,
+            .timeouts = .{},
+            .is_heap_allocated = false,
+        };
+    }
+
+    pub fn initWithTimeouts(
+        allocator: Allocator,
+        listen_host: []const u8,
+        listen_port: u16,
+        default_pipeline_path: []const u8,
+        timeouts: NetworkTimeouts,
+    ) HttpServerTransport {
+        return .{
+            .allocator = allocator,
+            .listen_host = listen_host,
+            .listen_port = listen_port,
+            .default_pipeline_path = default_pipeline_path,
+            .timeouts = timeouts,
             .is_heap_allocated = false,
         };
     }
@@ -58,7 +80,7 @@ pub const HttpServerTransport = struct {
             port = p;
         }
         const s = try allocator.create(HttpServerTransport);
-        s.* = HttpServerTransport.init(allocator, host, port, config.pipeline_path);
+        s.* = HttpServerTransport.initWithTimeouts(allocator, host, port, config.pipeline_path, config.timeouts);
         s.is_heap_allocated = true;
         return s.inboundTransport();
     }
@@ -251,6 +273,13 @@ pub const HttpServerTransport = struct {
             const client_fd = c.accept(sock_fd, null, null);
             if (client_fd < 0) continue;
             defer _ = c.close(client_fd);
+
+            posix_socket.PosixSocket.configureSocketOptions(
+                client_fd,
+                self.timeouts.connect_ms,
+                self.timeouts.read_idle_ms,
+                0,
+            );
 
             const n = c.recv(client_fd, &buf, buf.len, 0);
             if (n <= 0) continue;

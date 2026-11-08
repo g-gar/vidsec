@@ -30,12 +30,15 @@ pub const InvocationCommand = enum {
     }
 };
 
+pub const NetworkTimeouts = @import("../../common/timeouts.zig").NetworkTimeouts;
+
 /// Configuration for long-running daemon servers (`serve` command).
 pub const ServeConfig = struct {
     transport_name: []const u8 = "http",
     listen_address: []const u8 = "127.0.0.1:8080",
     pipeline_path: []const u8 = "",
     max_requests: ?usize = null,
+    timeouts: NetworkTimeouts = .{},
 };
 
 /// Source of input media/payload for pipeline execution.

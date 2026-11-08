@@ -3,17 +3,12 @@ const Allocator = std.mem.Allocator;
 const contracts = @import("contracts/mod.zig");
 const dispatcher_mod = @import("dispatcher.zig");
 const registry_mod = @import("registry.zig");
-const drivers_mod = @import("drivers/mod.zig");
 
 pub const AppInfo = dispatcher_mod.AppInfo;
 pub const AppConfig = AppInfo;
 pub const InboundDispatcher = dispatcher_mod.InboundDispatcher;
 pub const HostDispatcher = dispatcher_mod.HostDispatcher;
 pub const InboundRegistry = registry_mod.InboundRegistry;
-pub const CliTransport = drivers_mod.CliTransport;
-pub const HttpServerTransport = drivers_mod.HttpServerTransport;
-pub const HttpTransport = drivers_mod.HttpTransport;
-pub const GrpcTransport = drivers_mod.GrpcTransport;
 
 /// Top-level Application Coordinator for Flowdata binaries.
 /// Connects standard process entrypoints to transport handlers and the core pipeline dispatcher.
@@ -60,24 +55,47 @@ pub const TransportApp = struct {
         var dispatcher = InboundDispatcher.init(allocator, cfg);
         defer dispatcher.deinit();
 
+        var local_reg: ?InboundRegistry = null;
+        defer if (local_reg) |*r| r.deinit();
+
+        const active_reg: *const InboundRegistry = if (custom_registry) |r| r else blk: {
+            if (dispatcher.app_info.kernel) |k| {
+                break :blk &k.inbound;
+            }
+            local_reg = InboundRegistry.init(allocator);
+            break :blk &local_reg.?;
+        };
+
         // Check if the command is `serve` to launch daemon transport
         if (args.len >= 2 and std.mem.eql(u8, args[1], "serve")) {
-            return try runServe(allocator, args, &dispatcher, custom_registry);
+            return try runServe(allocator, args, &dispatcher, active_reg);
         }
 
-        var cli = CliTransport.init(allocator, args);
-        return try cli.executeWithDispatch(&dispatcher, &InboundDispatcher.dispatchOpaque);
+        // Execute CLI transport from the InboundRegistry
+        var cli_transport = active_reg.create("cli", .{
+            .args = args,
+        }) catch |err| switch (err) {
+            error.UnknownInboundTransport => {
+                _ = std.c.write(std.c.STDERR_FILENO, "Error: Inbound transport 'cli' is not registered. Add extensions.inbound_cli to your application.\n", 99);
+                return 1;
+            },
+            else => return err,
+        };
+        defer cli_transport.deinit(allocator);
+
+        return try cli_transport.serve(&dispatcher, &InboundDispatcher.dispatchOpaque);
     }
 
     fn runServe(
         allocator: Allocator,
         args: []const []const u8,
         dispatcher: *InboundDispatcher,
-        custom_registry: ?*const InboundRegistry,
+        active_reg: *const InboundRegistry,
     ) !u8 {
         var transport_type: []const u8 = "http";
         var listen_addr: []const u8 = "127.0.0.1:8080";
         var pipeline_path: []const u8 = "";
+        var timeouts = registry_mod.NetworkTimeouts{};
 
         var i: usize = 2;
         while (i < args.len) : (i += 1) {
@@ -94,6 +112,14 @@ pub const TransportApp = struct {
                 i += 1;
                 if (i >= args.len) return error.MissingArgumentValue;
                 pipeline_path = args[i];
+            } else if (std.mem.eql(u8, arg, "--connect-timeout-ms")) {
+                i += 1;
+                if (i >= args.len) return error.MissingArgumentValue;
+                timeouts.connect_ms = std.fmt.parseInt(u64, args[i], 10) catch timeouts.connect_ms;
+            } else if (std.mem.eql(u8, arg, "--read-timeout-ms") or std.mem.eql(u8, arg, "--timeout-ms")) {
+                i += 1;
+                if (i >= args.len) return error.MissingArgumentValue;
+                timeouts.read_idle_ms = std.fmt.parseInt(u64, args[i], 10) catch timeouts.read_idle_ms;
             }
         }
 
@@ -104,18 +130,17 @@ pub const TransportApp = struct {
             };
         }
 
-        var local_reg: ?InboundRegistry = null;
-        defer if (local_reg) |*r| r.deinit();
-
-        const active_reg: *const InboundRegistry = if (custom_registry) |r| r else blk: {
-            local_reg = try InboundRegistry.init(allocator);
-            break :blk &local_reg.?;
-        };
-
-        var transport = try active_reg.create(transport_type, .{
+        var transport = active_reg.create(transport_type, .{
             .listen_address = listen_addr,
             .pipeline_path = pipeline_path,
-        });
+            .timeouts = timeouts,
+        }) catch |err| switch (err) {
+            error.UnknownInboundTransport => {
+                std.debug.print("Error: Inbound transport '{s}' is not registered. Ensure the corresponding extension is loaded.\n", .{transport_type});
+                return 1;
+            },
+            else => return err,
+        };
         defer transport.deinit(allocator);
 
         return try transport.serve(dispatcher, &InboundDispatcher.dispatchOpaque);

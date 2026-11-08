@@ -3,6 +3,7 @@ pub const transport = @import("transport.zig");
 
 pub const InvocationCommand = envelope.InvocationCommand;
 pub const ServeConfig = envelope.ServeConfig;
+pub const NetworkTimeouts = envelope.NetworkTimeouts;
 pub const InputSource = envelope.InputSource;
 pub const OutputFormat = envelope.OutputFormat;
 pub const InvocationRequest = envelope.InvocationRequest;

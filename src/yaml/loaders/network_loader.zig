@@ -297,17 +297,23 @@ pub fn parseNetworkDecl(alloc: Allocator, id: []const u8, net_node: yaml_lib.Nod
     }
 
     if (net_node.get("timeouts")) |t_node| {
-        if (t_node.get("connect_ms")) |n| {
+        if (t_node.get("connect_ms") orelse t_node.get("connect_timeout_ms")) |n| {
             if (n.asScalar()) |s| spec.timeouts.connect_ms = std.fmt.parseInt(u64, s, 10) catch 3000;
         }
-        if (t_node.get("tls_handshake_ms")) |n| {
+        if (t_node.get("tls_handshake_ms") orelse t_node.get("tls_handshake_timeout_ms")) |n| {
             if (n.asScalar()) |s| spec.timeouts.tls_handshake_ms = std.fmt.parseInt(u64, s, 10) catch 3000;
         }
-        if (t_node.get("read_idle_ms")) |n| {
+        if (t_node.get("read_idle_ms") orelse t_node.get("read_timeout_ms")) |n| {
             if (n.asScalar()) |s| spec.timeouts.read_idle_ms = std.fmt.parseInt(u64, s, 10) catch 10000;
         }
-        if (t_node.get("write_idle_ms")) |n| {
+        if (t_node.get("write_idle_ms") orelse t_node.get("write_timeout_ms")) |n| {
             if (n.asScalar()) |s| spec.timeouts.write_idle_ms = std.fmt.parseInt(u64, s, 10) catch 5000;
+        }
+        if (t_node.get("pool_acquire_ms") orelse t_node.get("pool_acquire_timeout_ms")) |n| {
+            if (n.asScalar()) |s| spec.timeouts.pool_acquire_ms = std.fmt.parseInt(u64, s, 10) catch 2000;
+        }
+        if (t_node.get("idle_connection_ms") orelse t_node.get("idle_connection_timeout_ms")) |n| {
+            if (n.asScalar()) |s| spec.timeouts.idle_connection_ms = std.fmt.parseInt(u64, s, 10) catch 60000;
         }
     } else if (net_node.get("timeout_ms")) |tm| {
         if (tm.asScalar()) |s| {

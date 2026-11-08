@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const contracts = @import("../contracts/mod.zig");
+const flowdata = @import("flowdata");
+const contracts = flowdata.transport.inbound.contracts;
 
 pub const InboundTransport = contracts.InboundTransport;
 pub const HostTransport = contracts.HostTransport;
@@ -44,11 +45,13 @@ pub const CliTransport = struct {
 
     allocator: Allocator,
     args: []const []const u8 = &.{},
+    is_heap_allocated: bool = false,
 
     pub fn init(allocator: Allocator, args: []const []const u8) CliTransport {
         return .{
             .allocator = allocator,
             .args = args,
+            .is_heap_allocated = false,
         };
     }
 
@@ -67,8 +70,11 @@ pub const CliTransport = struct {
                 return s.executeWithDispatch(dispatcher_ctx, dispatch_fn);
             }
 
-            fn doDeinit(ctx: *anyopaque, _: Allocator) void {
-                _ = ctx;
+            fn doDeinit(ctx: *anyopaque, allocator: Allocator) void {
+                const s: *CliTransport = @ptrCast(@alignCast(ctx));
+                if (s.is_heap_allocated) {
+                    allocator.destroy(s);
+                }
             }
 
             const vtable = InboundTransport.VTable{
