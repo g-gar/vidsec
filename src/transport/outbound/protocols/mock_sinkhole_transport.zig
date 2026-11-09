@@ -18,26 +18,14 @@ pub const MockSinkholeTransport = struct {
         "http", "https", "ws", "wss", "grpc", "grpcs", "rtmp", "rtmps", "rtsp", "amqp", "tcp", "udp", "tls", "quic",
     };
 
-    emulate_responses: bool = true,
-
-    pub fn roundTrip(self: *MockSinkholeTransport, exchange: *NetExchange) NetError!NetResult {
-        if (self.emulate_responses) {
-            return .{
-                .status_code = 200,
-                .body = "{\"status\":\"mocked_by_sinkhole\"}",
-                .effective_url = exchange.effective_url,
-                .proxy_used = "",
-                .latency_ms = 1,
-                .verdict = .mocked,
-            };
-        }
+    pub fn roundTrip(_: *MockSinkholeTransport, exchange: *NetExchange) NetError!NetResult {
         return .{
-            .status_code = 0,
-            .body = "",
+            .status_code = 200,
+            .body = "{\"status\":\"mocked_by_sinkhole\"}",
             .effective_url = exchange.effective_url,
             .proxy_used = "",
             .latency_ms = 1,
-            .verdict = .captured,
+            .verdict = .mocked,
         };
     }
 

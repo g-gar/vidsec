@@ -43,10 +43,11 @@ const StepNetworkContext = struct {
         network_id: []const u8,
         url: []const u8,
         operation: []const u8,
+        headers: []const network_mod.HttpHeader,
         body: []const u8,
     ) network_mod.NetError!network_mod.NetResult {
         const self: *@This() = @ptrCast(@alignCast(ptr));
-        return self.net_ctrl.executeRequest(self.step_id, self.task_name, self.primary_adapter, network_id, url, operation, body);
+        return self.net_ctrl.executeRequest(self.step_id, self.task_name, self.primary_adapter, network_id, url, operation, headers, body);
     }
 
     fn connect(

@@ -33,6 +33,7 @@ pub const NetworkBridge = struct {
             network_id: []const u8,
             url: []const u8,
             operation: []const u8,
+            headers: []const network_mod.HttpHeader,
             body: []const u8,
         ) NetError!NetResult,
         connect: *const fn (
@@ -222,11 +223,26 @@ const ModuleHostState = struct {
         const self: *@This() = @ptrCast(@alignCast(ptr));
         const bridge = self.net_bridge orelse return .network_policy_denied;
         const req = req_ptr.*;
+
+        var headers_buf: [32]network_mod.HttpHeader = undefined;
+        var headers_len: usize = 0;
+        if (req.headers_ptr) |h_ptr| {
+            headers_len = @min(req.headers_len, headers_buf.len);
+            for (0..headers_len) |i| {
+                const item = h_ptr[i];
+                headers_buf[i] = .{
+                    .name = item.nameSlice(),
+                    .value = item.value.asText() orelse "",
+                };
+            }
+        }
+
         const res = bridge.vtable.request(
             bridge.ptr,
             req.network_id.asSlice(),
             req.url.asSlice(),
             req.operation.asSlice(),
+            headers_buf[0..headers_len],
             req.body.asSlice(),
         ) catch |err| return mapNetErrorToHostError(err);
 

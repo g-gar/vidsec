@@ -452,9 +452,6 @@ pub fn parseNetworkDecl(alloc: Allocator, id: []const u8, net_node: yaml_lib.Nod
         }
     }
 
-    if (net_node.get("emulate_responses")) |em_node| {
-        if (em_node.asScalar()) |s| spec.emulate_responses = parseBool(s, false);
-    }
     if (net_node.get("isolation")) |iso_node| {
         if (iso_node.asScalar()) |s| spec.isolation = s;
     }

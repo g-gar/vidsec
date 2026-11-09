@@ -23,7 +23,6 @@ pub const HttpTransport = struct {
     }
 
     pub const supported_schemes = [_][]const u8{ "http", "https" };
-    live_network: bool = false,
 
     pub fn createHeap(allocator: Allocator) !ProtocolTransport {
         const self = try allocator.create(HttpTransport);
@@ -40,13 +39,43 @@ pub const HttpTransport = struct {
         errdefer buf.deinit(allocator);
 
         var hdr_buf: [512]u8 = undefined;
-        const req_head = std.fmt.bufPrint(
+        const req_line = std.fmt.bufPrint(
             &hdr_buf,
-            "{s} {s} HTTP/1.1\r\nHost: {s}:{d}\r\nUser-Agent: flowdata-net/2.0\r\nAccept: */*\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n",
-            .{ method, resource, exchange.uri.host, exchange.uri.port, exchange.req_body.len },
+            "{s} {s} HTTP/1.1\r\nHost: {s}:{d}\r\n",
+            .{ method, resource, exchange.uri.host, exchange.uri.port },
         ) catch return error.OutOfMemory;
+        buf.appendSlice(allocator, req_line) catch return error.OutOfMemory;
 
-        buf.appendSlice(allocator, req_head) catch return error.OutOfMemory;
+        var has_user_agent = false;
+        var has_accept = false;
+        var has_conn = false;
+
+        for (exchange.headers) |h| {
+            if (std.ascii.eqlIgnoreCase(h.name, "user-agent")) has_user_agent = true;
+            if (std.ascii.eqlIgnoreCase(h.name, "accept")) has_accept = true;
+            if (std.ascii.eqlIgnoreCase(h.name, "connection")) has_conn = true;
+        }
+
+        if (!has_user_agent) {
+            buf.appendSlice(allocator, "User-Agent: flowdata-net/2.0\r\n") catch return error.OutOfMemory;
+        }
+        if (!has_accept) {
+            buf.appendSlice(allocator, "Accept: */*\r\n") catch return error.OutOfMemory;
+        }
+        if (!has_conn) {
+            buf.appendSlice(allocator, "Connection: close\r\n") catch return error.OutOfMemory;
+        }
+
+        for (exchange.headers) |h| {
+            buf.appendSlice(allocator, h.name) catch return error.OutOfMemory;
+            buf.appendSlice(allocator, ": ") catch return error.OutOfMemory;
+            buf.appendSlice(allocator, h.value) catch return error.OutOfMemory;
+            buf.appendSlice(allocator, "\r\n") catch return error.OutOfMemory;
+        }
+
+        const cl = std.fmt.bufPrint(&hdr_buf, "Content-Length: {d}\r\n\r\n", .{exchange.req_body.len}) catch return error.OutOfMemory;
+        buf.appendSlice(allocator, cl) catch return error.OutOfMemory;
+
         if (exchange.req_body.len > 0) {
             buf.appendSlice(allocator, exchange.req_body) catch return error.OutOfMemory;
         }
@@ -94,56 +123,107 @@ pub const HttpTransport = struct {
         };
     }
 
-    pub fn roundTrip(self: *HttpTransport, exchange: *NetExchange) NetError!NetResult {
+    pub fn roundTrip(_: *HttpTransport, exchange: *NetExchange) NetError!NetResult {
         const wire_req = try buildHttp11Request(exchange.allocator, exchange);
 
-        if (self.live_network) {
-            const connect_host = exchange.resolved_ip orelse exchange.uri.host;
-            const fd = try PosixSocket.connectViaOptionalProxy(
-                exchange.allocator,
-                connect_host,
-                exchange.uri.port,
-                exchange.selected_proxy_url,
-                exchange.connect_timeout_ms,
-                exchange.read_timeout_ms,
-                exchange.so_rcvbuf_bytes,
-            );
-            defer PosixSocket.closeSocket(fd);
+        // Live outbound with TLS support (HTTPS or direct HTTP)
+        if (std.ascii.eqlIgnoreCase(exchange.uri.scheme, "https") or exchange.selected_proxy_url.len == 0) {
+            var threaded = std.Io.Threaded.init(exchange.allocator, .{});
+            defer threaded.deinit();
+            const io = threaded.io();
 
-            try PosixSocket.sendAll(fd, wire_req);
+            var client = std.http.Client{
+                .allocator = exchange.allocator,
+                .io = io,
+            };
+            defer client.deinit();
 
-            var resp_buf: std.ArrayListUnmanaged(u8) = .empty;
-            var chunk: [4096]u8 = undefined;
-            while (true) {
-                const n = try PosixSocket.recvSome(fd, &chunk);
-                if (n == 0) break;
-                resp_buf.appendSlice(exchange.allocator, chunk[0..n]) catch return error.OutOfMemory;
+            var extra_headers: std.ArrayListUnmanaged(std.http.Header) = .empty;
+            defer extra_headers.deinit(exchange.allocator);
+
+            var user_agent_found = false;
+            for (exchange.headers) |h| {
+                if (std.ascii.eqlIgnoreCase(h.name, "user-agent")) user_agent_found = true;
+                extra_headers.append(exchange.allocator, .{
+                    .name = h.name,
+                    .value = h.value,
+                }) catch return error.OutOfMemory;
+            }
+            if (!user_agent_found) {
+                extra_headers.append(exchange.allocator, .{
+                    .name = "User-Agent",
+                    .value = "flowdata-net/2.0",
+                }) catch return error.OutOfMemory;
             }
 
-            const wire_resp = resp_buf.toOwnedSlice(exchange.allocator) catch return error.OutOfMemory;
-            const parsed = try parseHttp11Response(wire_resp);
+            var body_writer = std.Io.Writer.Allocating.init(exchange.allocator);
+            defer body_writer.deinit();
+
+            const method: std.http.Method = if (std.ascii.eqlIgnoreCase(exchange.operation, "POST"))
+                .POST
+            else if (std.ascii.eqlIgnoreCase(exchange.operation, "PUT"))
+                .PUT
+            else if (std.ascii.eqlIgnoreCase(exchange.operation, "DELETE"))
+                .DELETE
+            else if (std.ascii.eqlIgnoreCase(exchange.operation, "HEAD"))
+                .HEAD
+            else
+                .GET;
+
+            const fetch_res = client.fetch(.{
+                .location = .{ .url = exchange.effective_url },
+                .method = method,
+                .payload = if (exchange.req_body.len > 0) exchange.req_body else null,
+                .extra_headers = extra_headers.items,
+                .response_writer = &body_writer.writer,
+            }) catch |err| {
+                return switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
+                    else => error.NetworkUpstreamError,
+                };
+            };
+
+            const body_slice = body_writer.toOwnedSlice() catch return error.OutOfMemory;
+            const status_code: u16 = @intFromEnum(fetch_res.status);
 
             return .{
-                .status_code = parsed.status_code,
-                .body = parsed.body,
+                .status_code = status_code,
+                .body = body_slice,
                 .wire_request = wire_req,
-                .wire_response = wire_resp,
+                .wire_response = body_slice,
                 .effective_url = exchange.effective_url,
                 .proxy_used = exchange.selected_proxy_url,
                 .latency_ms = 5,
-                .retry_after_ms = parsed.retry_after_ms,
+                .retry_after_ms = 0,
                 .verdict = .allowed,
             };
         }
 
-        // Deterministic virtual wire response for sandboxed / offline execution
-        const wire_resp = std.fmt.allocPrint(
+        const connect_host = exchange.resolved_ip orelse exchange.uri.host;
+        const fd = try PosixSocket.connectViaOptionalProxy(
             exchange.allocator,
-            "HTTP/1.1 200 OK\r\nServer: flowdata-virtual-egress\r\nX-Effective-Url: {s}\r\nContent-Length: 0\r\n\r\n",
-            .{exchange.effective_url},
-        ) catch return error.OutOfMemory;
+            connect_host,
+            exchange.uri.port,
+            exchange.selected_proxy_url,
+            exchange.connect_timeout_ms,
+            exchange.read_timeout_ms,
+            exchange.so_rcvbuf_bytes,
+        );
+        defer PosixSocket.closeSocket(fd);
 
+        try PosixSocket.sendAll(fd, wire_req);
+
+        var resp_buf: std.ArrayListUnmanaged(u8) = .empty;
+        var chunk: [4096]u8 = undefined;
+        while (true) {
+            const n = try PosixSocket.recvSome(fd, &chunk);
+            if (n == 0) break;
+            resp_buf.appendSlice(exchange.allocator, chunk[0..n]) catch return error.OutOfMemory;
+        }
+
+        const wire_resp = resp_buf.toOwnedSlice(exchange.allocator) catch return error.OutOfMemory;
         const parsed = try parseHttp11Response(wire_resp);
+
         return .{
             .status_code = parsed.status_code,
             .body = parsed.body,

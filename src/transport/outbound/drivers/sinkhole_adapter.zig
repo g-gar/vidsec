@@ -58,7 +58,7 @@ pub const SinkholeAdapter = struct {
             .arena = std.heap.ArenaAllocator.init(allocator),
             .config = config,
             .chain = MiddlewareChain.init(allocator),
-            .mock_transport = .{ .emulate_responses = config.emulate_responses },
+            .mock_transport = .{},
             .streams = StreamSessionTable.init(allocator),
             .event_sink = MemoryEventSink.init(allocator),
             .captured_packet_sink = null,
@@ -111,6 +111,7 @@ pub const SinkholeAdapter = struct {
         self: *SinkholeAdapter,
         raw_url: []const u8,
         operation: []const u8,
+        headers: []const contracts.HttpHeader,
         body: []const u8,
         trace_tag: []const u8,
     ) NetError!NetResult {
@@ -124,15 +125,12 @@ pub const SinkholeAdapter = struct {
             .effective_url = raw_url,
             .uri = uri,
             .operation = operation,
+            .headers = headers,
             .req_body = body,
             .metrics = &self.adapter_metrics,
         };
 
-        const res = try self.chain.execute(&ex, self.mock_transport.dispatcher());
-        if (!self.config.emulate_responses) {
-            return error.NetworkPolicyDenied;
-        }
-        return res;
+        return try self.chain.execute(&ex, self.mock_transport.dispatcher());
     }
 
     pub fn connectStream(
@@ -141,7 +139,7 @@ pub const SinkholeAdapter = struct {
         operation: []const u8,
         trace_tag: []const u8,
     ) NetError!NetStreamId {
-        const res = try self.execute(raw_url, operation, "", trace_tag);
+        const res = try self.execute(raw_url, operation, &.{}, "", trace_tag);
         const uri = Uri.parse(res.effective_url) orelse Uri.parse(raw_url) orelse return error.InvalidUri;
         return try self.streams.openSession(uri.scheme, res.effective_url, res.proxy_used, res.body);
     }
@@ -152,11 +150,12 @@ pub const SinkholeAdapter = struct {
                 ctx: *anyopaque,
                 raw_url: []const u8,
                 operation: []const u8,
+                headers: []const contracts.HttpHeader,
                 body: []const u8,
                 trace_tag: []const u8,
             ) NetError!NetResult {
                 const s: *SinkholeAdapter = @ptrCast(@alignCast(ctx));
-                return try s.execute(raw_url, operation, body, trace_tag);
+                return try s.execute(raw_url, operation, headers, body, trace_tag);
             }
 
             fn doConnectStream(

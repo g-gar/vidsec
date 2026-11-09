@@ -73,7 +73,6 @@ test "YAML to AST: Reactive Virtual Network Adapters (L4/L7 Policy, Rate-Limit, 
         \\      include_tls_keys: true
         \\  virtual_tap:
         \\    driver: sinkhole
-        \\    emulate_responses: true
         \\pipelines:
         \\  main:
         \\    steps:
@@ -117,13 +116,50 @@ test "YAML to AST: Reactive Virtual Network Adapters (L4/L7 Policy, Rate-Limit, 
 
     const tap_net = parsed_ast.getNetwork("virtual_tap").?;
     try std.testing.expectEqual(ast_mod.NetworkDriver.sinkhole, tap_net.driver);
-    try std.testing.expect(tap_net.emulate_responses);
 
     const main_pipe = parsed_ast.getPipeline("main").?;
     try std.testing.expectEqualStrings("api_egress", main_pipe.steps[0].task.primaryNetwork("isolated"));
     try std.testing.expectEqualStrings("virtual_tap", main_pipe.steps[1].task.primaryNetwork("isolated"));
     try std.testing.expectEqual(@as(usize, 2), main_pipe.steps[1].task.networks.len);
 }
+
+const TestMockHttpTransport = struct {
+    pub const supported_schemes = [_][]const u8{ "http", "https" };
+
+    pub fn protocolTransport(self: *@This()) network_mod.ProtocolTransport {
+        const Self = @This();
+        const Trampoline = struct {
+            fn doSchemes(_: *const anyopaque) []const []const u8 {
+                return &Self.supported_schemes;
+            }
+            fn doRoundTrip(_: *anyopaque, exchange: *network_mod.NetExchange) network_mod.NetError!network_mod.NetResult {
+                const wire_req = try network_mod.transports.HttpTransport.buildHttp11Request(exchange.allocator, exchange);
+                const wire_resp = try std.fmt.allocPrint(
+                    exchange.allocator,
+                    "HTTP/1.1 200 OK\r\nServer: flowdata-mock\r\nX-Effective-Url: {s}\r\nContent-Length: 0\r\n\r\n",
+                    .{exchange.effective_url},
+                );
+                return network_mod.NetResult{
+                    .status_code = 200,
+                    .body = "",
+                    .wire_request = wire_req,
+                    .wire_response = wire_resp,
+                    .effective_url = exchange.effective_url,
+                    .proxy_used = exchange.selected_proxy_url,
+                    .latency_ms = 1,
+                    .verdict = .allowed,
+                };
+            }
+            fn doDeinit(_: *anyopaque, _: std.mem.Allocator) void {}
+            const vtable = network_mod.ProtocolTransport.VTable{
+                .schemes = &doSchemes,
+                .roundTrip = &doRoundTrip,
+                .deinit = &doDeinit,
+            };
+        };
+        return .{ .ptr = self, .vtable = &Trampoline.vtable };
+    }
+};
 
 const MockTasks = struct {
     /// Task running on `isolated` (`driver: none`) - all network requests and streams must be denied by Host.
@@ -228,7 +264,6 @@ test "End-to-End PipelineEngine & EngineNetworkController: Isolation, Streams, S
         \\      include_tls_keys: true
         \\  virtual_tap:
         \\    driver: sinkhole
-        \\    emulate_responses: true
         \\pipelines:
         \\  main:
         \\    steps:
@@ -305,6 +340,8 @@ test "End-to-End PipelineEngine & EngineNetworkController: Isolation, Streams, S
 
     var net_reg = network_mod.NetworkRegistry.init(alloc);
     defer net_reg.deinit();
+    var mock_http = TestMockHttpTransport{};
+    try net_reg.registerProtocol(mock_http.protocolTransport());
     try extensions.pcapng.registerOutboundSink(&net_reg);
 
     var k = try flowdata.kernel.KernelContext.init(alloc);
@@ -363,6 +400,9 @@ test "Standalone Lego Composition: Domain-Agnostic MiddlewareChain, Wire Framing
     var net_reg = network_mod.NetworkRegistry.init(alloc);
     defer net_reg.deinit();
 
+    var mock_http = TestMockHttpTransport{};
+    try net_reg.registerProtocol(mock_http.protocolTransport());
+
     // Instantiate an EgressAdapter purely from `contracts.AdapterConfig` (zero YAML/AST/step_id involvement)
     const adapter = try net_reg.resolveOrCreate(network_mod.AdapterConfig{
         .id = "multi_proto_egress",
@@ -392,19 +432,19 @@ test "Standalone Lego Composition: Domain-Agnostic MiddlewareChain, Wire Framing
     });
 
     // 1. Dispatches `https` to `HttpTransport` (status 200 + RFC 9112 wire frame)
-    const r_http = try adapter.execute("https://api.mangadex.org/manga/abc", "GET", "", "trace=http_1");
+    const r_http = try adapter.execute("https://api.mangadex.org/manga/abc", "GET", &.{}, "", "trace=http_1");
     try std.testing.expectEqual(@as(u16, 200), r_http.status_code);
     try std.testing.expectEqualStrings("socks5://10.10.0.1:9050", r_http.proxy_used);
     try std.testing.expect(std.mem.startsWith(u8, r_http.wire_request, "GET /manga/abc HTTP/1.1\r\n"));
 
     // 2. Dispatches `wss` to `StreamTransport` (status 101 Switching Protocols + RFC 6455 Upgrade wire frame)
-    const r_ws = try adapter.execute("wss://ws.mangadex.org/events", "HANDSHAKE", "", "trace=ws_1");
+    const r_ws = try adapter.execute("wss://ws.mangadex.org/events", "HANDSHAKE", &.{}, "", "trace=ws_1");
     try std.testing.expectEqual(@as(u16, 101), r_ws.status_code);
     try std.testing.expectEqualStrings("socks5://10.10.0.2:9050", r_ws.proxy_used);
     try std.testing.expect(std.mem.indexOf(u8, r_ws.wire_request, "Upgrade: websocket\r\n") != null);
 
     // 3. Dispatches `rtmps` to `StreamTransport` (status 101 + RTMP C1 handshake frame) and rotates back to weight=2 proxy
-    const r_rtmp = try adapter.execute("rtmps://ingest.stream.io:1935/live/ch1", "PUBLISH", "", "trace=rtmp_1");
+    const r_rtmp = try adapter.execute("rtmps://ingest.stream.io:1935/live/ch1", "PUBLISH", &.{}, "", "trace=rtmp_1");
     try std.testing.expectEqual(@as(u16, 101), r_rtmp.status_code);
     try std.testing.expectEqualStrings("socks5://10.10.0.1:9050", r_rtmp.proxy_used);
     try std.testing.expect(std.mem.indexOf(u8, r_rtmp.wire_request, "RTMP_C1_HANDSHAKE") != null);
@@ -425,7 +465,7 @@ test "Standalone Lego Composition: Domain-Agnostic MiddlewareChain, Wire Framing
     // 5. Blocks SSRF attempt to cloud metadata IP (`169.254.169.254`) via `PolicyGuardMiddleware`
     try std.testing.expectError(
         error.NetworkPolicyDenied,
-        adapter.execute("https://169.254.169.254/latest/meta-data", "GET", "", "trace=ssrf"),
+        adapter.execute("https://169.254.169.254/latest/meta-data", "GET", &.{}, "", "trace=ssrf"),
     );
 }
 
@@ -503,9 +543,46 @@ test "Outbound: Dynamic Protocol and Middleware Registration in OutboundRegistry
         .driver = .egress,
     });
 
-    const res = try adapter.execute("customproto://test/item", "GET", "", "trace=123");
+    const res = try adapter.execute("customproto://test/item", "GET", &.{}, "", "trace=123");
     try std.testing.expectEqual(@as(u16, 200), res.status_code);
     try std.testing.expectEqualStrings("customproto_response", res.body);
     try std.testing.expect(custom_proto.invoked);
     try std.testing.expect(custom_mw.invoked);
+}
+
+test "Outbound: execute and wire framing with custom headers" {
+    const alloc = std.testing.allocator;
+    var net_reg = network_mod.NetworkRegistry.init(alloc);
+    defer net_reg.deinit();
+
+    var mock_http = TestMockHttpTransport{};
+    try net_reg.registerProtocol(mock_http.protocolTransport());
+
+    const adapter = try net_reg.resolveOrCreate(network_mod.AdapterConfig{
+        .id = "headers_test_egress",
+        .driver = .egress,
+        .policy = .{
+            .default_action = .allow,
+        },
+    });
+
+    const custom_headers = [_]network_mod.HttpHeader{
+        .{ .name = "User-Agent", .value = "flowdata-mangadex-app/0.1.0" },
+        .{ .name = "Authorization", .value = "Bearer test_bearer_token" },
+        .{ .name = "Accept", .value = "application/json" },
+    };
+
+    const res = try adapter.execute(
+        "https://api.mangadex.org/manga/123",
+        "GET",
+        &custom_headers,
+        "",
+        "trace=headers",
+    );
+
+    try std.testing.expectEqual(@as(u16, 200), res.status_code);
+    try std.testing.expect(std.mem.indexOf(u8, res.wire_request, "User-Agent: flowdata-mangadex-app/0.1.0\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.wire_request, "Authorization: Bearer test_bearer_token\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.wire_request, "Accept: application/json\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.wire_request, "Connection: close\r\n") != null);
 }

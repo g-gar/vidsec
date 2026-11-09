@@ -94,7 +94,14 @@ test "FlowdataHttpAdapter maps network error properly" {
             };
         }
 
-        fn executeErr(_: *anyopaque, _: []const u8, _: []const u8, _: []const u8, _: []const u8) flowdata.transport.outbound.NetError!flowdata.transport.outbound.NetResult {
+        fn executeErr(
+            _: *anyopaque,
+            _: []const u8,
+            _: []const u8,
+            _: []const flowdata.transport.outbound.HttpHeader,
+            _: []const u8,
+            _: []const u8,
+        ) flowdata.transport.outbound.NetError!flowdata.transport.outbound.NetResult {
             return error.NetworkRateLimited;
         }
 

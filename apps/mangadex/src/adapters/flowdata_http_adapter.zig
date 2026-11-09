@@ -31,12 +31,20 @@ pub const FlowdataHttpAdapter = struct {
         body: []const u8,
     ) sdk.HttpTransportError!sdk.HttpResponse {
         const self: *FlowdataHttpAdapter = @ptrCast(@alignCast(ctx));
-        _ = allocator;
-        _ = headers;
+
+        var flow_headers = std.ArrayListUnmanaged(flowdata.transport.outbound.HttpHeader).empty;
+        defer flow_headers.deinit(allocator);
+        for (headers) |h| {
+            flow_headers.append(allocator, .{
+                .name = h.name,
+                .value = h.value,
+            }) catch return error.OutOfMemory;
+        }
 
         const res = self.adapter.execute(
             url,
             method.asText(),
+            flow_headers.items,
             body,
             "mangadex.request",
         ) catch |err| return switch (err) {

@@ -54,6 +54,7 @@ pub const ExchangeVerdict = exchange.ExchangeVerdict;
 pub const NetError = exchange.NetError;
 pub const NetResult = exchange.NetResult;
 pub const NetExchange = exchange.NetExchange;
+pub const HttpHeader = exchange.HttpHeader;
 
 pub const NetworkAdapter = adapter.NetworkAdapter;
 pub const OutboundAdapter = adapter.OutboundAdapter;

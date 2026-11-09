@@ -5,6 +5,7 @@ const NetError = exchange_mod.NetError;
 const NetStreamId = exchange_mod.NetStreamId;
 const CapturedExchangeRecord = exchange_mod.CapturedExchangeRecord;
 const AdapterMetrics = exchange_mod.AdapterMetrics;
+const HttpHeader = exchange_mod.HttpHeader;
 const TransportHandlerFn = @import("transport.zig").CustomTransportFn;
 
 /// Polymorphic abstract interface for Virtual Network Adapters (`none`, `ingress_only`, `egress`, `sinkhole`, etc.).
@@ -18,6 +19,7 @@ pub const NetworkAdapter = struct {
             ctx: *anyopaque,
             raw_url: []const u8,
             operation: []const u8,
+            headers: []const HttpHeader,
             body: []const u8,
             trace_tag: []const u8,
         ) NetError!NetResult,
@@ -44,10 +46,11 @@ pub const NetworkAdapter = struct {
         self: NetworkAdapter,
         raw_url: []const u8,
         operation: []const u8,
+        headers: []const HttpHeader,
         body: []const u8,
         trace_tag: []const u8,
     ) NetError!NetResult {
-        return try self.vtable.execute(self.ptr, raw_url, operation, body, trace_tag);
+        return try self.vtable.execute(self.ptr, raw_url, operation, headers, body, trace_tag);
     }
 
     pub fn connectStream(

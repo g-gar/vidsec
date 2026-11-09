@@ -150,6 +150,7 @@ pub const EngineNetworkController = struct {
         network_id: []const u8,
         url: []const u8,
         operation: []const u8,
+        headers: []const network_mod.HttpHeader,
         body: []const u8,
     ) NetError!NetResult {
         const target = switch (self.resolveRequestAdapter(primary_adapter, network_id)) {
@@ -159,7 +160,7 @@ pub const EngineNetworkController = struct {
         };
 
         const trace_tag = self.formatTraceTag(step_id, task_name);
-        return target.execute(url, operation, body, trace_tag);
+        return target.execute(url, operation, headers, body, trace_tag);
     }
 
     /// Opens a stateful stream (`ws`, `rtmp`, `grpc`, `tcp`, `udp`, `tls`).

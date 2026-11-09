@@ -231,7 +231,6 @@ pub const NetworkSpec = struct {
     redirects: []const RedirectRuleSpec = &.{},
     routes: []const RouteRuleSpec = &.{},
     capture: CaptureSpec = .{},
-    emulate_responses: bool = false,
     isolation: []const u8 = "runtime",
 
     pub fn effectiveDriverName(self: NetworkSpec) []const u8 {

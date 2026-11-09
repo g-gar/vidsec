@@ -46,6 +46,7 @@ pub const IsolatedAdapter = struct {
         self: *IsolatedAdapter,
         raw_url: []const u8,
         operation: []const u8,
+        headers: []const contracts.HttpHeader,
         body: []const u8,
         trace_tag: []const u8,
     ) NetError!NetResult {
@@ -61,6 +62,7 @@ pub const IsolatedAdapter = struct {
             .effective_url = raw_url,
             .uri = uri,
             .operation = operation,
+            .headers = headers,
             .req_body = body,
             .metrics = &self.adapter_metrics,
         };
@@ -79,11 +81,12 @@ pub const IsolatedAdapter = struct {
                 ctx: *anyopaque,
                 raw_url: []const u8,
                 operation: []const u8,
+                headers: []const contracts.HttpHeader,
                 body: []const u8,
                 trace_tag: []const u8,
             ) NetError!NetResult {
                 const s: *IsolatedAdapter = @ptrCast(@alignCast(ctx));
-                return try s.execute(raw_url, operation, body, trace_tag);
+                return try s.execute(raw_url, operation, headers, body, trace_tag);
             }
 
             fn doConnectStream(
@@ -93,7 +96,7 @@ pub const IsolatedAdapter = struct {
                 trace_tag: []const u8,
             ) NetError!NetStreamId {
                 const s: *IsolatedAdapter = @ptrCast(@alignCast(ctx));
-                _ = try s.execute(raw_url, operation, "", trace_tag);
+                _ = try s.execute(raw_url, operation, &.{}, "", trace_tag);
                 return error.NetworkPolicyDenied;
             }
 

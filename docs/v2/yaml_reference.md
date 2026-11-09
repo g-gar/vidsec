@@ -181,7 +181,6 @@ networks:
     driver: sinkhole
     subnet: "10.254.0.0/24"
     capture_protocols: [dns, http, smb, tcp, udp]
-    emulate_responses: false
     isolation: runtime
     capture:
       enabled: true

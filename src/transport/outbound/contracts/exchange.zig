@@ -3,6 +3,12 @@ const Allocator = std.mem.Allocator;
 pub const uri_mod = @import("../../common/uri.zig");
 pub const Uri = uri_mod.Uri;
 
+/// Key-value HTTP/protocol header.
+pub const HttpHeader = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
 /// Domain-agnostic captured exchange record emitted by `MemoryEventSink`.
 pub const CapturedExchangeRecord = struct {
     sequence_id: u64,
@@ -93,6 +99,7 @@ pub const NetExchange = struct {
     effective_url: []const u8,
     uri: Uri,
     operation: []const u8,
+    headers: []const HttpHeader = &.{},
     req_body: []const u8 = "",
 
     /// Populated by `DnsMiddleware` if active.

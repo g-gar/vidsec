@@ -134,8 +134,6 @@ pub const StreamTransport = struct {
         "quic",
     };
 
-    live_network: bool = false,
-
     pub fn createHeap(allocator: Allocator) !ProtocolTransport {
         const self = try allocator.create(StreamTransport);
         self.* = .{};

@@ -60,7 +60,7 @@ It overcomes the four intrinsic L3/L4 bottlenecks of container networking by ope
 ### 2.3. Virtual Sinkhole / Tap Driver (`driver: sinkhole`)
 * **Behavior:** Attaches the task to an isolated virtual network environment with no route to the external internet. Every connection attempt (DNS resolution, HTTP request, SMB handshake, raw TCP/UDP packet) is intercepted by the `flowdata` runtime.
 * **Capabilities:**
-  1. **Service Mocking (`emulate_responses: true`):** Returns synthetic responses for deterministic offline pipeline testing.
+  1. **Service Mocking / Interception:** Returns synthetic responses for deterministic offline pipeline testing.
   2. **Network-as-a-Stream Telemetry (`network.captured_events`):** Serializes intercepted requests into a typed stream routable into `pipeline_memory` or `sqlite`.
   3. **Security Detonation:** Catches SSRF (`CWE-918`), SMB/NTLM hash exfiltration (`T1187`), or tracking beacons triggered when parsing untrusted media containers.
 
@@ -185,7 +185,7 @@ A common architectural question is which policies (redirection, filters, rate-li
 | Subsystem | `driver: none` (Pure Air-Gap) | `driver: sinkhole` (Offline Virtual Network) | `driver: egress` (Controlled Outbound) |
 | :--- | :--- | :--- | :--- |
 | **External Internet Route** | ❌ Physically absent (`ENETUNREACH` / `EACCES` in $O(1)$). | ❌ Physically absent (100% offline). | ✅ Permitted only for `policy.allow_rules` matches. |
-| **Redirection (`redirects:`)** | ⚠️ **Local-Only:** Only permitted if redirecting to an in-memory datasource or loopback mock (`allow_loopback: true`). | ✅ **Active:** Rewrites URLs/IPs toward internal mock responders (`emulate_responses: true`). | ✅ **Active:** Rewrites toward external mirrors or local caches. |
+| **Redirection (`redirects:`)** | ⚠️ **Local-Only:** Only permitted if redirecting to an in-memory datasource or loopback mock (`allow_loopback: true`). | ✅ **Active:** Rewrites URLs/IPs toward internal mock responders. | ✅ **Active:** Rewrites toward external mirrors or local caches. |
 | **L4/L7 Filters (`policy:`)** | Unconditional deny-all. | ✅ **Active:** Classifies attempted calls as `CAPTURED` vs `BLOCKED` in `network.captured_events`. | ✅ **Active:** Enforces Host + Verb + Path / RTMP app / Port ACLs + Anti-SSRF. |
 | **Rate-Limit & Bandwidth** | N/A (0 external packets). | ✅ **Active (Optional):** Can throttle synthetic mock responses to simulate slow links or prevent flood DoS in detonation. | ✅ **Active:** Enforces Token Bucket (`requests_per_second` + `max_bandwidth_mbps`). |
 | **Proxy Pool (`proxies:`)** | ❌ Disabled. | ❌ Disabled (traffic terminates inside the Host sinkhole). | ✅ **Active:** Rotates across HTTP/SOCKS5/Shadowsocks pool with Circuit Breaker. |
@@ -339,7 +339,6 @@ networks:
     driver: sinkhole
     subnet: "10.254.0.0/24"
     capture_protocols: [dns, http, smb, tcp, udp]
-    emulate_responses: false
     isolation: runtime
     capture:
       enabled: true

@@ -135,6 +135,7 @@ pub const EgressAdapter = struct {
         self: *EgressAdapter,
         raw_url: []const u8,
         operation: []const u8,
+        headers: []const contracts.HttpHeader,
         body: []const u8,
         trace_tag: []const u8,
     ) NetError!NetResult {
@@ -148,6 +149,7 @@ pub const EgressAdapter = struct {
             .effective_url = raw_url,
             .uri = uri,
             .operation = operation,
+            .headers = headers,
             .req_body = body,
             .connect_timeout_ms = self.config.timeouts.connect_ms,
             .read_timeout_ms = self.config.timeouts.read_idle_ms,
@@ -164,7 +166,7 @@ pub const EgressAdapter = struct {
         operation: []const u8,
         trace_tag: []const u8,
     ) NetError!NetStreamId {
-        const res = try self.execute(raw_url, operation, "", trace_tag);
+        const res = try self.execute(raw_url, operation, &.{}, "", trace_tag);
         const uri = Uri.parse(res.effective_url) orelse Uri.parse(raw_url) orelse return error.InvalidUri;
         const greeting = if (res.wire_response.len > 0) res.wire_response else res.body;
         const sid = try self.streams.openSession(uri.scheme, res.effective_url, res.proxy_used, greeting);
@@ -178,11 +180,12 @@ pub const EgressAdapter = struct {
                 ctx: *anyopaque,
                 raw_url: []const u8,
                 operation: []const u8,
+                headers: []const contracts.HttpHeader,
                 body: []const u8,
                 trace_tag: []const u8,
             ) NetError!NetResult {
                 const s: *EgressAdapter = @ptrCast(@alignCast(ctx));
-                return try s.execute(raw_url, operation, body, trace_tag);
+                return try s.execute(raw_url, operation, headers, body, trace_tag);
             }
 
             fn doConnectStream(

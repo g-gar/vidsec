@@ -32,6 +32,7 @@ pub const Uri = contracts.Uri;
 pub const NetExchange = contracts.NetExchange;
 pub const NetResult = contracts.NetResult;
 pub const NetError = contracts.NetError;
+pub const HttpHeader = contracts.HttpHeader;
 pub const NetStreamId = contracts.NetStreamId;
 pub const CapturedExchangeRecord = contracts.CapturedExchangeRecord;
 pub const AdapterMetrics = contracts.AdapterMetrics;
