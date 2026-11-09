@@ -3,11 +3,19 @@ const Allocator = std.mem.Allocator;
 const flowdata = @import("flowdata");
 const EnvInterpolator = flowdata.yaml.EnvInterpolator;
 const sdk = @import("mangadex_sdk");
+const komga_sdk = @import("komga_sdk");
 
 pub const AppConfig = struct {
     api_url: []const u8 = "https://api.mangadex.org",
     auth_url: []const u8 = "https://auth.mangadex.org/realms/mangadex/protocol/openid-connect/token",
     user_agent: []const u8 = "FlowdataMangaDex/1.0.0 (https://github.com/flowdata)",
+
+    // Komga integration settings
+    komga_url: []const u8 = "http://localhost:25600",
+    komga_api_key: ?[]const u8 = null,
+    komga_username: ?[]const u8 = null,
+    komga_password: ?[]const u8 = null,
+    komga_library_id: ?[]const u8 = null,
 
     /// Loads configuration by resolving environment variables and/or parsing an optional `.env` file.
     pub fn load(allocator: Allocator, dot_env_path: ?[]const u8) !AppConfig {
@@ -31,6 +39,22 @@ pub const AppConfig = struct {
         }
         if (interp.get("MANGADEX_USER_AGENT")) |ua| {
             cfg.user_agent = try allocator.dupe(u8, ua);
+        }
+
+        if (interp.get("KOMGA_URL") orelse interp.get("KOMGA_BASE_URL")) |url| {
+            cfg.komga_url = try allocator.dupe(u8, url);
+        }
+        if (interp.get("KOMGA_API_KEY")) |k| {
+            cfg.komga_api_key = try allocator.dupe(u8, k);
+        }
+        if (interp.get("KOMGA_USERNAME")) |u| {
+            cfg.komga_username = try allocator.dupe(u8, u);
+        }
+        if (interp.get("KOMGA_PASSWORD")) |p| {
+            cfg.komga_password = try allocator.dupe(u8, p);
+        }
+        if (interp.get("KOMGA_LIBRARY_ID")) |l| {
+            cfg.komga_library_id = try allocator.dupe(u8, l);
         }
 
         return cfg;
@@ -86,5 +110,23 @@ pub const AppConfig = struct {
         }
 
         return null;
+    }
+
+    /// Resolves KomgaAuth strategy from loaded configuration:
+    /// 1. If `komga_api_key` is set -> api_key
+    /// 2. If `komga_username` and `komga_password` are set -> basic_auth
+    /// 3. Otherwise -> none
+    pub fn resolveKomgaAuth(self: AppConfig) komga_sdk.KomgaAuth {
+        if (self.komga_api_key) |k| {
+            if (k.len > 0) return .{ .api_key = k };
+        }
+        if (self.komga_username) |u| {
+            if (self.komga_password) |p| {
+                if (u.len > 0 and p.len > 0) {
+                    return .{ .basic_auth = .{ .username = u, .password = p } };
+                }
+            }
+        }
+        return .none;
     }
 };

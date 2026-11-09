@@ -11,6 +11,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // 1b. Pure standalone Komga SDK module (ZERO imports of Flowdata)
+    const komga_sdk_mod = b.addModule("komga_sdk", .{
+        .root_source_file = b.path("lib/komga_sdk/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // 2. Multi-source abstraction module
     const sources_mod = b.addModule("sources", .{
         .root_source_file = b.path("lib/sources/mod.zig"),
@@ -36,6 +43,7 @@ pub fn build(b: *std.Build) void {
     });
     app_mod.addImport("flowdata", flowdata_mod);
     app_mod.addImport("mangadex_sdk", sdk_mod);
+    app_mod.addImport("komga_sdk", komga_sdk_mod);
     app_mod.addImport("sources", sources_mod);
 
     // 5. Plugin module
@@ -67,6 +75,7 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.addImport("mangadex_app", app_mod);
     exe_mod.addImport("mangadex_sdk", sdk_mod);
+    exe_mod.addImport("komga_sdk", komga_sdk_mod);
     exe_mod.addImport("sources", sources_mod);
     exe_mod.addImport("flowdata", flowdata_mod);
     exe_mod.addImport("flowdata_extensions", extensions_mod);
@@ -86,6 +95,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     test_mod.addImport("mangadex_sdk", sdk_mod);
+    test_mod.addImport("komga_sdk", komga_sdk_mod);
     test_mod.addImport("sources", sources_mod);
     test_mod.addImport("flowdata", flowdata_mod);
     test_mod.addImport("mangadex_app", app_mod);

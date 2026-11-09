@@ -67,7 +67,7 @@ test "MangaDex pipeline.yaml parses and validates into PipelineAST" {
     try std.testing.expectEqualStrings("manga_catalog", step3.module);
     try std.testing.expectEqualStrings("fetch_chapter_pages", step3.task);
     try std.testing.expect(step3.inputs.len >= 1);
-    try std.testing.expectEqual(flowdata.ast.StreamCombinatorOp.slice, step3.inputs[0].expr.op);
+    try std.testing.expectEqual(flowdata.ast.AlgebraOp.slice, step3.inputs[0].expr.op);
     try std.testing.expectEqual(@as(usize, 0), step3.inputs[0].expr.slice_offset);
     try std.testing.expectEqual(@as(usize, 1), step3.inputs[0].expr.slice_count);
     try std.testing.expect(step3.outputs.len >= 1);

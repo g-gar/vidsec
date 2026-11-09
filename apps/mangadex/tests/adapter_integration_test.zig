@@ -4,7 +4,9 @@ const OutboundRegistry = flowdata.transport.outbound.OutboundRegistry;
 const OutboundAdapter = flowdata.transport.outbound.OutboundAdapter;
 const CustomTransportResult = flowdata.transport.outbound.CustomTransportResult;
 const FlowdataHttpAdapter = @import("mangadex_app").adapters.FlowdataHttpAdapter;
+const FlowdataKomgaAdapter = @import("mangadex_app").adapters.FlowdataKomgaAdapter;
 const sdk = @import("mangadex_sdk");
+const komga_sdk = @import("mangadex_app").komga_sdk;
 
 fn testTransportMock(
     _: ?*anyopaque,
@@ -113,5 +115,88 @@ test "FlowdataHttpAdapter maps network error properly" {
     const transport = bridge.httpTransport();
 
     const err = transport.execute(std.testing.allocator, .GET, "https://api.mangadex.org/test", &.{}, "");
+    try std.testing.expectError(error.RateLimited, err);
+}
+
+test "FlowdataKomgaAdapter bridges OutboundAdapter to komga_sdk.HttpTransport" {
+    const allocator = std.testing.allocator;
+
+    var reg = OutboundRegistry.init(allocator);
+    defer reg.deinit();
+    try reg.registerDefaultDrivers();
+
+    const adapter = try reg.resolveOrCreate(.{
+        .id = "komga_egress",
+        .driver = .egress,
+        .policy = .{
+            .default_action = .allow,
+            .block_loopback = false,
+            .block_private_ips = false,
+        },
+    });
+    adapter.setTransportHandler(null, &testTransportMock);
+
+    var bridge = FlowdataKomgaAdapter.init(adapter);
+    const transport = bridge.httpTransport();
+
+    // 1. Test standard 200 GET
+    const resp1 = try transport.execute(allocator, .GET, "http://localhost:25600/ping", &.{}, "");
+    try std.testing.expectEqual(@as(u16, 200), resp1.status_code);
+    try std.testing.expectEqualStrings("pong", resp1.body);
+
+    // 2. Test with headers and body
+    const req_headers = [_]komga_sdk.HttpHeader{
+        .{ .name = "X-Auth-Token", .value = "secret123" },
+    };
+    const resp2 = try transport.execute(allocator, .POST, "http://localhost:25600/api/v1/books", &req_headers, "{}");
+    try std.testing.expectEqual(@as(u16, 200), resp2.status_code);
+    try std.testing.expectEqualStrings("{\"result\":\"ok\"}", resp2.body);
+
+    // 3. Test rate limiting / 429 propagation
+    const resp3 = try transport.execute(allocator, .GET, "http://localhost:25600/rate-limited", &.{}, "");
+    try std.testing.expectEqual(@as(u16, 429), resp3.status_code);
+    try std.testing.expectEqual(@as(u64, 5000), resp3.retry_after_ms);
+}
+
+test "FlowdataKomgaAdapter maps network error properly" {
+    const MockErrAdapter = struct {
+        pub fn outboundAdapter(self: *@This()) OutboundAdapter {
+            return .{
+                .ptr = self,
+                .vtable = &.{
+                    .execute = executeErr,
+                    .connectStream = undefined,
+                    .streamSend = undefined,
+                    .streamRecv = undefined,
+                    .streamClose = undefined,
+                    .capturedRecordsSlice = undefined,
+                    .pcapBytes = undefined,
+                    .metrics = undefined,
+                    .advanceClockMs = undefined,
+                    .setTransportHandler = undefined,
+                    .deinit = deinitNop,
+                },
+            };
+        }
+
+        fn executeErr(
+            _: *anyopaque,
+            _: []const u8,
+            _: []const u8,
+            _: []const flowdata.transport.outbound.HttpHeader,
+            _: []const u8,
+            _: []const u8,
+        ) flowdata.transport.outbound.NetError!flowdata.transport.outbound.NetResult {
+            return error.NetworkRateLimited;
+        }
+
+        fn deinitNop(_: *anyopaque) void {}
+    };
+
+    var mock_obj = MockErrAdapter{};
+    var bridge = FlowdataKomgaAdapter.init(mock_obj.outboundAdapter());
+    const transport = bridge.httpTransport();
+
+    const err = transport.execute(std.testing.allocator, .GET, "http://localhost:25600/api/v1/libraries", &.{}, "");
     try std.testing.expectError(error.RateLimited, err);
 }

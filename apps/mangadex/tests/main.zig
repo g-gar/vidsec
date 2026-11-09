@@ -9,4 +9,5 @@ test {
     _ = @import("source_adaptation_test.zig");
     _ = @import("catalog_plugin_test.zig");
     _ = @import("pipeline_config_test.zig");
+    _ = @import("komga_test.zig");
 }

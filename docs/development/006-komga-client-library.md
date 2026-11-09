@@ -6,6 +6,7 @@
 | **Depends On** | [`ARCH-001`](./001-transport-layer-unification.md), [`ARCH-005`](./005-mangadex-client-library.md) |
 | **Base Specification** | [`openapi.json`](../../openapi.json) (Komga REST API `v1.30.0` / OpenAPI 3.1.0) |
 | **Affected Modules** | `apps/mangadex/lib/komga_sdk/` *(new)*, `apps/mangadex/src/config.zig`, `apps/mangadex/tests/komga_test.zig` |
+| **Status** | `COMPLETED` |
 
 ---
 
