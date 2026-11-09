@@ -18,6 +18,27 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // 1c. Pure standalone ZIP & CBZ module
+    const zip_cflags = &.{ "-std=c99", "-O3", "-D_GNU_SOURCE" };
+    const zip_archive_mod = b.addModule("zip_archive", .{
+        .root_source_file = b.path("lib/zip_archive/src/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    zip_archive_mod.addIncludePath(b.path("lib/zip_archive/c"));
+    zip_archive_mod.addCSourceFile(.{
+        .file = b.path("lib/zip_archive/c/miniz.c"),
+        .flags = zip_cflags,
+    });
+
+    // 1d. Pure standalone ComicInfo XML metadata module (ZERO external dependencies)
+    const comicinfo_mod = b.addModule("comicinfo", .{
+        .root_source_file = b.path("lib/comicinfo/src/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // 2. Multi-source abstraction module
     const sources_mod = b.addModule("sources", .{
         .root_source_file = b.path("lib/sources/mod.zig"),
@@ -44,6 +65,8 @@ pub fn build(b: *std.Build) void {
     app_mod.addImport("flowdata", flowdata_mod);
     app_mod.addImport("mangadex_sdk", sdk_mod);
     app_mod.addImport("komga_sdk", komga_sdk_mod);
+    app_mod.addImport("zip_archive", zip_archive_mod);
+    app_mod.addImport("comicinfo", comicinfo_mod);
     app_mod.addImport("sources", sources_mod);
 
     // 5. Plugin module
@@ -55,6 +78,8 @@ pub fn build(b: *std.Build) void {
     });
     plugin_mod.addImport("flowdata", flowdata_mod);
     plugin_mod.addImport("mangadex_sdk", sdk_mod);
+    plugin_mod.addImport("zip_archive", zip_archive_mod);
+    plugin_mod.addImport("comicinfo", comicinfo_mod);
     plugin_mod.addImport("sources", sources_mod);
     plugin_mod.addImport("mangadex_app", app_mod);
 
@@ -76,6 +101,8 @@ pub fn build(b: *std.Build) void {
     exe_mod.addImport("mangadex_app", app_mod);
     exe_mod.addImport("mangadex_sdk", sdk_mod);
     exe_mod.addImport("komga_sdk", komga_sdk_mod);
+    exe_mod.addImport("zip_archive", zip_archive_mod);
+    exe_mod.addImport("comicinfo", comicinfo_mod);
     exe_mod.addImport("sources", sources_mod);
     exe_mod.addImport("flowdata", flowdata_mod);
     exe_mod.addImport("flowdata_extensions", extensions_mod);
@@ -93,9 +120,12 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("tests/main.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     test_mod.addImport("mangadex_sdk", sdk_mod);
     test_mod.addImport("komga_sdk", komga_sdk_mod);
+    test_mod.addImport("zip_archive", zip_archive_mod);
+    test_mod.addImport("comicinfo", comicinfo_mod);
     test_mod.addImport("sources", sources_mod);
     test_mod.addImport("flowdata", flowdata_mod);
     test_mod.addImport("mangadex_app", app_mod);

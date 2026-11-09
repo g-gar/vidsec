@@ -6,7 +6,7 @@
 | **Depends On** | [`ARCH-007`](./007-zip-archive-and-cbz-engine.md) |
 | **Reference** | [Anansi Project ComicInfo Schema](https://github.com/anansi-project/comicinfo) (v2.0 / v2.1) |
 | **Target Module** | `apps/mangadex/lib/comicinfo/` |
-| **Status** | `SPECIFICATION & DESIGN` |
+| **Status** | `COMPLETED` |
 
 ---
 

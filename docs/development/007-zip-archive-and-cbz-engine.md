@@ -5,7 +5,7 @@
 | **ID** | `ARCH-007` |
 | **Depends On** | [`ARCH-005`](./005-mangadex-client-library.md) |
 | **Area** | `apps/mangadex/lib/zip_archive/` |
-| **Status** | `SPECIFICATION & DESIGN` |
+| **Status** | `COMPLETED` |
 
 ---
 
