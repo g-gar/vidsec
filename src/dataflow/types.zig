@@ -135,6 +135,14 @@ pub fn reflectField(comptime T: type, item_ptr: *const T, field_name: []const u8
                     return reflectAny(f.type, field_val);
                 }
             }
+            if (@hasDecl(T, "getParam")) {
+                if (item_ptr.getParam(field_name)) |val| {
+                    return ReflectedValue{ .string = val };
+                }
+            }
+            if (@hasDecl(T, "getReflected")) {
+                return item_ptr.getReflected(field_name);
+            }
             return null;
         },
         else => return null,

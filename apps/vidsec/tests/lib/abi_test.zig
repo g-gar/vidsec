@@ -149,7 +149,7 @@ test "C-ABI Value_ABI, RowView_ABI, and TaskContext SDK roundtrip" {
                 try ctx.windowReadAt(&win, 0, &buf);
                 try std.testing.expectEqualStrings("ISOB", &buf);
 
-                try ctx.emitRow(null, &.{
+                try ctx.emitRow(&.{
                     NamedField_ABI.init("offset", Value_ABI.fromInt(@intCast(win.file_offset))),
                     NamedField_ABI.init("tag", Value_ABI.fromText(win.tagSlice())),
                     NamedField_ABI.init("entropy", Value_ABI.fromFloat(7.85)),

@@ -1,14 +1,17 @@
 const std = @import("std");
-const root = @import("root.zig");
+const flowdata = @import("flowdata");
+const extensions = @import("flowdata_extensions");
 
-pub fn main() !void {
-    const allocator = std.heap.page_allocator;
-
-    const cfg = try root.AppConfig.load(allocator, ".env");
-    defer {
-        if (!std.mem.eql(u8, cfg.api_url, "https://api.mangadex.org")) allocator.free(cfg.api_url);
-        if (!std.mem.eql(u8, cfg.auth_url, "https://auth.mangadex.org/realms/mangadex/protocol/openid-connect/token")) allocator.free(cfg.auth_url);
-    }
-
-    std.debug.print("MangaDex Application Initialized (API: {s})\n", .{cfg.api_url});
+pub fn main(init: std.process.Init) !u8 {
+    return flowdata.HostApp.runCliEntry(init, .{
+        .app_name = "mangadex",
+        .description = "MangaDex Declarative Catalog Pipeline & Ingestion Engine",
+        .version = "0.1.0",
+        .driver_initializer = &extensions.datasources.registerDefaultDrivers,
+        .extensions = &.{
+            extensions.inbound_cli.extension,
+            extensions.inbound_http.extension,
+            extensions.inbound_grpc.extension,
+        },
+    });
 }

@@ -7,4 +7,6 @@ test {
     _ = @import("query_and_types_test.zig");
     _ = @import("client_endpoints_test.zig");
     _ = @import("source_adaptation_test.zig");
+    _ = @import("catalog_plugin_test.zig");
+    _ = @import("pipeline_config_test.zig");
 }

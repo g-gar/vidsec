@@ -162,6 +162,58 @@ fn parseKeyValueParams(alloc: Allocator, params_node: yaml_lib.Node) ![]const Ke
     return &.{};
 }
 
+fn parseJobEntry(alloc: Allocator, node: yaml_lib.Node, idx: usize) !ast.JobSpec {
+    var id: []const u8 = "";
+    var datasource: ?[]const u8 = null;
+    var enabled: bool = true;
+    var params_list: std.ArrayListUnmanaged(ast.KeyValueParam) = .empty;
+
+    if (node.asMap()) |entries| {
+        for (entries) |entry| {
+            const k = entry.key;
+            if (std.mem.eql(u8, k, "id")) {
+                id = entry.value.asScalar() orelse "";
+            } else if (std.mem.eql(u8, k, "datasource")) {
+                datasource = entry.value.asScalar();
+            } else if (std.mem.eql(u8, k, "enabled")) {
+                if (entry.value.asScalar()) |s| {
+                    enabled = !std.mem.eql(u8, s, "false");
+                }
+            } else {
+                if (entry.value.asScalar()) |val_str| {
+                    try params_list.append(alloc, .{
+                        .key = k,
+                        .value = val_str,
+                    });
+                } else if (entry.value.asSeq()) |seq| {
+                    var sbuf: std.ArrayListUnmanaged(u8) = .empty;
+                    for (seq, 0..) |s_item, s_idx| {
+                        if (s_item.asScalar()) |s_str| {
+                            if (s_idx > 0) try sbuf.append(alloc, ',');
+                            try sbuf.appendSlice(alloc, s_str);
+                        }
+                    }
+                    try params_list.append(alloc, .{
+                        .key = k,
+                        .value = try sbuf.toOwnedSlice(alloc),
+                    });
+                }
+            }
+        }
+    }
+
+    if (id.len == 0) {
+        id = try std.fmt.allocPrint(alloc, "{d}", .{idx});
+    }
+
+    return ast.JobSpec{
+        .id = id,
+        .datasource = datasource,
+        .enabled = enabled,
+        .params = try params_list.toOwnedSlice(alloc),
+    };
+}
+
 fn parseOutputs(alloc: Allocator, out_node: yaml_lib.Node) ![]const ChannelOutputSpec {
     if (out_node.asMap()) |entries| {
         var list: std.ArrayListUnmanaged(ChannelOutputSpec) = .empty;
@@ -423,7 +475,18 @@ pub fn loadPipelineAstFromYaml(
         }
     }
 
-    // 3. Pipelines & Steps
+    // 3b. Jobs (`jobs:`)
+    const jobs_node = root_node.get("jobs");
+    if (jobs_node) |jn| {
+        if (jn.asSeq()) |seq| {
+            for (seq, 0..) |item, idx| {
+                const job_spec = try parseJobEntry(allocator, item, idx);
+                try builder.addJob(job_spec);
+            }
+        }
+    }
+
+    // 4. Pipelines & Steps
     const pipelines_node = root_node.get("pipelines") orelse return error.MissingPipelinesSection;
     if (pipelines_node.asMap()) |pipe_entries| {
         for (pipe_entries) |pipe_entry| {

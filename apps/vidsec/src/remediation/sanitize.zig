@@ -63,7 +63,7 @@ pub fn runSanitize(ctx: abi.TaskContext) abi.SdkError!abi.TaskStatus_ABI {
 }
 
 fn emitRemediationUpdate(ctx: abi.TaskContext, finding_id: i64, action: []const u8) !void {
-    try ctx.emitRow(null, &.{
+    try ctx.emitRow(&.{
         abi.NamedField_ABI.init("finding_id", abi.Value_ABI.fromInt(finding_id)),
         abi.NamedField_ABI.init("is_remediated", abi.Value_ABI.fromBool(true)),
         abi.NamedField_ABI.init("remediation_action", abi.Value_ABI.fromText(action)),

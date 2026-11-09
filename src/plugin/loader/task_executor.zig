@@ -133,10 +133,24 @@ fn mapAbiStatus(status: abi.TaskStatus_ABI) TaskOutcomeStatus {
     };
 }
 
+fn valueAbiToReflected(alloc: Allocator, v: abi.Value_ABI) dataflow.ReflectedValue {
+    return switch (v.tag) {
+        .null_val => .none,
+        .boolean => .{ .boolean = v.asBool() orelse false },
+        .int64 => .{ .int = v.asInt() orelse 0 },
+        .float64 => .{ .float = v.asFloat() orelse 0.0 },
+        .text => if (v.asText()) |t| .{ .string = alloc.dupe(u8, t) catch t } else .none,
+        .blob => if (v.asBlob()) |b| .{ .bytes = alloc.dupe(u8, b) catch b } else .none,
+    };
+}
+
 const ModuleHostState = struct {
+    allocator: Allocator,
     input_slice: []const u8,
+    input_payload: PayloadHandle,
     params: []const ast_mod.KeyValueParam,
     net_bridge: ?NetworkBridge = null,
+    emitted_records: std.ArrayListUnmanaged(dataflow.DynamicRecord) = .empty,
 
     fn streamSize(raw_ctx: *abi.TaskContext_ABI) callconv(.c) u64 {
         const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
@@ -189,10 +203,53 @@ const ModuleHostState = struct {
                 return .ok;
             }
         }
+
+        // Check if field is present in input_payload (propagated from previous tasks or datasources)
+        if (self.input_payload.getReflected(key)) |rval| {
+            switch (rval) {
+                .boolean => |b| {
+                    out_val.* = abi.Value_ABI.fromBool(b);
+                    return .ok;
+                },
+                .int => |iv| {
+                    out_val.* = abi.Value_ABI.fromInt(iv);
+                    return .ok;
+                },
+                .uint => |uv| {
+                    out_val.* = abi.Value_ABI.fromInt(@intCast(uv));
+                    return .ok;
+                },
+                .float => |fv| {
+                    out_val.* = abi.Value_ABI.fromFloat(fv);
+                    return .ok;
+                },
+                .string => |s| {
+                    out_val.* = abi.Value_ABI.fromText(s);
+                    return .ok;
+                },
+                .bytes => |b| {
+                    out_val.* = abi.Value_ABI.fromBlob(b);
+                    return .ok;
+                },
+                else => {},
+            }
+        }
+
         return .not_found;
     }
 
-    fn emitRow(_: *abi.TaskContext_ABI, _: ?[*:0]const u8, _: [*]const abi.NamedField_ABI, _: usize) callconv(.c) abi.HostError_ABI {
+    fn emitRow(raw_ctx: *abi.TaskContext_ABI, _: ?[*:0]const u8, fields_ptr: [*]const abi.NamedField_ABI, fields_len: usize) callconv(.c) abi.HostError_ABI {
+        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
+        const dyn_fields = self.allocator.alloc(dataflow.DynamicField, fields_len) catch return .out_of_memory;
+        for (0..fields_len) |i| {
+            const nf = fields_ptr[i];
+            const name_owned = self.allocator.dupe(u8, nf.nameSlice()) catch return .out_of_memory;
+            dyn_fields[i] = .{
+                .name = name_owned,
+                .value = valueAbiToReflected(self.allocator, nf.value),
+            };
+        }
+        self.emitted_records.append(self.allocator, dataflow.DynamicRecord.init(dyn_fields)) catch return .out_of_memory;
         return .ok;
     }
 
@@ -325,7 +382,9 @@ pub fn executeTask(
     req: TaskExecutionRequest,
 ) TaskExecutionOutcome {
     var host_state = ModuleHostState{
+        .allocator = req.allocator,
         .input_slice = req.input_bytes,
+        .input_payload = req.input_payload,
         .params = req.params,
         .net_bridge = req.net_bridge,
     };
@@ -352,8 +411,14 @@ pub fn executeTask(
         .host = &ModuleHostState.vtable,
     };
     const status = desc.execute(&raw_ctx);
+
+    const out_payload = if (host_state.emitted_records.items.len > 0)
+        PayloadHandle.fromSlice(dataflow.DynamicRecord, host_state.emitted_records.items)
+    else
+        req.input_payload;
+
     return .{
         .status = mapAbiStatus(status),
-        .output = req.input_payload,
+        .output = out_payload,
     };
 }

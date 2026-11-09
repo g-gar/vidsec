@@ -12,14 +12,21 @@ const FLOWDATA_ABI_VERSION = types.FLOWDATA_ABI_VERSION;
 
 /// Computes the list of output field names from `Outputs` at compile time.
 pub fn computeOutputFields(comptime Outputs: type) []const [*:0]const u8 {
-    const fields = @typeInfo(Outputs).@"struct".fields;
-    comptime var names: [fields.len][*:0]const u8 = undefined;
-    inline for (fields, 0..) |f, i| {
-        const name_z: [:0]const u8 = (f.name ++ "\x00")[0..f.name.len :0];
-        names[i] = name_z.ptr;
+    const info = @typeInfo(Outputs);
+    if (info == .@"struct") {
+        const fields = info.@"struct".fields;
+        comptime var names: [fields.len][*:0]const u8 = undefined;
+        inline for (fields, 0..) |f, i| {
+            const name_z: [:0]const u8 = (f.name ++ "\x00")[0..f.name.len :0];
+            names[i] = name_z.ptr;
+        }
+        const final_names = names;
+        return &final_names;
+    } else {
+        const default_names: [1][*:0]const u8 = .{"value"};
+        const final_names = default_names;
+        return &final_names;
     }
-    const final_names = names;
-    return &final_names;
 }
 
 /// Wraps a pure business logic task `fn (inputs: Inputs) anyerror!Outputs` (or with `Logger`)
@@ -33,7 +40,6 @@ pub fn definePureTask(
     const required_params = input_injector.computeRequiredParams(Inputs);
     const output_fields = computeOutputFields(Outputs);
     const description_z: [:0]const u8 = if (@hasField(@TypeOf(spec), "description")) spec.description else "";
-    const channel_z: ?[:0]const u8 = if (@hasField(@TypeOf(spec), "output_channel")) spec.output_channel else null;
 
     const Trampoline = struct {
         pub fn execute(raw_ctx: *TaskContext_ABI) callconv(.c) TaskStatus_ABI {
@@ -68,7 +74,7 @@ pub fn definePureTask(
             else
                 @compileError("pure task run function must take 1 or 2 parameters");
 
-            ctx.emitTypedRow(channel_z, outputs) catch |err| {
+            ctx.emitTypedRow(outputs) catch |err| {
                 ctx.logErrorFmt("Task '{s}' failed to emit outputs: {s}", .{ spec.name, @errorName(err) });
                 return .fatal_error;
             };

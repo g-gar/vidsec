@@ -58,5 +58,5 @@ pub const FileTriageRow = struct {
 };
 
 pub fn emitFileTriage(ctx: anytype, row: FileTriageRow) !void {
-    try ctx.emitTypedRow(null, row);
+    try ctx.emitTypedRow(row);
 }

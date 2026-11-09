@@ -219,12 +219,43 @@ pub const PipelineEngine = struct {
                     if (std.mem.eql(u8, ref, "stream") or std.mem.eql(u8, ref, "file")) {
                         return active_input;
                     }
+                    if (std.mem.eql(u8, ref, "jobs")) {
+                        if (self.ast.jobs.len > 0) {
+                            return PayloadHandle.fromSlice(ast_mod.JobSpec, self.ast.jobs);
+                        }
+                    }
                     if (outputs.get(ref)) |prev_out| {
                         return prev_out;
                     }
                     if (self.repos.get(ref)) |repo| {
                         if (repo.readPayload(ref)) |payload| {
                             return payload;
+                        }
+                    }
+
+                    // Dynamic field projection for dotted references: `task.field` or `channel.field`
+                    if (std.mem.indexOfScalar(u8, ref, '.')) |dot_idx| {
+                        const target_name = ref[0..dot_idx];
+                        const field_name = ref[dot_idx + 1 ..];
+
+                        const base_payload = if (outputs.get(target_name)) |bo|
+                            bo
+                        else if (self.repos.get(target_name)) |repo|
+                            repo.readPayload(target_name) orelse null
+                        else
+                            null;
+
+                        if (base_payload) |bp| {
+                            if (bp.getReflected(field_name)) |rval| {
+                                const dyn_fields = try self.allocator.alloc(dataflow.DynamicField, 1);
+                                dyn_fields[0] = .{
+                                    .name = try self.allocator.dupe(u8, field_name),
+                                    .value = rval,
+                                };
+                                const dyn_record = try self.allocator.alloc(dataflow.DynamicRecord, 1);
+                                dyn_record[0] = dataflow.DynamicRecord.init(dyn_fields);
+                                return PayloadHandle.fromSlice(dataflow.DynamicRecord, dyn_record);
+                            }
                         }
                     }
                 }
@@ -363,11 +394,9 @@ pub const PipelineEngine = struct {
                         });
                     }
 
-                    // Store output by task ID
-                    try outputs.put(outputs_alloc, task_spec.id, task_output);
-                    current_input = task_output;
+                    // Route to declared output channels and datasources, capturing processed payload
+                    var last_processed_output = task_output;
 
-                    // Route to declared output channels and datasources
                     for (task_spec.outputs) |out_ch| {
                         var channel_payload = task_output;
 
@@ -375,6 +404,15 @@ pub const PipelineEngine = struct {
                             if (std.mem.eql(u8, src_field, "network.captured_events")) {
                                 const new_events = try net_ctrl.collectStepEvents(task_spec.id, step_adapter, records_before);
                                 channel_payload = PayloadHandle.fromSlice(NetworkEvent, new_events);
+                            } else if (task_output.getReflected(src_field)) |rval| {
+                                const dyn_fields = try self.allocator.alloc(dataflow.DynamicField, 1);
+                                dyn_fields[0] = .{
+                                    .name = try self.allocator.dupe(u8, src_field),
+                                    .value = rval,
+                                };
+                                const dyn_record = try self.allocator.alloc(dataflow.DynamicRecord, 1);
+                                dyn_record[0] = dataflow.DynamicRecord.init(dyn_fields);
+                                channel_payload = PayloadHandle.fromSlice(dataflow.DynamicRecord, dyn_record);
                             }
                         }
 
@@ -392,7 +430,12 @@ pub const PipelineEngine = struct {
                         try outputs.put(outputs_alloc, out_ch.name, channel_payload);
                         const scoped_name = try std.fmt.allocPrint(outputs_alloc, "{s}.{s}", .{ task_spec.id, out_ch.name });
                         try outputs.put(outputs_alloc, scoped_name, channel_payload);
+                        last_processed_output = channel_payload;
                     }
+
+                    // Store final processed output by task ID and update current_input
+                    try outputs.put(outputs_alloc, task_spec.id, last_processed_output);
+                    current_input = last_processed_output;
 
                     summary.steps_executed += 1;
                 },

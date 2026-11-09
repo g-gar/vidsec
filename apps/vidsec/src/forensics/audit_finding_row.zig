@@ -14,5 +14,5 @@ pub const AuditFindingRow = struct {
 };
 
 pub fn emitAuditFinding(ctx: anytype, row: AuditFindingRow) !void {
-    try ctx.emitTypedRow("audit_findings", row);
+    try ctx.emitTypedRow(row);
 }

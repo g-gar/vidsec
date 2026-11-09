@@ -125,19 +125,16 @@ pub const TaskContext = struct {
 
     pub fn emitRow(
         self: TaskContext,
-        channel_name: ?[:0]const u8,
         fields: []const NamedField_ABI,
     ) SdkError!void {
-        const ch_ptr: ?[*:0]const u8 = if (channel_name) |c| c.ptr else null;
         const f_ptr: [*]const NamedField_ABI = if (fields.len > 0) fields.ptr else undefined;
-        const rc = self.raw.host.emit_row(self.raw, ch_ptr, f_ptr, fields.len);
+        const rc = self.raw.host.emit_row(self.raw, null, f_ptr, fields.len);
         try mapHostError(rc);
     }
 
-    /// Serializes and emits a strongly-typed struct row to `channel_name` at compile-time.
+    /// Serializes and emits a strongly-typed struct or primitive scalar row at compile-time.
     pub fn emitTypedRow(
         self: TaskContext,
-        channel_name: ?[:0]const u8,
         row: anytype,
     ) SdkError!void {
         const T = @TypeOf(row);
@@ -149,9 +146,24 @@ pub const TaskContext = struct {
                     const val = @field(row, f.name);
                     fields[i] = NamedField_ABI.init(f.name, Value_ABI.fromAny(val));
                 }
-                return self.emitRow(channel_name, &fields);
+                return self.emitRow(&fields);
             },
-            else => @compileError("emitTypedRow expects a struct type"),
+            .int, .float, .bool => {
+                const fields = [_]NamedField_ABI{
+                    NamedField_ABI.init("value", Value_ABI.fromAny(row)),
+                };
+                return self.emitRow(&fields);
+            },
+            .pointer => |p| {
+                if (p.size == .slice and p.child == u8) {
+                    const fields = [_]NamedField_ABI{
+                        NamedField_ABI.init("value", Value_ABI.fromText(row)),
+                    };
+                    return self.emitRow(&fields);
+                }
+                @compileError("Unsupported pointer type in emitTypedRow: " ++ @typeName(T));
+            },
+            else => @compileError("emitTypedRow expects a struct or primitive scalar type, got " ++ @typeName(T)),
         }
     }
 

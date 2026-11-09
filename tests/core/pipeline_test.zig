@@ -284,3 +284,112 @@ test "Modern PipelineEngine: Stream Algebra, Slicing, Merging, and Multi-Channel
     try std.testing.expectEqual(@as(i64, 2), filtered_items[0].id);
     try std.testing.expectEqual(@as(i64, 3), filtered_items[1].id);
 }
+
+const SeriesResult = struct {
+    series_id: []const u8,
+    title: []const u8,
+    year: i64,
+};
+
+const ChapterLookupInputs = struct {
+    series_id: []const u8,
+};
+
+const ChapterResult = struct {
+    chapter_id: []const u8,
+    parent_series_id: []const u8,
+};
+
+fn runFindSeries() !SeriesResult {
+    return .{
+        .series_id = "series-uuid-999",
+        .title = "Frieren",
+        .year = 2020,
+    };
+}
+
+fn runFindChapters(inputs: ChapterLookupInputs) !ChapterResult {
+    return .{
+        .chapter_id = "ch-1",
+        .parent_series_id = inputs.series_id,
+    };
+}
+
+test "Pipeline: Dynamic task struct returns propagate to datasources and downstream task inputs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const yaml_text =
+        \\version: 2
+        \\runtime:
+        \\  workers: 1
+        \\datasources:
+        \\  pipeline_memory:
+        \\    driver: memory
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: step_find_series
+        \\        uses: catalog/find_series
+        \\        outputs:
+        \\          series_out:
+        \\            datasource: pipeline_memory
+        \\      - id: step_find_chapters
+        \\        uses: catalog/find_chapters
+        \\        in: series_out
+        \\        outputs:
+        \\          chapters_out:
+        \\            datasource: pipeline_memory
+    ;
+
+    const ast = try yaml_core.loadPipelineAstFromYaml(alloc, yaml_text, .{});
+
+    var modules = ModuleRegistry.init(alloc);
+    defer modules.deinit();
+
+    const Plugin = struct {
+        const tasks = [_]abi_lib.TaskDescriptor_ABI{
+            abi_lib.defineTask(.{
+                .name = "find_series",
+                .description = "Emits series metadata",
+                .run = &runFindSeries,
+            }),
+            abi_lib.defineTask(.{
+                .name = "find_chapters",
+                .description = "Receives series_id from previous step and emits chapter",
+                .run = &runFindChapters,
+            }),
+        };
+
+        const manifest = abi_lib.defineManifest("catalog", .{ .major = 1, .minor = 0, .patch = 0 }, &tasks);
+    };
+    try modules.registerStaticModule("catalog", &Plugin.manifest);
+
+    var repos = RepositoryRegistry.init(alloc);
+    defer repos.deinit();
+
+    var mem_repo = MemoryRepository.init(alloc);
+    try repos.register("pipeline_memory", mem_repo.storageRepository());
+
+    var engine = PipelineEngine.init(alloc, ast, &modules, &repos);
+    const summary = try engine.run(PayloadHandle.fromSlice(u8, ""));
+
+    try std.testing.expectEqual(@as(usize, 2), summary.steps_executed);
+
+    // Verify step 1 output written to pipeline_memory under 'series_out'
+    const repo = repos.get("pipeline_memory").?;
+    const series_payload = repo.readPayload("series_out").?;
+    try std.testing.expectEqual(@as(usize, 1), series_payload.len);
+    const s_id = series_payload.getReflected("series_id");
+    try std.testing.expect(s_id != null);
+    try std.testing.expectEqualStrings("series-uuid-999", s_id.?.asString().?);
+
+    // Verify step 2 output written to pipeline_memory under 'chapters_out'
+    // and that step 2 correctly received 'series_id' from step 1!
+    const chapters_payload = repo.readPayload("chapters_out").?;
+    try std.testing.expectEqual(@as(usize, 1), chapters_payload.len);
+    const p_id = chapters_payload.getReflected("parent_series_id");
+    try std.testing.expect(p_id != null);
+    try std.testing.expectEqualStrings("series-uuid-999", p_id.?.asString().?);
+}

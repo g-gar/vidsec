@@ -7,29 +7,29 @@ const IrAttachmentRow = @import("ir_attachment_row.zig").IrAttachmentRow;
 const IrExternalRefRow = @import("ir_external_ref_row.zig").IrExternalRefRow;
 
 pub fn emitContainerMetadata(ctx: anytype, row: ContainerMetadataRow) !void {
-    try ctx.emitTypedRow("container_metadata", row);
+    try ctx.emitTypedRow(row);
 }
 
 pub fn emitIrRegion(ctx: anytype, row: IrRegionRow) !void {
-    try ctx.emitTypedRow("ir_regions", row);
+    try ctx.emitTypedRow(row);
 }
 
 pub fn emitIrSampleExtent(ctx: anytype, row: IrSampleExtentRow) !void {
-    try ctx.emitTypedRow("ir_sample_extents", row);
+    try ctx.emitTypedRow(row);
 }
 
 pub fn emitIrUnreferencedSlack(ctx: anytype, row: IrUnreferencedSlackRow) !void {
-    try ctx.emitTypedRow("ir_unreferenced_slack", row);
+    try ctx.emitTypedRow(row);
 }
 
 pub fn emitIrCodecConfig(ctx: anytype, row: IrCodecConfigRow) !void {
-    try ctx.emitTypedRow("ir_codec_configs", row);
+    try ctx.emitTypedRow(row);
 }
 
 pub fn emitIrAttachment(ctx: anytype, row: IrAttachmentRow) !void {
-    try ctx.emitTypedRow("ir_attachments", row);
+    try ctx.emitTypedRow(row);
 }
 
 pub fn emitIrExternalRef(ctx: anytype, row: IrExternalRefRow) !void {
-    try ctx.emitTypedRow("ir_external_refs", row);
+    try ctx.emitTypedRow(row);
 }

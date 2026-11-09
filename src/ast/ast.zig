@@ -39,6 +39,31 @@ pub const RouteRuleSpec = network.contracts.RouteRuleSpec;
 pub const CaptureSpec = network.contracts.CaptureSpec;
 pub const NetworkSpec = network.contracts.NetworkSpec;
 
+// =============================================================================
+// RECONCILIATION / RECON WORKLOAD JOBS SPECIFICATION (CORE AST)
+// =============================================================================
+
+pub const JobSpec = struct {
+    id: []const u8,
+    datasource: ?[]const u8 = null,
+    enabled: bool = true,
+    params: []const KeyValueParam = &.{},
+
+    pub fn getParam(self: JobSpec, key: []const u8) ?[]const u8 {
+        if (std.mem.eql(u8, key, "id")) return self.id;
+        if (self.datasource) |ds| {
+            if (std.mem.eql(u8, key, "datasource")) return ds;
+        }
+        if (std.mem.eql(u8, key, "enabled")) {
+            return if (self.enabled) "true" else "false";
+        }
+        for (self.params) |p| {
+            if (std.mem.eql(u8, p.key, key)) return p.value;
+        }
+        return null;
+    }
+};
+
 /// Specification for an open-ended storage datasource (memory, sqlite, elasticsearch, kafka, s3, etc.).
 /// Driver resolution is handled dynamically via registry without requiring core recompilation.
 pub const DatasourceSpec = struct {
@@ -207,6 +232,7 @@ pub const PipelineAST = struct {
     modules: []const ModuleSpec = &.{},
     networks: []const NetworkSpec = &.{},
     datasources: []const DatasourceSpec = &.{},
+    jobs: []const JobSpec = &.{},
     pipelines: []const PipelineDecl = &.{},
 
     pub fn getModule(self: PipelineAST, name: []const u8) ?ModuleSpec {
@@ -236,6 +262,13 @@ pub const PipelineAST = struct {
         }
         return null;
     }
+
+    pub fn getJob(self: PipelineAST, id: []const u8) ?JobSpec {
+        for (self.jobs) |j| {
+            if (std.mem.eql(u8, j.id, id)) return j;
+        }
+        return null;
+    }
 };
 
 // =============================================================================
@@ -262,6 +295,7 @@ pub const PipelineBuilder = struct {
     modules: std.ArrayListUnmanaged(ModuleSpec) = .empty,
     networks: std.ArrayListUnmanaged(NetworkSpec) = .empty,
     datasources: std.ArrayListUnmanaged(DatasourceSpec) = .empty,
+    jobs: std.ArrayListUnmanaged(JobSpec) = .empty,
     pipelines: std.ArrayListUnmanaged(PipelineDecl) = .empty,
 
     pub fn init(backing_allocator: Allocator) PipelineBuilder {
@@ -314,6 +348,11 @@ pub const PipelineBuilder = struct {
             }
         }
         try self.datasources.append(alloc, spec);
+    }
+
+    pub fn addJob(self: *PipelineBuilder, job: JobSpec) !void {
+        const alloc = self.allocator();
+        try self.jobs.append(alloc, job);
     }
 
     pub fn addPipeline(self: *PipelineBuilder, decl: PipelineDecl) ValidationError!void {
@@ -389,6 +428,7 @@ pub const PipelineBuilder = struct {
             .modules = try self.modules.toOwnedSlice(alloc),
             .networks = try self.networks.toOwnedSlice(alloc),
             .datasources = try self.datasources.toOwnedSlice(alloc),
+            .jobs = try self.jobs.toOwnedSlice(alloc),
             .pipelines = try self.pipelines.toOwnedSlice(alloc),
         };
     }

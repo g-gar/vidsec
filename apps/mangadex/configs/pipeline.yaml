@@ -1,0 +1,88 @@
+version: 2
+
+# =============================================================================
+# MangaDex Catalog Ingestion & Synchronization Pipeline
+# Declarative, field-routed analytical pipeline with black-box tasks.
+# Memory is a first-class datasource; SQLite is an analytical sink.
+# =============================================================================
+
+runtime:
+  workers: 1
+
+datasources:
+  # Fast in-memory repository for zero-copy step chaining and RAM coordination
+  pipeline_memory:
+    driver: memory
+
+  # Relational sink for long-term catalog caching and offline queries
+  catalog_db:
+    driver: sqlite
+    path: "${MANGADEX_DB_PATH:-./mangadex.db}"
+
+networks:
+  mangadex_api:
+    egress:
+      live_egress: true
+      tls:
+        enabled: true
+      rate_limit:
+        requests_per_second: 5
+        burst: 10
+      allow:
+        - host: "api.mangadex.org"
+          ports: [443]
+        - host: "auth.mangadex.org"
+          ports: [443]
+
+# =============================================================================
+# JOBS (Work Targets / Seeds)
+# User-managed tracking targets. No manga IDs are hardcoded in task steps!
+# =============================================================================
+jobs:
+  - title: "Frieren: Beyond Journey's End"
+    datasource: mangadex
+    series_id: "${MANGADEX_SERIES_ID:-a1c7c817-4e59-42b5-bd33-02047732da38}"
+    languages: ["es", "en"]
+    chapters: "all"
+    enabled: true
+
+  - title: "Chainsaw Man"
+    datasource: mangadex
+    series_id: "a7774250-3785-4bda-ac68-6d4fb245ab5f"
+    languages: ["es"]
+    chapters: "latest:5"
+    enabled: false
+
+modules:
+  manga_catalog:
+    path: "./zig-out/lib/libmanga_catalog.so"
+
+pipelines:
+  # ===========================================================================
+  # MAIN PIPELINE: Ingest Manga Metadata & Discover Chapter Listings
+  # ===========================================================================
+  main:
+    steps:
+      # -----------------------------------------------------------------------
+      # STEP 1: Fetch Series Metadata from active jobs
+      # Consumes 'jobs' work targets dynamically (no hardcoded series_id)
+      # -----------------------------------------------------------------------
+      - id: fetch_details
+        uses: manga_catalog/fetch_series_details
+        inputs:
+          input: jobs
+        outputs:
+          series_details:
+            datasource: pipeline_memory
+
+      # -----------------------------------------------------------------------
+      # STEP 2: Fetch Chapters List
+      # Receives series_id from step 1's series_details and language from subscription
+      # -----------------------------------------------------------------------
+      - id: fetch_chapters
+        uses: manga_catalog/fetch_chapters
+        inputs:
+          input: series_details
+        outputs:
+          discovered_chapters:
+            datasource: pipeline_memory
