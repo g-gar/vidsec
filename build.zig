@@ -66,6 +66,13 @@ pub fn build(b: *std.Build) void {
     ds_sqlite_mod.addImport("flowdata", flowdata_mod);
     ds_sqlite_mod.linkSystemLibrary("sqlite3", .{});
 
+    const ds_yaml_file_mod = b.addModule("flowdata_datasource_yaml_file", .{
+        .root_source_file = b.path("extensions/datasource/yaml_file/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    ds_yaml_file_mod.addImport("flowdata", flowdata_mod);
+
     const extensions_mod = b.addModule("flowdata_extensions", .{
         .root_source_file = b.path("extensions/mod.zig"),
         .target = target,
@@ -76,6 +83,7 @@ pub fn build(b: *std.Build) void {
     extensions_mod.addImport("flowdata_datasource_memory", ds_memory_mod);
     extensions_mod.addImport("flowdata_datasource_file_store", ds_file_store_mod);
     extensions_mod.addImport("flowdata_datasource_sqlite", ds_sqlite_mod);
+    extensions_mod.addImport("flowdata_datasource_yaml_file", ds_yaml_file_mod);
     extensions_mod.linkSystemLibrary("sqlite3", .{});
 
     // 5. Tests
@@ -85,6 +93,7 @@ pub fn build(b: *std.Build) void {
     const run_ds_memory = b.addRunArtifact(b.addTest(.{ .root_module = ds_memory_mod }));
     const run_ds_file_store = b.addRunArtifact(b.addTest(.{ .root_module = ds_file_store_mod }));
     const run_ds_sqlite = b.addRunArtifact(b.addTest(.{ .root_module = ds_sqlite_mod }));
+    const run_ds_yaml_file = b.addRunArtifact(b.addTest(.{ .root_module = ds_yaml_file_mod }));
 
     const test_suite_mod = b.createModule(.{
         .root_source_file = b.path("tests/main.zig"),
@@ -118,5 +127,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_ds_memory.step);
     test_step.dependOn(&run_ds_file_store.step);
     test_step.dependOn(&run_ds_sqlite.step);
+    test_step.dependOn(&run_ds_yaml_file.step);
     test_step.dependOn(&run_test_suite.step);
 }

@@ -279,6 +279,21 @@ pub fn parseNetworkDecl(alloc: Allocator, id: []const u8, net_node: yaml_lib.Nod
         }
     }
 
+    if (net_node.get("headers")) |h_node| {
+        if (h_node.asMap()) |entries| {
+            var h_list: std.ArrayListUnmanaged(ast.KeyValueParam) = .empty;
+            for (entries) |entry| {
+                if (entry.value.asScalar()) |val_str| {
+                    try h_list.append(alloc, .{
+                        .key = entry.key,
+                        .value = val_str,
+                    });
+                }
+            }
+            spec.headers = try h_list.toOwnedSlice(alloc);
+        }
+    }
+
     spec.policy = try parsePolicy(alloc, net_node);
 
     if (net_node.get("pool")) |p_node| {

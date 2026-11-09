@@ -103,6 +103,11 @@ pub const FlowdataHttpAdapter = struct {
                     else => error.NetworkFailure,
                 };
 
+                task_ctx.logInfoFmt("HTTP {s} {s} => status={d} len={d}", .{ method.asText(), url, res.status_code, res.body.toSlice().len });
+                if (res.status_code >= 400) {
+                    task_ctx.logWarnFmt("HTTP error body: {s}", .{ res.body.toSlice() });
+                }
+
                 return .{
                     .status_code = res.status_code,
                     .body = res.body.toSlice(),

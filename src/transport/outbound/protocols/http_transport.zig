@@ -8,6 +8,11 @@ const NetExchange = contracts.NetExchange;
 const NetResult = contracts.NetResult;
 const NetError = contracts.NetError;
 
+fn getEnv(name: [*:0]const u8) ?[]const u8 {
+    const ptr = std.c.getenv(name) orelse return null;
+    return std.mem.span(ptr);
+}
+
 pub const HttpParsedResponse = struct {
     status_code: u16,
     retry_after_ms: u64 = 0,
@@ -57,7 +62,11 @@ pub const HttpTransport = struct {
         }
 
         if (!has_user_agent) {
-            buf.appendSlice(allocator, "User-Agent: flowdata-net/2.0\r\n") catch return error.OutOfMemory;
+            if (getEnv("USER_AGENT") orelse getEnv("HTTP_USER_AGENT")) |ua| {
+                buf.appendSlice(allocator, "User-Agent: ") catch return error.OutOfMemory;
+                buf.appendSlice(allocator, ua) catch return error.OutOfMemory;
+                buf.appendSlice(allocator, "\r\n") catch return error.OutOfMemory;
+            }
         }
         if (!has_accept) {
             buf.appendSlice(allocator, "Accept: */*\r\n") catch return error.OutOfMemory;
@@ -138,22 +147,28 @@ pub const HttpTransport = struct {
             };
             defer client.deinit();
 
+            var std_headers: std.http.Client.Request.Headers = .{};
             var extra_headers: std.ArrayListUnmanaged(std.http.Header) = .empty;
             defer extra_headers.deinit(exchange.allocator);
 
-            var user_agent_found = false;
+            var explicit_user_agent: ?[]const u8 = null;
             for (exchange.headers) |h| {
-                if (std.ascii.eqlIgnoreCase(h.name, "user-agent")) user_agent_found = true;
-                extra_headers.append(exchange.allocator, .{
-                    .name = h.name,
-                    .value = h.value,
-                }) catch return error.OutOfMemory;
+                if (std.ascii.eqlIgnoreCase(h.name, "user-agent")) {
+                    explicit_user_agent = h.value;
+                } else if (std.ascii.eqlIgnoreCase(h.name, "authorization")) {
+                    std_headers.authorization = .{ .override = h.value };
+                } else {
+                    extra_headers.append(exchange.allocator, .{
+                        .name = h.name,
+                        .value = h.value,
+                    }) catch return error.OutOfMemory;
+                }
             }
-            if (!user_agent_found) {
-                extra_headers.append(exchange.allocator, .{
-                    .name = "User-Agent",
-                    .value = "flowdata-net/2.0",
-                }) catch return error.OutOfMemory;
+
+            if (explicit_user_agent) |ua| {
+                std_headers.user_agent = .{ .override = ua };
+            } else if (getEnv("USER_AGENT") orelse getEnv("HTTP_USER_AGENT")) |env_ua| {
+                std_headers.user_agent = .{ .override = env_ua };
             }
 
             var body_writer = std.Io.Writer.Allocating.init(exchange.allocator);
@@ -173,6 +188,7 @@ pub const HttpTransport = struct {
             const fetch_res = client.fetch(.{
                 .location = .{ .url = exchange.effective_url },
                 .method = method,
+                .headers = std_headers,
                 .payload = if (exchange.req_body.len > 0) exchange.req_body else null,
                 .extra_headers = extra_headers.items,
                 .response_writer = &body_writer.writer,

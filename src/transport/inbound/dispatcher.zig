@@ -355,10 +355,16 @@ pub const InboundDispatcher = struct {
                     .exit_code = 1,
                 };
             },
-            .none => return .{
-                .status = .invalid_request,
-                .message = "Missing input file or payload for 'run' command",
-                .exit_code = 1,
+            .none => active_runner.runMemory(&.{}, opts) catch |err| {
+                const a = self.arena.allocator();
+                const err_msg = try std.fmt.allocPrint(a, "Pipeline execution failed: {s}\n", .{@errorName(err)});
+                const json_err = try std.fmt.allocPrint(a, "{{\"status\":\"error\",\"error\":\"{s}\"}}\n", .{@errorName(err)});
+                return .{
+                    .status = .execution_failed,
+                    .message = err_msg,
+                    .output_bytes = json_err,
+                    .exit_code = 1,
+                };
             },
         };
 

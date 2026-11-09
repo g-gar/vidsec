@@ -1,9 +1,6 @@
 const std = @import("std");
 
-pub const KeyValueParam = struct {
-    key: []const u8,
-    value: []const u8,
-};
+pub const KeyValueParam = @import("../../../repository/repository_registry.zig").ConfigParam;
 pub const KeyValueEntry = KeyValueParam;
 
 pub const NetworkDriver = enum {
@@ -220,6 +217,7 @@ pub const NetworkSpec = struct {
     driver: NetworkDriver = .none,
     driver_name: ?[]const u8 = null,
     listen: ?[]const u8 = null,
+    headers: []const KeyValueParam = &.{},
     policy: NetworkPolicySpec = .{},
     pool: PoolSpec = .{},
     timeouts: TimeoutsSpec = .{},

@@ -140,6 +140,31 @@ pub const EgressAdapter = struct {
         trace_tag: []const u8,
     ) NetError!NetResult {
         const uri = Uri.parse(raw_url) orelse return error.InvalidUri;
+        var effective_headers = headers;
+        if (self.config.headers.len > 0) {
+            var merged = std.ArrayListUnmanaged(contracts.HttpHeader).empty;
+            for (headers) |h| {
+                try merged.append(self.arena.allocator(), h);
+            }
+            for (self.config.headers) |cfg_h| {
+                if (cfg_h.value.len == 0) continue;
+                var found = false;
+                for (headers) |h| {
+                    if (std.ascii.eqlIgnoreCase(h.name, cfg_h.key)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    try merged.append(self.arena.allocator(), .{
+                        .name = cfg_h.key,
+                        .value = cfg_h.value,
+                    });
+                }
+            }
+            effective_headers = try merged.toOwnedSlice(self.arena.allocator());
+        }
+
         var ex = NetExchange{
             .allocator = self.arena.allocator(),
             .adapter_id = self.config.id,
@@ -149,7 +174,7 @@ pub const EgressAdapter = struct {
             .effective_url = raw_url,
             .uri = uri,
             .operation = operation,
-            .headers = headers,
+            .headers = effective_headers,
             .req_body = body,
             .connect_timeout_ms = self.config.timeouts.connect_ms,
             .read_timeout_ms = self.config.timeouts.read_idle_ms,

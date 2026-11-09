@@ -10,6 +10,57 @@ const TaskContext = abi.TaskContext;
 const MangaDexClient = sdk.MangaDexClient;
 const MangaDexSource = sources.MangaDexSource;
 const FlowdataHttpAdapter = adapters.FlowdataHttpAdapter;
+const AppConfig = @import("mangadex_app").config.AppConfig;
+
+fn createClient(alloc: Allocator, ctx: TaskContext, http_bridge: *FlowdataHttpAdapter) MangaDexClient {
+    var app_cfg = AppConfig.load(alloc, "configs/.env") catch AppConfig.load(alloc, ".env") catch AppConfig{};
+    var interp = flowdata.yaml.EnvInterpolator.init(true);
+    defer interp.deinit(alloc);
+    if (AppConfig.readDotEnvFile(alloc, "configs/.env")) |dotenv| {
+        defer alloc.free(dotenv);
+        interp.parseDotEnv(alloc, dotenv) catch {};
+    } else if (AppConfig.readDotEnvFile(alloc, ".env")) |dotenv| {
+        defer alloc.free(dotenv);
+        interp.parseDotEnv(alloc, dotenv) catch {};
+    }
+
+    // 1. Resolve User-Agent: task param in pipeline.yaml > .env / env var > fallback
+    var user_agent = app_cfg.user_agent;
+    if (ctx.getParam("user_agent") catch null) |ua_val| {
+        if (ua_val.asText()) |ua| {
+            if (ua.len > 0) user_agent = ua;
+        }
+    }
+
+    // 2. Resolve Auth Provider: task param in pipeline.yaml > .env / env vars > anonymous
+    var auth_provider: ?sdk.AuthProvider = null;
+    if (ctx.getParam("token") catch null) |tok_val| {
+        if (tok_val.asText()) |t| {
+            if (t.len > 0) auth_provider = sdk.StaticTokenAuth.create(alloc, t) catch null;
+        }
+    }
+    if (auth_provider == null) {
+        auth_provider = app_cfg.resolveAuthProvider(alloc, &interp) catch null;
+    }
+
+    // 3. Resolve API URL: task param in pipeline.yaml > .env / env var > default
+    var api_url = app_cfg.api_url;
+    if (ctx.getParam("api_url") catch null) |url_val| {
+        if (url_val.asText()) |u| {
+            if (u.len > 0) api_url = u;
+        }
+    }
+
+    return MangaDexClient.init(
+        alloc,
+        .{
+            .api_url = api_url,
+            .user_agent = user_agent,
+        },
+        http_bridge.httpTransport(),
+        auth_provider,
+    );
+}
 
 // =============================================================================
 // Output Structs (Return Types)
@@ -37,6 +88,12 @@ pub const ChapterItem = struct {
     scanlation_group: ?[]const u8 = null,
 };
 
+pub const ChapterPageItem = struct {
+    source_chapter_id: []const u8,
+    page_number: u32,
+    url: []const u8,
+};
+
 // =============================================================================
 // 1. Task: fetch_series_details
 // Consumes job / subscription specification dynamically: job.series_id, job.languages, etc.
@@ -51,7 +108,7 @@ pub const MangaJob = struct {
 
 pub fn runFetchSeriesDetails(alloc: Allocator, ctx: TaskContext, job: MangaJob) !SeriesDetails {
     var http_bridge = FlowdataHttpAdapter.fromTaskContext(ctx);
-    var client = MangaDexClient.init(alloc, .{}, http_bridge.httpTransport(), null);
+    var client = createClient(alloc, ctx, &http_bridge);
 
     var source = MangaDexSource.init(&client);
     const m_source = source.mangaSource();
@@ -90,7 +147,7 @@ pub const FetchChaptersInputs = struct {
 
 pub fn runFetchChapters(alloc: Allocator, ctx: TaskContext, inputs: FetchChaptersInputs) ![]ChapterItem {
     var http_bridge = FlowdataHttpAdapter.fromTaskContext(ctx);
-    var client = MangaDexClient.init(alloc, .{}, http_bridge.httpTransport(), null);
+    var client = createClient(alloc, ctx, &http_bridge);
 
     var source = MangaDexSource.init(&client);
     const m_source = source.mangaSource();
@@ -122,7 +179,44 @@ pub fn runFetchChapters(alloc: Allocator, ctx: TaskContext, inputs: FetchChapter
 }
 
 // =============================================================================
-// 3. Module Manifest & C-ABI Exports
+// 3. Task: fetch_chapter_pages
+// =============================================================================
+
+pub const FetchChapterPagesInputs = struct {
+    source_chapter_id: []const u8,
+    chapter_number: ?[]const u8 = null,
+    series_id: ?[]const u8 = null,
+};
+
+pub fn runFetchChapterPages(alloc: Allocator, ctx: TaskContext, inputs: FetchChapterPagesInputs) ![]ChapterPageItem {
+    var http_bridge = FlowdataHttpAdapter.fromTaskContext(ctx);
+    var client = createClient(alloc, ctx, &http_bridge);
+
+    var source = MangaDexSource.init(&client);
+    const m_source = source.mangaSource();
+
+    ctx.logInfoFmt("Fetching pages for chapter '{s}' (chapter_number: {s})", .{
+        inputs.source_chapter_id,
+        inputs.chapter_number orelse "?",
+    });
+
+    const pages = try m_source.getPageUrls(alloc, inputs.source_chapter_id);
+
+    var page_list = try alloc.alloc(ChapterPageItem, pages.len);
+    for (pages, 0..) |p, idx| {
+        page_list[idx] = .{
+            .source_chapter_id = inputs.source_chapter_id,
+            .page_number = p.page_number,
+            .url = p.url,
+        };
+    }
+
+    ctx.logInfoFmt("Total pages discovered for chapter '{s}': {d}", .{ inputs.source_chapter_id, page_list.len });
+    return page_list;
+}
+
+// =============================================================================
+// 4. Module Manifest & C-ABI Exports
 // =============================================================================
 
 pub const tasks = [_]abi.TaskDescriptor_ABI{
@@ -135,6 +229,11 @@ pub const tasks = [_]abi.TaskDescriptor_ABI{
         .name = "fetch_chapters",
         .description = "Retrieves chapters list for series in the specified language(s) from configured MangaSource",
         .run = &runFetchChapters,
+    }),
+    abi.defineTask(.{
+        .name = "fetch_chapter_pages",
+        .description = "Retrieves page URLs and metadata for a specific chapter from configured MangaSource",
+        .run = &runFetchChapterPages,
     }),
 };
 

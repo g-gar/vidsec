@@ -1,0 +1,46 @@
+version: 2
+
+# =============================================================================
+# MangaDex Catalog Relational Schema Definitions
+# Domain catalog defining tables, primary keys, and foreign keys with CASCADE.
+# =============================================================================
+
+schemas:
+  catalog:
+    # 1. Tracked Manga Series Metadata
+    catalog_series:
+      columns:
+        series_id:           { type: text, pk: true }
+        title:               { type: text }
+        author:              { type: text, nullable: true }
+        artist:              { type: text, nullable: true }
+        status:              { type: text, default: "'ongoing'" }
+        year:                { type: int64, nullable: true }
+        cover_url:           { type: text, nullable: true }
+        available_languages: { type: text, default: "''" }
+        summary:             { type: text, nullable: true }
+
+    # 2. Manga Chapters with Foreign Key referencing Series
+    discovered_chapters:
+      columns:
+        source_chapter_id:   { type: text, pk: true }
+        series_id:           { type: text, ref: catalog_series.series_id, on_delete: cascade }
+        chapter_number:      { type: text }
+        volume_number:       { type: text, nullable: true }
+        title:               { type: text, nullable: true }
+        language:            { type: text }
+        scanlation_group:    { type: text, nullable: true }
+      indexes:
+        - series_id
+
+    # 3. Ephemeral Chapter Pages with Foreign Key referencing Chapters
+    discovered_pages:
+      columns:
+        source_chapter_id:   { type: text, ref: discovered_chapters.source_chapter_id, on_delete: cascade }
+        page_number:         { type: int64 }
+        url:                 { type: text }
+      primary_key:
+        - source_chapter_id
+        - page_number
+      indexes:
+        - source_chapter_id

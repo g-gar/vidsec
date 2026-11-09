@@ -213,15 +213,6 @@ pub const CliTransport = struct {
         else
             .none;
 
-        if (cmd == .run and input_src == .none) {
-            const help_resp = try dispatch_fn(dispatcher_ctx, .{
-                .command = .help,
-                .options = .{ .pipeline_yaml_path = "" },
-            });
-            printStdout(help_resp.message);
-            return 1;
-        }
-
         const req = InvocationRequest{
             .command = cmd,
             .custom_command_name = if (is_custom) cmd_str else "",

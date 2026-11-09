@@ -8,50 +8,45 @@ version: 2
 
 runtime:
   workers: 1
+  default_network: mangadex_api
 
 datasources:
-  # Fast in-memory repository for zero-copy step chaining and RAM coordination
+  # 1. External work items / jobs target datasource
+  tracked_targets:
+    driver: yaml_file
+    path: "${MANGADEX_JOBS_PATH:-./configs/jobs.yaml}"
+
+  # 2. Fast in-memory repository for zero-copy step chaining and RAM coordination
   pipeline_memory:
     driver: memory
 
-  # Relational sink for long-term catalog caching and offline queries
+  # 3. Relational sink for long-term catalog caching and offline queries
   catalog_db:
     driver: sqlite
     path: "${MANGADEX_DB_PATH:-./mangadex.db}"
+    schema: "${MANGADEX_SCHEMA_PATH:-./configs/schemas.yaml}"
 
 networks:
+  # Isolated egress virtual network adapter with ACL rules, token-bucket rate limiter,
+  # and declarative environment-driven headers (interpolated from .env / host environment)
   mangadex_api:
-    egress:
-      live_egress: true
-      tls:
-        enabled: true
-      rate_limit:
-        requests_per_second: 5
-        burst: 10
-      allow:
-        - host: "api.mangadex.org"
+    driver: egress
+    headers:
+      User-Agent: "${MANGADEX_USER_AGENT:-FlowdataMangaDex/1.0.0 (https://github.com/flowdata)}"
+      Authorization: "${MANGADEX_ACCESS_TOKEN:-}"
+    policy:
+      block_private_ranges: true
+      allow_rules:
+        - schemes: [https]
+          hosts:
+            - "api.mangadex.org"
+            - "auth.mangadex.org"
+            - "uploads.mangadex.org"
           ports: [443]
-        - host: "auth.mangadex.org"
-          ports: [443]
-
-# =============================================================================
-# JOBS (Work Targets / Seeds)
-# User-managed tracking targets. No manga IDs are hardcoded in task steps!
-# =============================================================================
-jobs:
-  - title: "Frieren: Beyond Journey's End"
-    datasource: mangadex
-    series_id: "${MANGADEX_SERIES_ID:-a1c7c817-4e59-42b5-bd33-02047732da38}"
-    languages: ["es", "en"]
-    chapters: "all"
-    enabled: true
-
-  - title: "Chainsaw Man"
-    datasource: mangadex
-    series_id: "a7774250-3785-4bda-ac68-6d4fb245ab5f"
-    languages: ["es"]
-    chapters: "latest:5"
-    enabled: false
+          operations: [GET, POST]
+    rate_limit:
+      requests_per_second: 5
+      burst: 10
 
 modules:
   manga_catalog:
@@ -64,20 +59,21 @@ pipelines:
   main:
     steps:
       # -----------------------------------------------------------------------
-      # STEP 1: Fetch Series Metadata from active jobs
-      # Consumes 'jobs' work targets dynamically (no hardcoded series_id)
+      # STEP 1: Fetch Series Metadata from tracked_targets datasource
       # -----------------------------------------------------------------------
       - id: fetch_details
         uses: manga_catalog/fetch_series_details
         inputs:
-          input: jobs
+          input: tracked_targets
         outputs:
           series_details:
             datasource: pipeline_memory
+          catalog_series:
+            datasource: catalog_db
 
       # -----------------------------------------------------------------------
       # STEP 2: Fetch Chapters List
-      # Receives series_id from step 1's series_details and language from subscription
+      # Receives series_id from step 1's series_details
       # -----------------------------------------------------------------------
       - id: fetch_chapters
         uses: manga_catalog/fetch_chapters
@@ -85,4 +81,16 @@ pipelines:
           input: series_details
         outputs:
           discovered_chapters:
-            datasource: pipeline_memory
+            datasource: catalog_db
+
+      # -----------------------------------------------------------------------
+      # STEP 3: Scrape Chapter Pages (First Chapter / index 0)
+      # Uses slice(discovered_chapters, 0, 1) to target only chapter 0
+      # -----------------------------------------------------------------------
+      - id: fetch_pages
+        uses: manga_catalog/fetch_chapter_pages
+        inputs:
+          input: "slice(discovered_chapters, 0, 1)"
+        outputs:
+          discovered_pages:
+            datasource: catalog_db

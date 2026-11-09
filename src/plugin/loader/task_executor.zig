@@ -269,7 +269,16 @@ const ModuleHostState = struct {
         return .ok;
     }
 
-    fn logEvent(_: *abi.TaskContext_ABI, _: abi.LogLevel_ABI, _: [*]const u8, _: usize) callconv(.c) void {}
+    fn logEvent(_: *abi.TaskContext_ABI, level: abi.LogLevel_ABI, msg_ptr: [*]const u8, len: usize) callconv(.c) void {
+        const msg = if (len > 0) msg_ptr[0..len] else "";
+        const lvl_str = switch (level) {
+            .debug => "DEBUG",
+            .info => "INFO",
+            .warn => "WARN",
+            .err => "ERROR",
+        };
+        std.debug.print("[Task {s}] {s}\n", .{ lvl_str, msg });
+    }
 
     fn netRequest(raw_ctx: *abi.TaskContext_ABI, req_ptr: *const abi.NetRequest_ABI, out_resp: *abi.NetResponse_ABI) callconv(.c) abi.HostError_ABI {
         return netRequestOpaque(raw_ctx.opaque_host_state, req_ptr, out_resp);

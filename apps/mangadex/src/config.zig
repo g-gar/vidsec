@@ -7,7 +7,7 @@ const sdk = @import("mangadex_sdk");
 pub const AppConfig = struct {
     api_url: []const u8 = "https://api.mangadex.org",
     auth_url: []const u8 = "https://auth.mangadex.org/realms/mangadex/protocol/openid-connect/token",
-    user_agent: []const u8 = "flowdata-mangadex-app/0.1.0",
+    user_agent: []const u8 = "FlowdataMangaDex/1.0.0 (https://github.com/flowdata)",
 
     /// Loads configuration by resolving environment variables and/or parsing an optional `.env` file.
     pub fn load(allocator: Allocator, dot_env_path: ?[]const u8) !AppConfig {
@@ -29,11 +29,14 @@ pub const AppConfig = struct {
         if (interp.get("MANGADEX_AUTH_URL")) |url| {
             cfg.auth_url = try allocator.dupe(u8, url);
         }
+        if (interp.get("MANGADEX_USER_AGENT")) |ua| {
+            cfg.user_agent = try allocator.dupe(u8, ua);
+        }
 
         return cfg;
     }
 
-    fn readDotEnvFile(allocator: Allocator, path: []const u8) ?[]const u8 {
+    pub fn readDotEnvFile(allocator: Allocator, path: []const u8) ?[]const u8 {
         const null_path = allocator.dupeZ(u8, path) catch return null;
         defer allocator.free(null_path);
 

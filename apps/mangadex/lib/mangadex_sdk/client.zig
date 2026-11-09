@@ -21,7 +21,7 @@ const EntityResponse = types.EntityResponse;
 
 pub const ClientConfig = struct {
     api_url: []const u8 = "https://api.mangadex.org",
-    user_agent: []const u8 = "mangadex-sdk-zig/0.1.0",
+    user_agent: []const u8 = "FlowdataMangaDex/1.0.0 (https://github.com/flowdata)",
 };
 
 pub const ClientError = error{

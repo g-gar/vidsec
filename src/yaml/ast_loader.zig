@@ -162,7 +162,7 @@ fn parseKeyValueParams(alloc: Allocator, params_node: yaml_lib.Node) ![]const Ke
     return &.{};
 }
 
-fn parseJobEntry(alloc: Allocator, node: yaml_lib.Node, idx: usize) !ast.JobSpec {
+pub fn parseJobEntry(alloc: Allocator, node: yaml_lib.Node, idx: usize) !ast.JobSpec {
     var id: []const u8 = "";
     var datasource: ?[]const u8 = null;
     var enabled: bool = true;

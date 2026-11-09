@@ -1,0 +1,11 @@
+# =============================================================================
+# MangaDex Tracking Targets (Jobs)
+# Externalized work item definitions separated from pipeline orchestration.
+# =============================================================================
+
+- title: "Target Manga"
+  datasource: mangadex
+  series_id: "9d45ff11-2385-4179-8663-e0dbb0ebd792"
+  languages: ["en"]
+  chapters: "all"
+  enabled: true

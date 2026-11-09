@@ -11,7 +11,7 @@ test "Catalog plugin manifest conforms to Flowdata ABI" {
     try std.testing.expectEqual(abi.FLOWDATA_ABI_VERSION, manifest.abi_version);
     try std.testing.expectEqualStrings("manga_catalog", manifest.nameSlice());
     try std.testing.expectEqual(@as(u32, 1), manifest.module_version.major);
-    try std.testing.expectEqual(@as(usize, 2), manifest.tasks_len);
+    try std.testing.expectEqual(@as(usize, 3), manifest.tasks_len);
 
     // Verify task discovery
     const t_details = manifest.findTask("fetch_series_details");
@@ -28,6 +28,13 @@ test "Catalog plugin manifest conforms to Flowdata ABI" {
     try std.testing.expect(t_chapters.?.declaresOutputField("source_chapter_id"));
     try std.testing.expect(t_chapters.?.declaresOutputField("chapter_number"));
     try std.testing.expect(t_chapters.?.declaresOutputField("language"));
+
+    const t_pages = manifest.findTask("fetch_chapter_pages");
+    try std.testing.expect(t_pages != null);
+    try std.testing.expectEqualStrings("fetch_chapter_pages", t_pages.?.nameSlice());
+    try std.testing.expect(t_pages.?.declaresOutputField("source_chapter_id"));
+    try std.testing.expect(t_pages.?.declaresOutputField("page_number"));
+    try std.testing.expect(t_pages.?.declaresOutputField("url"));
 }
 
 // Mock TaskContext for execution testing
