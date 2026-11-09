@@ -1,148 +1,148 @@
-# Análisis Técnico: Fuentes Persistentes en el Tiempo y Comunicación Bidireccional con el Cliente
+# Technical Analysis: Persistent Ingestion Sources and Bidirectional Client Communication
 
-| Metadatos | Valor |
+| Metadata | Value |
 | :--- | :--- |
-| **Documento** | Especificación y Análisis de Arquitectura |
-| **Área** | `Flowdata v2 Inbound Transport` & `Reactive Dataflow Engine` |
-| **Estado** | `ANALYSIS & DESIGN` |
-| **Ubicación** | `docs/v2/development/persistent_sources_and_bidirectional_transports.md` |
+| **Document** | Architecture Analysis and Specification |
+| **Domain** | `Flowdata v2 Inbound Transport` & `Reactive Dataflow Engine` |
+| **Status** | `ANALYSIS & DESIGN` |
+| **Location** | `docs/analysis/persistent_sources_and_bidirectional_transports.md` |
 
 ---
 
-## 1. Resumen Ejecutivo y Motivación
+## 1. Executive Summary and Motivation
 
-Hasta la fecha, el transporte de entrada (`src/transport/inbound/`) ha estado orientado a **invocaciones discretas (Request/Response RPC)**:
-1. El cliente envía un lote cerrado de datos (un archivo en disco o un buffer HTTP completo).
-2. El pipeline se ejecuta síncronamente de principio a fin.
-3. El motor emite una respuesta JSON/texto final y la conexión se destruye (`Connection: close`).
+To date, the inbound transport layer (`src/transport/inbound/`) has been primarily structured around **discrete invocations (Request/Response RPC)**:
+1. The client sends a self-contained payload (a file on disk or a complete HTTP buffer).
+2. The pipeline executes synchronously from start to finish.
+3. The engine outputs a final JSON/text response and terminates the connection (`Connection: close`).
 
-Este modelo es insuficiente para dos necesidades nucleares de aplicaciones analíticas modernas (como `vidsec`):
+This model is insufficient for two core requirements of modern analytical applications (such as `vidsec`):
 
-1. **Fuentes persistentes en el tiempo (Streaming Ingestion)**:
-   * **Señales continuas**: Feeds de vídeo en vivo (RTSP, RTMP, WebRTC), ingesta de logs en tiempo real o captura de tráfico de red en modo promiscuo.
-   * **Archivos masivos**: Ficheros de 10 GB a 1 TB que no caben en RAM y cuyos chunks deben fluir por el DAG a medida que llegan por el cable.
-2. **Comunicación asíncrona y bidireccional con el cliente solicitante**:
-   * **Resultados parciales en tiempo real**: Emitir hallazgos forenses (*findings*), alertas de seguridad o progreso porcentual sin esperar a que concluya el análisis completo.
-   * **Control de flujo bidireccional (Backpressure)**: Capacidad del motor para pausar el envío del cliente si el pipeline se satura, y capacidad del cliente para cancelar o pausar el pipeline sobre la marcha.
+1. **Persistent Temporal Sources (Streaming Ingestion)**:
+   * **Continuous signals**: Live video feeds (RTSP, RTMP, WebRTC), real-time log ingestion, or promiscuous network traffic capture.
+   * **Massive files**: 10 GB to 1 TB files that exceed available RAM, whose chunks must flow through the DAG as they arrive over the wire.
+2. **Asynchronous Bidirectional Communication with the Calling Client**:
+   * **Real-time partial findings**: Emitting forensic detections, security alerts, or percentage progress updates without waiting for full pipeline completion.
+   * **Bidirectional Flow Control (Backpressure)**: The engine's ability to pause client ingress when internal buffers saturate, and the client's ability to throttle, pause, or cancel execution mid-stream.
 
-Este documento analiza los protocolos de transporte continuo disponibles (evaluando qué aportaron **HTTP/2**, **HTTP/3** y **WebTransport** frente a **WebSockets**), y define cómo integrar fuentes continuas dentro del álgebra reactiva de Flowdata y su sistema de extensiones.
+This document reviews available streaming transport protocols (evaluating what **HTTP/2**, **HTTP/3**, and **WebTransport** introduced relative to **WebSockets**), and specifies how to integrate continuous sources into Flowdata's reactive dataflow algebra and extension ecosystem.
 
 ---
 
-## 2. Estado del Arte: WebSockets vs. HTTP/2 vs. HTTP/3 vs. WebTransport
+## 2. State of the Art: WebSockets vs. HTTP/2 vs. HTTP/3 vs. WebTransport
 
-Históricamente, los navegadores y servicios web recurrían a **WebSockets** para cualquier interacción persistente. Sin embargo, las evoluciones del protocolo HTTP intentaron abordar o sustituir este problema con diferentes grados de éxito.
+Historically, web browsers and backend services defaulted to **WebSockets** for persistent interactions. Subsequent evolutions of the HTTP standard attempted to address or replace this paradigm with varying degrees of success.
 
 ### 2.1. Server-Sent Events (SSE / EventSource)
-* **Mecanismo**: Unidireccional (Servidor $\to$ Cliente) sobre HTTP/1.1 o HTTP/2 (`text/event-stream`).
-* **Ventajas**: Extremadamente simple, reconexión automática nativa, atraviesa firewalls sin problemas.
-* **Limitación**: El cliente no puede enviar datos de vuelta por el mismo canal (debe abrir peticiones HTTP `POST` independientes).
+* **Mechanism**: Unidirectional (Server $\to$ Client) over standard HTTP/1.1 or HTTP/2 (`text/event-stream`).
+* **Advantages**: Extremely lightweight, native automatic reconnection, traverses middleboxes and firewalls seamlessly.
+* **Limitation**: The client cannot send data back over the same channel (requires issuing separate HTTP `POST` requests).
 
-### 2.2. La promesa y realidad de HTTP/2 (RFC 7540)
-HTTP/2 introdujo multiplexación binaria mediante *frames* (`HEADERS`, `DATA`, `WINDOW_UPDATE`, `RST_STREAM`) sobre una única conexión TCP.
+### 2.2. The Promise and Reality of HTTP/2 (RFC 7540)
+HTTP/2 introduced binary multiplexing via frames (`HEADERS`, `DATA`, `WINDOW_UPDATE`, `RST_STREAM`) across a single TCP connection.
 
-1. **HTTP/2 Server Push (Fracaso en la práctica)**:
-   * *La idea*: El servidor anticipaba recursos y los empujaba al cliente sin que este los pidiera.
-   * *La realidad*: Diseñado para precargar CSS/JS en webs, no para streaming de datos de aplicación. La mayoría de clientes y proxies lo gestionaban mal. En 2022, **Chrome y los navegadores principales eliminaron por defecto el soporte de Server Push**. En HTTP/3, Server Push fue directamente omitido.
-2. **Streaming Bidireccional en HTTP/2 (Éxito vía gRPC)**:
-   * HTTP/2 sí permite que un cliente abra un stream con `DATA` frames continuos y que el servidor responda con `DATA` frames continuos de forma concurrente.
-   * Este es el mecanismo exacto que utiliza **gRPC Streaming** (`client-streaming`, `server-streaming`, `bidirectional-streaming`).
-3. **WebSockets sobre HTTP/2 (RFC 8441 - Extended CONNECT)**:
-   * Permite multiplexar un túnel WebSocket dentro de un único stream HTTP/2 sin abrir una nueva conexión TCP.
-4. **El talón de Aquiles de HTTP/2**:
-   * **Head-of-Line Blocking a nivel TCP**: Aunque HTTP/2 multiplexa 100 streams, todos viajan en un único stream TCP. Si se pierde un solo paquete en la red, **todos los streams se congelan** hasta que TCP retransmite el paquete perdido. Para vídeo en tiempo real en redes con pérdida (WiFi/4G/5G), esto degrada gravemente la latencia.
+1. **HTTP/2 Server Push (Practical Failure)**:
+   * *The intention*: The server anticipated resource needs and pushed assets to the client before requested.
+   * *The reality*: Designed primarily for preloading web assets (CSS/JS), not application data streaming. Most caching proxies and clients handled it poorly. By 2022, **Chrome and major browsers removed default support for Server Push**. In HTTP/3, Server Push was omitted entirely.
+2. **Bidirectional Streaming in HTTP/2 (Success via gRPC)**:
+   * HTTP/2 allows a client to open a stream with continuous `DATA` frames while the server concurrently responds with continuous `DATA` frames.
+   * This is the exact mechanism powering **gRPC Streaming** (`client-streaming`, `server-streaming`, `bidirectional-streaming`).
+3. **WebSockets over HTTP/2 (RFC 8441 - Extended CONNECT)**:
+   * Allows multiplexing a WebSocket tunnel inside an existing HTTP/2 stream without opening a new TCP handshake.
+4. **The Achilles Heel of HTTP/2**:
+   * **TCP Head-of-Line Blocking**: Although HTTP/2 multiplexes dozens of streams, all traffic traverses a single TCP connection. If a single packet is lost in transit, **all streams are blocked** until TCP retransmits the missing segment. For real-time video on lossy networks (WiFi, 4G, 5G), this degrades latency significantly.
 
-### 2.3. HTTP/3 y QUIC (RFC 9000, RFC 9114)
-HTTP/3 traslada la capa de transporte de TCP a **QUIC (sobre UDP)**:
+### 2.3. HTTP/3 and QUIC (RFC 9000, RFC 9114)
+HTTP/3 shifts the transport foundation from TCP to **QUIC (over UDP)**:
 
-1. **Cero Head-of-Line Blocking entre streams**: Cada stream QUIC es independiente a nivel de paquete UDP. Si un stream pierde un paquete, los demás continúan entregando datos sin latencia añadida.
-2. **Conexiones ultra-rápidas (0-RTT Handshake)**: Negociación TLS 1.3 integrada directamente en el handshake de transporte.
-3. **Migración de conexión**: Si el cliente cambia de WiFi a 4G, la conexión no se rompe (identificador de conexión de 64 bits independiente de la IP:puerto).
+1. **Zero Head-of-Line Blocking between streams**: Each QUIC stream is independent at the packet level. If packet loss affects one stream, other streams continue processing without added latency.
+2. **Ultra-fast Connection Establishment (0-RTT Handshake)**: TLS 1.3 negotiation is directly embedded within the transport handshake.
+3. **Connection Migration**: If a client transitions between WiFi and mobile data, the connection persists uninterrupted (using a 64-bit connection ID decoupled from IP:port tuples).
 
-### 2.4. WebTransport: El verdadero sucesor de WebSockets (W3C / IETF)
-Diseñado específicamente sobre **HTTP/3 y QUIC** como la evolución moderna de WebSockets:
+### 2.4. WebTransport: The True Successor to WebSockets (W3C / IETF)
+Designed specifically on top of **HTTP/3 and QUIC** as the modern replacement for WebSockets:
 
-* **Streams Confiables (Streams Reliable)**: Unidireccionales o bidireccionales, ordenados y sin pérdida (ideal para metadatos, comandos, JSON).
-* **Datagramas No Confiables (Datagrams Unreliable)**: Paquetes UDP ligeros sin retransmisión obligatoria (ideal para frames de vídeo en vivo donde perder un frame es preferible a retrasar toda la transmisión).
-* **Multiplexación de múltiples streams en una sola sesión WebTransport**: Una sesión puede enviar vídeo en un stream, audio en otro y telemetría en datagramas.
+* **Reliable Streams**: Unidirectional or bidirectional, ordered, lossless (ideal for control messages, metadata, JSON commands).
+* **Unreliable Datagrams**: Lightweight UDP-style datagrams without mandatory retransmission (ideal for real-time video frames where dropping a stale frame is preferable to stalling the stream).
+* **Session Multiplexing**: A single WebTransport session can carry video on one stream, audio on another, and telemetry across datagrams.
 
 ---
 
-### 2.5. Matriz Comparativa de Protocolos para Inbound
+### 2.5. Protocol Comparison Matrix for Inbound Ingestion
 
-| Característica | WebSockets (RFC 6455) | Server-Sent Events (SSE) | HTTP/2 Bidirectional (gRPC) | WebTransport (HTTP/3 + QUIC) |
+| Feature | WebSockets (RFC 6455) | Server-Sent Events (SSE) | HTTP/2 Bidirectional (gRPC) | WebTransport (HTTP/3 + QUIC) |
 | :--- | :---: | :---: | :---: | :---: |
-| **Transporte Base** | TCP | TCP / TLS | TCP / TLS | **UDP / QUIC** |
-| **Direccionalidad** | Full-Duplex | Unidireccional (S $\to$ C) | Full-Duplex | **Full-Duplex** |
-| **Head-of-Line Blocking** | Sí (TCP) | Sí (TCP) | Sí (TCP) | **No (Streams QUIC independientes)** |
-| **Soporte Datagramas (UDP)** | No (Solo confiable) | No | No | **Sí (`sendDatagram`)** |
-| **Multiplexación nativa** | No (1 conexión = 1 canal) | No | Sí (Streams HTTP/2) | **Sí (Streams + Datagramas)** |
-| **Madurez en Zig / Ecosistema** | **Muy Alta (RFC simple)** | **Muy Alta (puro HTTP)** | Media (requiere H2 frames) | Baja / Emergente (librerías QUIC) |
-| **Complejidad de Kernel** | Baja ($\sim$400 líneas) | Mínima ($\sim$50 líneas) | Media ($\sim$1200 líneas) | Alta (motor cripto QUIC) |
-| **Idoneidad Vidsec v2 (Inmediata)**| **Excelente** | Buena (para alertas) | **Excelente (para microservicios)**| **Excelente (Futuro a medio plazo)** |
+| **Base Transport** | TCP | TCP / TLS | TCP / TLS | **UDP / QUIC** |
+| **Directionality** | Full-Duplex | Unidirectional (S $\to$ C) | Full-Duplex | **Full-Duplex** |
+| **Head-of-Line Blocking** | Yes (TCP) | Yes (TCP) | Yes (TCP) | **No (Independent QUIC Streams)** |
+| **Datagram Support (UDP)** | No (Reliable only) | No | No | **Yes (`sendDatagram`)** |
+| **Native Multiplexing** | No (1 connection = 1 stream) | No | Yes (HTTP/2 Streams) | **Yes (Streams + Datagrams)** |
+| **Zig / Ecosystem Maturity** | **Very High (Simple RFC)** | **Very High (Pure HTTP)** | Moderate (H2 framing) | Low / Emerging (QUIC stacks) |
+| **Kernel Complexity** | Low ($\sim$400 lines) | Minimal ($\sim$50 lines) | Moderate ($\sim$1200 lines) | High (QUIC cryptographic state) |
+| **Vidsec v2 Suitability (Immediate)** | **Excellent** | Good (Alerts only) | **Excellent (Microservices)** | **Excellent (Medium-term Future)** |
 
 ---
 
-## 3. Arquitectura en Flowdata: La Fuente Persistente en el Álgebra Dataflow
+## 3. Architecture in Flowdata: Modeling Persistent Sources in Dataflow Algebra
 
-¿Cómo modelar un flujo continuo en un motor reactivo donde los nodos procesan `PayloadHandle`s?
+How do continuous streams fit into a reactive dataflow engine where nodes process discrete `PayloadHandle`s?
 
-### 3.1. El Ciclo de Vida: Conexión $\to$ Sesión $\to$ Stream
+### 3.1. Ingestion Lifecycle: Connection $\to$ Session $\to$ Stream
 
-En una petición estándar, el ciclo de vida del pipeline coincide con el ciclo de vida de la petición. En una fuente continua, se desacoplan:
+In standard discrete execution, the pipeline lifecycle matches the request lifecycle. In continuous sources, they decouple:
 
-1. **Sesión (`InboundSession`)**:
-   Representa la conexión física abierta por el cliente. Posee un `session_id: u64` único, un `TraceId` W3C raíz, y un canal de respuesta bidireccional (`ClientSink`).
-2. **Eventos de Ingesta (`StreamChunks`)**:
-   Cada frame, chunk de vídeo o mensaje recibido se empaqueta en un `PayloadHandle` efímero que entra como un evento individual al pipeline:
+1. **Session (`InboundSession`)**:
+   Represents the underlying transport connection established by the client. Holds a unique `session_id: u64`, a root W3C `TraceId`, and a bidirectional feedback channel (`ClientSink`).
+2. **Ingress Events (`StreamChunks`)**:
+   Each frame, video chunk, or message is encapsulated in an ephemeral `PayloadHandle` that enters the pipeline as an individual event:
    $$\text{Client Data} \longrightarrow \text{InboundDriver} \longrightarrow \text{PayloadHandle}_n \longrightarrow \text{DAG Pipeline}$$
-3. **Cierre de Stream (`EOS`)**:
-   El cliente envía un frame de cierre (`FIN` de QUIC o frame `Close` de WebSocket). El pipeline recibe una señal `EndOfStream`, ejecuta pases de consolidación/resumen y libera los buffers de la sesión.
+3. **Stream Termination (`EOS`)**:
+   The client issues a close frame (QUIC `FIN` or WebSocket `Close` frame). The pipeline receives an `EndOfStream` sentinel, runs cleanup/aggregation passes, and releases session buffers.
 
 ```mermaid
 flowchart TD
-    subgraph ClientSpace["Espacio del Cliente"]
-        Client["Cliente Remoto<br/>(Navegador, Sensor, Agente Vidsec)"]
+    subgraph ClientSpace["Client Space"]
+        Client["Remote Client<br/>(Browser, Sensor, Vidsec Agent)"]
     end
 
-    subgraph InboundLayer["Capa Inbound (extensions/inbound_*)"]
-        TransportDriver["Driver de Transporte<br/>(WebSocket / gRPC / WebTransport)"]
-        SessionReg["SessionManager<br/>(Mapeo session_id -> ClientSink)"]
+    subgraph InboundLayer["Inbound Layer (extensions/inbound_*)"]
+        TransportDriver["Transport Driver<br/>(WebSocket / gRPC / WebTransport)"]
+        SessionReg["SessionManager<br/>(Maps session_id -> ClientSink)"]
     end
 
-    subgraph FlowdataEngine["Motor Dataflow (Core Flowdata)"]
-        IngressQueue["Canal de Entrada Reactivo<br/>(PayloadHandle Chunks)"]
-        DAG["DAG de Tareas Reactivas<br/>(Demux -> FrameTriage -> NeuralFilter)"]
-        EgressQueue["Canal de Respuestas/Alertas<br/>(PartialFindings / Progress)"]
+    subgraph FlowdataEngine["Dataflow Engine (Flowdata Core)"]
+        IngressQueue["Reactive Ingress Channel<br/>(PayloadHandle Chunks)"]
+        DAG["Reactive Task DAG<br/>(Demux -> FrameTriage -> NeuralFilter)"]
+        EgressQueue["Response/Alert Channel<br/>(PartialFindings / Progress)"]
     end
 
-    Client <-->|"Conexión persistente<br/>(Frames / Chunks bidireccionales)"| TransportDriver
-    TransportDriver -->|"Registra sesión"| SessionReg
-    TransportDriver -->|"Inyecta chunk t_0, t_1..."| IngressQueue
+    Client <-->|"Persistent Connection<br/>(Bidirectional Frames / Chunks)"| TransportDriver
+    TransportDriver -->|"Registers session"| SessionReg
+    TransportDriver -->|"Injects chunk t_0, t_1..."| IngressQueue
     IngressQueue --> DAG
-    DAG -->|"Emite hallazgo t_i"| EgressQueue
-    EgressQueue -->|"Busca ClientSink(session_id)"| SessionReg
-    SessionReg -->|"Push asíncrono frame"| TransportDriver
+    DAG -->|"Emits finding t_i"| EgressQueue
+    EgressQueue -->|"Resolves ClientSink(session_id)"| SessionReg
+    SessionReg -->|"Pushes async frame"| TransportDriver
 ```
 
 ---
 
-### 3.2. Mecanismo de Comunicación de Retorno con el Cliente Solicitante
+### 3.2. Bidirectional Client Feedback Mechanism
 
-Para que cualquier paso del pipeline (`TaskStep`) pueda emitir mensajes al cliente que originó la petición sin acoplarse a sockets de red:
+To allow any pipeline task step (`TaskStep`) to communicate back to the requesting client without coupling to network sockets:
 
-#### Contrato `ClientSink` (Kernel / Dataflow)
+#### `ClientSink` Contract (Kernel / Dataflow)
 ```zig
 pub const ClientSink = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
     pub const VTable = struct {
-        /// Envía un mensaje estructurado (JSON, Protobuf o Binario) de vuelta al cliente.
+        /// Sends a structured payload (JSON, Protobuf, or raw binary) back to the client.
         sendEvent: *const fn (ctx: *anyopaque, event_name: []const u8, payload: []const u8) anyerror!void,
-        /// Solicita control de flujo (frenar o acelerar la ingesta del cliente).
+        /// Informs transport to throttle or resume ingress from the client.
         setBackpressure: *const fn (ctx: *anyopaque, pause_ingress: bool) anyerror!void,
-        /// Cierra la conexión desde el servidor con un código de estado y motivo.
+        /// Server-initiated connection termination.
         close: *const fn (ctx: *anyopaque, code: u16, reason: []const u8) void,
     };
 
@@ -152,49 +152,49 @@ pub const ClientSink = struct {
 };
 ```
 
-#### Inyección en el `TaskContext` del Plugin
-Cuando una tarea se ejecuta dentro de un pipeline con origen en una sesión persistente, el `TaskContext` (vía Guest C-ABI o Zig SDK) expone una función de emisión:
+#### Plugin `TaskContext` Injection
+When a task executes within a persistent session pipeline, its `TaskContext` (via Guest C-ABI or Zig SDK) exposes an event emission helper:
 ```zig
-// Dentro de un plugin de análisis (ej. apps/vidsec/analysis/triage.zig)
+// Inside an analysis plugin (e.g., apps/vidsec/analysis/triage.zig)
 if (malicious_box_found) {
     try ctx.emitClientEvent("finding_alert", "{ \"box\": \"mdat\", \"threat\": \"heap_overflow\" }");
 }
 ```
-El motor enruta automáticamente ese evento al `ClientSink` asociado al `session_id` que procesa ese lote, transmitiéndose inmediatamente por el socket sin alterar el flujo del pipeline.
+The engine automatically routes the payload to the `ClientSink` bound to the active `session_id`, streaming the frame immediately over the wire without interrupting the dataflow DAG.
 
 ---
 
-### 3.3. Control de Flujo Reactivo y Backpressure de Extremo a Extremo
+### 3.3. End-to-End Reactive Backpressure
 
-Uno de los mayores peligros de las fuentes persistentes es la **asimetría de velocidad**: el cliente sube a 1 Gbps pero el análisis de vídeo mediante modelos IA solo procesa a 100 Mbps. Si no hay backpressure, la memoria RAM del servidor se agotará en segundos.
+Persistent feeds carry inherent throughput risks: a client may upload video at 1 Gbps while downstream deep inspection runs at 100 Mbps. Without backpressure, server memory exhaustively inflates.
 
-Flowdata debe aplicar **Backpressure en Cascada**:
+Flowdata applies **Cascading Backpressure**:
 
-1. **Nivel Buffer Interno (`High-Water Mark`)**:
-   Cada sesión tiene un límite de memoria asignado (ej. `max_pending_mb = 32`).
-2. **Pausa de Red**:
-   Cuando el buffer alcanza el 80% de capacidad:
-   * **En WebSockets**: El driver deja de invocar `c.recv()` / `read()` en el socket POSIX. La ventana TCP (`TCP Window`) se satura en el kernel, forzando a la pila TCP del cliente a dejar de transmitir.
-   * **En HTTP/2 / gRPC**: El driver deja de enviar frames `WINDOW_UPDATE`, deteniendo el flujo del stream individual sin afectar a otros streams.
-   * **En HTTP/3 / WebTransport**: QUIC aplica control de flujo a nivel de stream mediante frames `MAX_STREAM_DATA`.
-3. **Reanudación (`Low-Water Mark`)**:
-   Cuando el pipeline procesa los chunks y el buffer cae al 30%, el driver reactiva la lectura del socket.
+1. **Buffer Thresholds (`High-Water Mark`)**:
+   Each session maintains a configured memory quota (e.g., `max_buffer_memory_mb = 64`).
+2. **Transport-Level Throttling**:
+   When buffers hit 80% capacity:
+   * **WebSockets**: The driver halts invocations of `read()` on the POSIX socket. The kernel TCP receive window shrinks to zero, forcing the client's TCP stack to stall transmission.
+   * **HTTP/2 / gRPC**: The driver withholds `WINDOW_UPDATE` frames on that specific stream without impacting adjacent streams.
+   * **HTTP/3 / WebTransport**: QUIC stream-level flow control halts transmission via `MAX_STREAM_DATA` frame limits.
+3. **Resumption (`Low-Water Mark`)**:
+   When the pipeline drains pending chunks below 30% quota, socket reads resume and window updates are transmitted.
 
 ---
 
-## 4. Patrones de Interacción Soportados
+## 4. Supported Interaction Patterns
 
-| Patrón | Descripción | Caso de Uso en Vidsec | Protocolo Idóneo |
+| Pattern | Description | Vidsec Use Case | Preferred Protocol |
 | :--- | :--- | :--- | :--- |
-| **Request-Stream** *(1 $\to$ N)* | El cliente envía una petición o ID; el servidor devuelve un flujo inagotable de eventos. | Monitoreo de alertas forenses, telemetría de pipelines en ejecución, tailing de logs. | SSE o WebSocket |
-| **Stream-Request** *(N $\to$ 1)* | El cliente sube un flujo continuo de chunks; al finalizar, el servidor responde un veredicto consolidado. | Subida de vídeos grandes (4K/8K), inspección de archivos fragmentados. | HTTP/2 Chunked POST o WebSocket |
-| **Bidirectional Stream** *(N $\to$ M)* | Canal abierto interactivo; cliente y servidor intercambian datos y comandos en cualquier momento. | Inspección interactiva de vídeo, streaming en vivo con cuarentena dinámica bajo demanda. | **WebSocket (Hoy)**<br/>**WebTransport (Futuro)** |
+| **Request-Stream** *(1 $\to$ N)* | Client issues an ID or search request; server returns an unbounded event stream. | Live forensic alert feeds, pipeline telemetry, real-time log tailing. | SSE or WebSocket |
+| **Stream-Request** *(N $\to$ 1)* | Client streams consecutive chunks; server yields a single aggregated verdict upon EOF. | Ingesting large 4K/8K video archives, segmented file inspection. | HTTP/2 Chunked POST or WebSocket |
+| **Bidirectional Stream** *(N $\to$ M)* | Interactive open channel; client and server exchange data and commands continuously. | Interactive video inspection, dynamic live quarantine, adaptive triage. | **WebSocket (Immediate)**<br/>**WebTransport (Long-term)** |
 
 ---
 
-## 5. Especificación Declarativa en `pipeline.yaml`
+## 5. Declarative YAML Specification (`pipeline.yaml`)
 
-El diseño propuesto permite configurar fuentes persistentes directamente desde el YAML:
+Persistent sources can be configured declaratively within pipeline schemas:
 
 ```yaml
 version: "2.0.0"
@@ -210,7 +210,7 @@ inbound:
     routes:
       - path: "/v1/live/triage"
         pipeline: live_video_pipeline
-        # El canal de retorno por donde los steps pueden empujar eventos al cliente
+        # Reverse feedback channel where task steps can push real-time events to the caller
         client_sink_channel: "client_alerts"
 
 pipelines:
@@ -221,40 +221,40 @@ pipelines:
         task: parse_box_stream
         outputs:
           - name: alert_events
-            channel: client_alerts # Al estar conectado al sink, hace push directo al WS
+            channel: client_alerts # Directly pushes outbound frames to the client WebSocket
           - name: parsed_frames
             datasource: mem_store
 ```
 
 ---
 
-## 6. Estrategia de Implementación Progresiva para Flowdata
+## 6. Phased Implementation Roadmap for Flowdata
 
-Para no introducir complejidad excesiva de inmediato, se recomienda una evolución en **3 fases**:
+To balance immediate utility with implementation complexity, a **3-phase rollout** is recommended:
 
-### Fase 1: Driver Inbound WebSocket (`extensions/inbound_ws/`)
-* **Por qué primero**: WebSockets (RFC 6455) es un estándar universal, funciona en el 100% de clientes y navegadores, y puede implementarse en Zig nativo sin librerías externas de criptografía pesada (solo handshake SHA1 + Base64 y framing de bits).
-* **Entregable**: 
-  - Protocolo `ws://` sobre sockets POSIX existentes.
-  - Implementación de `ClientSink` para emitir eventos de texto/binarios al cliente.
-  - Test E2E de pipeline con streaming bidireccional.
+### Phase 1: Inbound WebSocket Driver (`extensions/inbound_ws/`)
+* **Rationale**: WebSockets (RFC 6455) is universally supported, compatible with 100% of browsers and CLI tools, and straightforward to implement in native Zig without external cryptographic runtimes (only SHA1 + Base64 handshake and binary bit framing).
+* **Deliverables**:
+  - `ws://` protocol support layered on POSIX sockets.
+  - `ClientSink` implementation for streaming binary and text frames.
+  - End-to-end integration test demonstrating bidirectional pipeline streaming.
 
-### Fase 2: Streaming Unidireccional Server-Sent Events (`inbound_http`)
-* **Por qué**: Extremadamente ligero ($\approx$100 líneas en `extensions/inbound_http`).
-* **Entregable**:
-  - Endpoint `GET /v1/events` que no cierra la conexión y mantiene `Transfer-Encoding: chunked`.
-  - Canal para que el visualizador del DAG (`dag_viz`) o la telemetría OTel envíen eventos en vivo al navegador.
+### Phase 2: Unidirectional Server-Sent Events (`inbound_http`)
+* **Rationale**: Extremely low overhead ($\approx$100 lines of code in `extensions/inbound_http`).
+* **Deliverables**:
+  - `GET /v1/events` endpoint preserving active connections via `Transfer-Encoding: chunked`.
+  - Live pipeline telemetry broadcasting for the DAG visualizer (`dag_viz`) and OpenTelemetry monitors.
 
-### Fase 3: WebTransport sobre HTTP/3 & QUIC (`extensions/inbound_webtransport/`)
-* **Por qué más adelante**: Requiere un motor QUIC completo (manejando UDP, criptografía TLS 1.3 interna y ensamblado de paquetes sin TCP).
-* **Entregable**:
-  - Integración cuando existan librerías QUIC maduras en Zig 0.14+ o mediante una librería C probada (ej. `lsquic` o `msquic`).
-  - Habilitación de datagramas UDP no confiables para vídeo en tiempo real ultra-rápido.
+### Phase 3: WebTransport over HTTP/3 & QUIC (`extensions/inbound_webtransport/`)
+* **Rationale**: Requires a full QUIC engine (UDP packet handling, internal TLS 1.3 records, and loss recovery).
+* **Deliverables**:
+  - Adoption once mature QUIC libraries land in Zig 0.14+ or via C-ABI bindings (e.g., `lsquic` / `msquic`).
+  - Unreliable UDP datagram support for ultra-low latency live media feeds.
 
 ---
 
-## 7. Conclusión
+## 7. Conclusions
 
-* **HTTP/2** resolvió la multiplexación pero arrastra el bloqueo de transporte de TCP y el fracaso de Server Push.
-* **HTTP/3 y WebTransport** representan el futuro técnico absoluto del streaming bidireccional por su arquitectura UDP/QUIC sin bloqueo, pero su coste de implementación hoy en Zig puro es alto.
-* **WebSockets**, respaldado por un modelo de sesión desacoplado y un `ClientSink` reactivo en el core de Flowdata, ofrece la **solución óptima inmediata**: permite streaming de vídeo chunk a chunk, comunicación bidireccional asíncrona con el cliente, y control de flujo reactivo (backpressure) con un footprint mínimo y sin dependencias externas.
+* **HTTP/2** solved multiplexing over a single connection, but suffers from TCP head-of-line blocking and deprecated Server Push.
+* **HTTP/3 and WebTransport** represent the optimal modern target for low-latency bidirectional streaming due to QUIC's unblocked UDP architecture; however, implementation cost in pure Zig remains high today.
+* **WebSockets**, decoupled via `InboundSession` and `ClientSink` in Flowdata's reactive core, provides the **ideal immediate solution**: enabling chunked video streaming, asynchronous client feedback, and cascading backpressure with minimal complexity and zero external dependencies.
