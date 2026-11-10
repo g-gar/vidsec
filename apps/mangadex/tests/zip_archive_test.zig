@@ -5,7 +5,7 @@ const ZipArchiveReader = zip_archive.ZipArchiveReader;
 
 test "Archive Integrity: create, add entries with mixed compression, finalize and read back" {
     const allocator = std.testing.allocator;
-    const zip_path = "/tmp/test_archive_integrity_main.zip";
+    const zip_path = "/tmp/test_archive_integrity.zip";
     _ = std.c.unlink(zip_path);
     defer _ = std.c.unlink(zip_path);
 
@@ -19,11 +19,11 @@ test "Archive Integrity: create, add entries with mixed compression, finalize an
         try writer.addFileFromMemory("metadata.txt", text_content, .default);
 
         // Entry 2: Binary block (store mode)
-        const bin_1 = [_]u8{ 0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46 };
+        const bin_1 = [_]u8{ 0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46 }; // Fake JPEG header
         try writer.addFileFromMemory("001.jpg", &bin_1, .store);
 
         // Entry 3: Second binary block (store mode)
-        const bin_2 = [_]u8{ 0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50 };
+        const bin_2 = [_]u8{ 0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50 }; // Fake WebP header
         try writer.addFileFromMemory("002.webp", &bin_2, .store);
 
         try writer.finish();
@@ -67,7 +67,7 @@ test "Archive Integrity: create, add entries with mixed compression, finalize an
 
 test "Store Mode Performance: 50 pre-compressed image buffers" {
     const allocator = std.testing.allocator;
-    const zip_path = "/tmp/test_perf_main.cbz";
+    const zip_path = "/tmp/test_perf.cbz";
     _ = std.c.unlink(zip_path);
     defer _ = std.c.unlink(zip_path);
 
@@ -95,11 +95,46 @@ test "Store Mode Performance: 50 pre-compressed image buffers" {
     _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts_end);
     const elapsed_ms = (ts_end.sec - ts_start.sec) * 1000 + @divTrunc(ts_end.nsec - ts_start.nsec, 1_000_000);
 
-    // Verify performance: writing 50 pre-compressed pages in store mode should be well under 100ms
+    // Verify performance: writing 50 pre-compressed pages in store mode should be well under 100ms (typically <20ms)
     try std.testing.expect(elapsed_ms < 100);
 
     // Verify resulting archive has exactly 50 files
     var reader = try ZipArchiveReader.openFile(allocator, zip_path);
     defer reader.deinit();
     try std.testing.expectEqual(@as(usize, 50), reader.getNumFiles());
+}
+
+test "In-Memory ZIP extraction with openMemory" {
+    const allocator = std.testing.allocator;
+    const zip_path = "/tmp/test_mem_zip.zip";
+    _ = std.c.unlink(zip_path);
+    defer _ = std.c.unlink(zip_path);
+
+    {
+        var writer = try ZipArchiveWriter.create(allocator, zip_path);
+        defer writer.deinit();
+        try writer.addFileFromMemory("hello.txt", "world", .default);
+        try writer.finish();
+    }
+
+    // Read the zip file bytes into memory
+    const file = if (zip_archive.c.fopen(zip_path, "rb")) |fp| fp else return error.FileNotFound;
+    defer _ = zip_archive.c.fclose(file);
+    _ = zip_archive.c.fseek(file, 0, zip_archive.c.SEEK_END);
+    const size: usize = @intCast(zip_archive.c.ftell(file));
+    _ = zip_archive.c.fseek(file, 0, zip_archive.c.SEEK_SET);
+
+    const mem = try allocator.alloc(u8, size);
+    defer allocator.free(mem);
+    const read_bytes = zip_archive.c.fread(mem.ptr, 1, size, file);
+    try std.testing.expectEqual(size, read_bytes);
+
+    // Open from memory
+    var reader = try ZipArchiveReader.openMemory(allocator, mem);
+    defer reader.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), reader.getNumFiles());
+    const data = try reader.readFileByNameToMemory(allocator, "hello.txt");
+    defer allocator.free(data);
+    try std.testing.expectEqualStrings("world", data);
 }

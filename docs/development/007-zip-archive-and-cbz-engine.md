@@ -41,26 +41,27 @@ We evaluated the two technical paths available in Zig:
 
 ## 2. Directory Layout of `apps/mangadex/lib/zip_archive/`
 
+Consistent with all other internal libraries in `apps/mangadex/lib/`, the module exposes `mod.zig` directly at its root and is registered centrally in `apps/mangadex/build.zig`:
+
 ```text
 apps/mangadex/lib/zip_archive/
-├── build.zig                     # Compiles miniz.c and exposes the zig module
 ├── c/
 │   ├── miniz.c                   # Single-file ANSI C ZIP implementation
 │   └── miniz.h                   # Public header
-├── src/
-│   ├── mod.zig                   # Public module entrypoint
-│   ├── writer.zig                # Idiomatic Zig wrapper around mz_zip_writer
-│   ├── reader.zig                # Archive inspection helper
-│   └── comic_info.zig            # ComicInfo.xml builder and serializer
-└── tests/
-    └── zip_test.zig              # Unit tests for archive generation and verification
+├── c.zig                         # @cImport bridge for miniz.h
+├── mod.zig                       # Public module entrypoint
+├── reader.zig                    # Archive inspection & extraction helper
+└── writer.zig                    # Idiomatic Zig wrapper around mz_zip_writer
 ```
+
+All test cases are centralized alongside the application suite in:
+* `apps/mangadex/tests/zip_archive_test.zig` (run with `zig build test` from `apps/mangadex/`)
 
 ---
 
 ## 3. Idiomatic Zig Interface Specification
 
-### 3.1. `ZipArchiveWriter` (`src/writer.zig`)
+### 3.1. `ZipArchiveWriter` (`writer.zig`)
 
 ```zig
 const std = @import("std");
@@ -184,7 +185,7 @@ sequenceDiagram
 
 ---
 
-## 6. Verification and Testing Plan (`tests/zip_test.zig`)
+## 6. Verification and Testing Plan (`tests/zip_archive_test.zig`)
 
 1. **Archive Integrity Test**:
    * Creates an archive with 3 files (1 text file with `level = .default` and 2 binary blocks with `level = .store`).

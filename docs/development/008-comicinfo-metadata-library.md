@@ -20,7 +20,7 @@
 
 ---
 
-## 2. Core Data Model (`src/schema.zig`)
+## 2. Core Data Model (`schema.zig`)
 
 ```zig
 pub const YesNo = enum {
@@ -121,7 +121,7 @@ pub const ComicInfo = struct {
 
 ---
 
-## 3. Serialization Interface (`src/writer.zig`)
+## 3. Serialization Interface (`writer.zig`)
 
 The serializer converts a `ComicInfo` struct into well-formed XML with standard entity escaping (`&`, `<`, `>`, `"`, `'`):
 
@@ -166,17 +166,18 @@ pub const ComicInfoWriter = struct {
 
 ## 4. Module Directory Layout
 
+Consistent with all other internal libraries in `apps/mangadex/lib/`, the module exposes `mod.zig` directly at its root and is registered centrally in `apps/mangadex/build.zig`:
+
 ```text
 apps/mangadex/lib/comicinfo/
-├── build.zig                     # Independent Zig module definition
-├── src/
-│   ├── mod.zig                   # Root exports (ComicInfo, ComicInfoWriter, parse)
-│   ├── schema.zig                # Structs and Enums following Anansi v2.1
-│   ├── writer.zig                # XML builder with attribute/text escaping
-│   └── reader.zig                # XML parser populating ComicInfo struct
-└── tests/
-    └── comicinfo_test.zig        # Round-trip serialize & parse verification tests
+├── mod.zig                       # Root exports (ComicInfo, ComicInfoWriter, parse)
+├── schema.zig                    # Structs and Enums following Anansi v2.1
+├── writer.zig                    # XML builder with attribute/text escaping
+└── reader.zig                    # XML parser populating ComicInfo struct
 ```
+
+All test cases are centralized alongside the application suite in:
+* `apps/mangadex/tests/comicinfo_test.zig` (run with `zig build test` from `apps/mangadex/`)
 
 ---
 

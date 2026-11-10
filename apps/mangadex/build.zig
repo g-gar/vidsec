@@ -21,7 +21,7 @@ pub fn build(b: *std.Build) void {
     // 1c. Pure standalone ZIP & CBZ module
     const zip_cflags = &.{ "-std=c99", "-O3", "-D_GNU_SOURCE" };
     const zip_archive_mod = b.addModule("zip_archive", .{
-        .root_source_file = b.path("lib/zip_archive/src/mod.zig"),
+        .root_source_file = b.path("lib/zip_archive/mod.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -34,7 +34,7 @@ pub fn build(b: *std.Build) void {
 
     // 1d. Pure standalone ComicInfo XML metadata module (ZERO external dependencies)
     const comicinfo_mod = b.addModule("comicinfo", .{
-        .root_source_file = b.path("lib/comicinfo/src/mod.zig"),
+        .root_source_file = b.path("lib/comicinfo/mod.zig"),
         .target = target,
         .optimize = optimize,
     });
