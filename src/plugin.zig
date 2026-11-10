@@ -66,6 +66,11 @@ pub const computeOutputFields = sdk.computeOutputFields;
 pub const definePureTask = sdk.definePureTask;
 pub const AbiLogger = sdk.AbiLogger;
 pub const defineBlackBoxTask = sdk.defineBlackBoxTask;
+pub const di = sdk.di;
+pub const DiContainer = sdk.DiContainer;
+pub const DefaultDiContainer = sdk.DefaultDiContainer;
+pub const defineTaskService = sdk.defineTaskService;
+pub const EmptyContext = sdk.EmptyContext;
 
 // Streaming Readers
 pub const BoundedStreamReader = reader.BoundedStreamReader;

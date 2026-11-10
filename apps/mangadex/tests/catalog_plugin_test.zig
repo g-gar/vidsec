@@ -257,3 +257,106 @@ test "Catalog dynamic datasource resolution and unknown source error" {
     });
     try std.testing.expectEqualStrings("Chainsaw Man", auto_md.title);
 }
+
+const sources = @import("sources");
+const MangaSource = sources.MangaSource;
+const SourceMangaSummary = sources.SourceMangaSummary;
+const SourceSeriesDetails = sources.SourceSeriesDetails;
+const SourceChapter = sources.SourceChapter;
+const SourcePageUrl = sources.SourcePageUrl;
+
+const MockMangaSource = struct {
+    pub fn mangaSource(self: *MockMangaSource) MangaSource {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .getSourceId = getSourceId,
+                .search = search,
+                .getDetails = getDetails,
+                .getChapters = getChapters,
+                .getPageUrls = getPageUrls,
+                .canHandle = canHandle,
+            },
+        };
+    }
+
+    fn getSourceId(_: *anyopaque) []const u8 {
+        return "mock_manga_source";
+    }
+
+    fn search(_: *anyopaque, _: std.mem.Allocator, _: []const u8) anyerror![]SourceMangaSummary {
+        return &.{};
+    }
+
+    fn getDetails(_: *anyopaque, _: std.mem.Allocator, _: []const u8) anyerror!SourceSeriesDetails {
+        return SourceSeriesDetails{
+            .title = "Mock Chainsaw Man",
+            .author = "Mock Author",
+            .artist = "Mock Artist",
+            .status = "ongoing",
+            .available_languages = &[_][]const u8{ "en", "es" },
+        };
+    }
+
+    fn getChapters(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: []const u8) anyerror![]SourceChapter {
+        return &.{};
+    }
+
+    fn getPageUrls(_: *anyopaque, _: std.mem.Allocator, _: []const u8) anyerror![]SourcePageUrl {
+        return &.{};
+    }
+
+    fn canHandle(_: *anyopaque, _: []const u8) bool {
+        return true;
+    }
+};
+
+test "FetchSeriesDetailsService: direct struct instantiation (pure unit test)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const test_alloc = arena.allocator();
+
+    var mock = MockMangaSource{};
+    var service = catalog.FetchSeriesDetailsService{
+        .source = mock.mangaSource(),
+        .logger = abi.Logger.noop(),
+    };
+
+    const details = try service.execute(test_alloc, .{
+        .series_id = "mock-uuid-123",
+    });
+    try std.testing.expectEqualStrings("mock-uuid-123", details.series_id);
+    try std.testing.expectEqualStrings("Mock Chainsaw Man", details.title);
+    try std.testing.expectEqualStrings("Mock Author", details.author.?);
+    try std.testing.expectEqualStrings("en,es", details.available_languages);
+}
+
+test "FetchSeriesDetailsService: DI injection via TestContainer" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const test_alloc = arena.allocator();
+
+    const TestContext = struct {
+        mock_source: MockMangaSource = .{},
+        logger: abi.Logger = abi.Logger.noop(),
+
+        pub fn provideMangaSource(self: *@This(), _: anytype) MangaSource {
+            return self.mock_source.mangaSource();
+        }
+    };
+    const TestContainer = abi.DiContainer(TestContext);
+
+    var test_ctx = TestContext{};
+    const job = catalog.MangaJob{ .series_id = "test-di-series" };
+
+    var service = try TestContainer.inject(
+        catalog.FetchSeriesDetailsService,
+        &test_ctx,
+        test_alloc,
+        job,
+    );
+
+    const details = try service.execute(test_alloc, job);
+    try std.testing.expectEqualStrings("test-di-series", details.series_id);
+    try std.testing.expectEqualStrings("Mock Chainsaw Man", details.title);
+}

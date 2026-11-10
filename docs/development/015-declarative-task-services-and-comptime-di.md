@@ -679,21 +679,20 @@ pub const MangaPluginContainer = abi.DiContainer(MangaContext);
 apps/mangadex/plugin/
 ├── mod.zig                                 # Manifest & C-ABI symbol export
 ├── container.zig                           # MangaContext & MangaPluginContainer = abi.DiContainer(MangaContext)
-├── catalog.zig                             # Re-exports tasks & manifest for backward compatibility
+├── catalog.zig                             # Plugin catalog: defines TaskDescriptors via Container & exports manifest
 └── tasks/
-    ├── fetch_series_details.zig            # FetchSeriesDetailsService
-    ├── fetch_chapters.zig                  # FetchChaptersService
-    └── fetch_chapter_pages.zig             # FetchChapterPagesService
+    ├── fetch_series_details.zig            # Pure FetchSeriesDetailsService (zero container import)
+    ├── fetch_chapters.zig                  # Pure FetchChaptersService (zero container import)
+    └── fetch_chapter_pages.zig             # Pure FetchChapterPagesService (zero container import)
 ```
 
-#### Example Task Service (`apps/mangadex/plugin/tasks/fetch_series_details.zig`)
+#### Example Pure Task Service (`apps/mangadex/plugin/tasks/fetch_series_details.zig`)
 
 ```zig
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Logger = @import("flowdata").plugin.Logger;
 const MangaSource = @import("sources").MangaSource;
-const MangaPluginContainer = @import("../container.zig").MangaPluginContainer;
 
 pub const MangaJob = struct {
     series_id: []const u8,
@@ -745,11 +744,27 @@ pub const FetchSeriesDetailsService = struct {
         };
     }
 };
+```
 
-pub const descriptor = MangaPluginContainer.defineTaskService(FetchSeriesDetailsService, .{
-    .name = "fetch_series_details",
-    .description = "Retrieves series metadata (title, author, artist, cover URL, available languages) from configured MangaSource",
-});
+#### Plugin Assembly & Task Descriptors (`apps/mangadex/plugin/catalog.zig`)
+
+Task descriptors are generated in `catalog.zig` by wrapping each pure service with `MangaPluginContainer.defineTaskService`:
+
+```zig
+pub const tasks = [_]abi.TaskDescriptor_ABI{
+    MangaPluginContainer.defineTaskService(FetchSeriesDetailsService, .{
+        .name = "fetch_series_details",
+        .description = "Retrieves series metadata (title, author, artist, cover URL, available languages) from configured MangaSource",
+    }),
+    MangaPluginContainer.defineTaskService(FetchChaptersService, .{
+        .name = "fetch_chapters",
+        .description = "Retrieves chapters list for series in the specified language(s) from configured MangaSource",
+    }),
+    MangaPluginContainer.defineTaskService(FetchChapterPagesService, .{
+        .name = "fetch_chapter_pages",
+        .description = "Retrieves page URLs and metadata for a specific chapter from configured MangaSource",
+    }),
+};
 ```
 
 ---

@@ -2,285 +2,55 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const flowdata = @import("flowdata");
 const abi = flowdata.plugin;
-const sdk = @import("mangadex_sdk");
-const sources = @import("sources");
-const adapters = @import("mangadex_app").adapters;
-
 const TaskContext = abi.TaskContext;
-const MangaDexClient = sdk.MangaDexClient;
-const MangaSource = sources.MangaSource;
-const MangaDexSource = sources.MangaDexSource;
-const HtmlGenericSource = sources.HtmlGenericSource;
-const SourceRegistry = sources.SourceRegistry;
-const FlowdataHttpAdapter = adapters.FlowdataHttpAdapter;
-const AppConfig = @import("mangadex_app").config.AppConfig;
 
-pub const RegisteredSources = struct {
-    registry: SourceRegistry,
-    mangadex_client: MangaDexClient,
-    mangadex_driver: MangaDexSource,
-    html_generic_driver: HtmlGenericSource,
+const container = @import("container.zig");
+pub const MangaContext = container.MangaContext;
+pub const MangaPluginContainer = container.MangaPluginContainer;
 
-    pub fn init(self: *RegisteredSources, alloc: Allocator, ctx: TaskContext, http_bridge: *FlowdataHttpAdapter) !void {
-        self.registry = SourceRegistry.init(alloc);
-        self.mangadex_client = createClient(alloc, ctx, http_bridge);
-        self.mangadex_driver = MangaDexSource.init(&self.mangadex_client);
-        self.html_generic_driver = HtmlGenericSource.init("html_generic", "https://visortmo.com");
+pub const task_details = @import("tasks/fetch_series_details.zig");
+pub const task_chapters = @import("tasks/fetch_chapters.zig");
+pub const task_pages = @import("tasks/fetch_chapter_pages.zig");
 
-        try self.registry.register(self.mangadex_driver.mangaSource());
-        try self.registry.register(self.html_generic_driver.mangaSource());
-    }
+// DTOs & Services
+pub const MangaJob = task_details.MangaJob;
+pub const SeriesDetails = task_details.SeriesDetails;
+pub const FetchSeriesDetailsService = task_details.FetchSeriesDetailsService;
 
-    pub fn deinit(self: *RegisteredSources) void {
-        self.registry.deinit();
-    }
+pub const FetchChaptersInputs = task_chapters.FetchChaptersInputs;
+pub const ChapterItem = task_chapters.ChapterItem;
+pub const FetchChaptersService = task_chapters.FetchChaptersService;
 
-    pub fn resolve(self: *const RegisteredSources, requested_source_id: ?[]const u8, identifier: []const u8) !MangaSource {
-        // 1. Explicit datasource requested
-        if (requested_source_id) |s| {
-            if (s.len > 0) {
-                return self.registry.get(s) orelse error.SourceNotFound;
-            }
-        }
+pub const FetchChapterPagesInputs = task_pages.FetchChapterPagesInputs;
+pub const ChapterPageItem = task_pages.ChapterPageItem;
+pub const FetchChapterPagesService = task_pages.FetchChapterPagesService;
 
-        // 2. Dynamic discovery: ask registered sources if any can handle this identifier/URL
-        if (self.registry.findByCanHandle(identifier)) |src| {
-            return src;
-        }
-
-        // 3. Fallback to default "mangadex" if available
-        return self.registry.get("mangadex") orelse error.SourceNotFound;
-    }
-};
-
-fn createClient(alloc: Allocator, ctx: TaskContext, http_bridge: *FlowdataHttpAdapter) MangaDexClient {
-    var app_cfg = AppConfig.load(alloc, "configs/.env") catch AppConfig.load(alloc, ".env") catch AppConfig{};
-    var interp = flowdata.yaml.EnvInterpolator.init(true);
-    defer interp.deinit(alloc);
-    if (AppConfig.readDotEnvFile(alloc, "configs/.env")) |dotenv| {
-        defer alloc.free(dotenv);
-        interp.parseDotEnv(alloc, dotenv) catch {};
-    } else if (AppConfig.readDotEnvFile(alloc, ".env")) |dotenv| {
-        defer alloc.free(dotenv);
-        interp.parseDotEnv(alloc, dotenv) catch {};
-    }
-
-    // 1. Resolve User-Agent: task param in pipeline.yaml > .env / env var > fallback
-    var user_agent = app_cfg.user_agent;
-    if (ctx.getParam("user_agent") catch null) |ua_val| {
-        if (ua_val.asText()) |ua| {
-            if (ua.len > 0) user_agent = ua;
-        }
-    }
-
-    // 2. Resolve Auth Provider: task param in pipeline.yaml > .env / env vars > anonymous
-    var auth_provider: ?sdk.AuthProvider = null;
-    if (ctx.getParam("token") catch null) |tok_val| {
-        if (tok_val.asText()) |t| {
-            if (t.len > 0) auth_provider = sdk.StaticTokenAuth.create(alloc, t) catch null;
-        }
-    }
-    if (auth_provider == null) {
-        auth_provider = app_cfg.resolveAuthProvider(alloc, &interp) catch null;
-    }
-
-    // 3. Resolve API URL: task param in pipeline.yaml > .env / env var > default
-    var api_url = app_cfg.api_url;
-    if (ctx.getParam("api_url") catch null) |url_val| {
-        if (url_val.asText()) |u| {
-            if (u.len > 0) api_url = u;
-        }
-    }
-
-    return MangaDexClient.init(
-        alloc,
-        .{
-            .api_url = api_url,
-            .user_agent = user_agent,
-        },
-        http_bridge.httpTransport(),
-        auth_provider,
-    );
-}
-
-// =============================================================================
-// Output Structs (Return Types)
-// =============================================================================
-
-pub const SeriesDetails = struct {
-    series_id: []const u8,
-    title: []const u8,
-    author: ?[]const u8 = null,
-    artist: ?[]const u8 = null,
-    status: []const u8,
-    year: ?i64 = null,
-    cover_url: ?[]const u8 = null,
-    available_languages: []const u8 = "",
-    summary: ?[]const u8 = null,
-};
-
-pub const ChapterItem = struct {
-    source_chapter_id: []const u8,
-    series_id: []const u8,
-    chapter_number: []const u8,
-    volume_number: ?[]const u8 = null,
-    title: ?[]const u8 = null,
-    language: []const u8,
-    scanlation_group: ?[]const u8 = null,
-};
-
-pub const ChapterPageItem = struct {
-    source_chapter_id: []const u8,
-    page_number: u32,
-    url: []const u8,
-};
-
-// =============================================================================
-// 1. Task: fetch_series_details
-// Consumes job / subscription specification dynamically: job.series_id, job.languages, etc.
-// =============================================================================
-
-pub const MangaJob = struct {
-    series_id: []const u8,
-    datasource: ?[]const u8 = null,
-    languages: []const u8 = "en",
-    chapters: []const u8 = "all",
-};
-
+// Backward-compatible runner functions
 pub fn runFetchSeriesDetails(alloc: Allocator, ctx: TaskContext, job: MangaJob) !SeriesDetails {
-    var http_bridge = FlowdataHttpAdapter.fromTaskContext(ctx);
-    var reg_sources: RegisteredSources = undefined;
-    try reg_sources.init(alloc, ctx, &http_bridge);
-    defer reg_sources.deinit();
-
-    const m_source = try reg_sources.resolve(job.datasource, job.series_id);
-
-    ctx.logInfoFmt("Fetching series details for series_id={s} via source '{s}'", .{ job.series_id, m_source.getSourceId() });
-    const details = try m_source.getDetails(alloc, job.series_id);
-
-    var langs_buf: std.ArrayListUnmanaged(u8) = .empty;
-    for (details.available_languages, 0..) |lang, idx| {
-        if (idx > 0) try langs_buf.append(alloc, ',');
-        try langs_buf.appendSlice(alloc, lang);
-    }
-
-    return SeriesDetails{
-        .series_id = job.series_id,
-        .title = details.title,
-        .author = details.author,
-        .artist = details.artist,
-        .status = details.status,
-        .year = if (details.year) |y| @intCast(y) else null,
-        .cover_url = details.cover_url,
-        .available_languages = langs_buf.items,
-        .summary = details.summary,
-    };
+    return MangaPluginContainer.runWithContext(FetchSeriesDetailsService, alloc, ctx, job);
 }
-
-// =============================================================================
-// 2. Task: fetch_chapters
-// =============================================================================
-
-pub const FetchChaptersInputs = struct {
-    series_id: []const u8,
-    languages: []const u8 = "en",
-    datasource: ?[]const u8 = null,
-};
 
 pub fn runFetchChapters(alloc: Allocator, ctx: TaskContext, inputs: FetchChaptersInputs) ![]ChapterItem {
-    var http_bridge = FlowdataHttpAdapter.fromTaskContext(ctx);
-    var reg_sources: RegisteredSources = undefined;
-    try reg_sources.init(alloc, ctx, &http_bridge);
-    defer reg_sources.deinit();
-
-    const m_source = try reg_sources.resolve(inputs.datasource, inputs.series_id);
-
-    var chapters_list: std.ArrayListUnmanaged(ChapterItem) = .empty;
-
-    var lang_iter = std.mem.tokenizeScalar(u8, inputs.languages, ',');
-    while (lang_iter.next()) |raw_lang| {
-        const lang = std.mem.trim(u8, raw_lang, " \t\r\n");
-        if (lang.len == 0) continue;
-
-        ctx.logInfoFmt("Fetching chapters for series '{s}' in language '{s}' via source '{s}'", .{ inputs.series_id, lang, m_source.getSourceId() });
-        const chapters = try m_source.getChapters(alloc, inputs.series_id, lang);
-        for (chapters) |ch| {
-            try chapters_list.append(alloc, .{
-                .source_chapter_id = ch.source_chapter_id,
-                .series_id = inputs.series_id,
-                .chapter_number = ch.chapter_number,
-                .volume_number = ch.volume_number,
-                .title = ch.title,
-                .language = ch.language_iso,
-                .scanlation_group = ch.scanlation_group,
-            });
-        }
-    }
-
-    ctx.logInfoFmt("Total chapters discovered for series '{s}': {d}", .{ inputs.series_id, chapters_list.items.len });
-    return chapters_list.toOwnedSlice(alloc);
+    return MangaPluginContainer.runWithContext(FetchChaptersService, alloc, ctx, inputs);
 }
-
-// =============================================================================
-// 3. Task: fetch_chapter_pages
-// =============================================================================
-
-pub const FetchChapterPagesInputs = struct {
-    source_chapter_id: []const u8,
-    chapter_number: ?[]const u8 = null,
-    series_id: ?[]const u8 = null,
-    datasource: ?[]const u8 = null,
-};
 
 pub fn runFetchChapterPages(alloc: Allocator, ctx: TaskContext, inputs: FetchChapterPagesInputs) ![]ChapterPageItem {
-    var http_bridge = FlowdataHttpAdapter.fromTaskContext(ctx);
-    var reg_sources: RegisteredSources = undefined;
-    try reg_sources.init(alloc, ctx, &http_bridge);
-    defer reg_sources.deinit();
-
-    const target_id = inputs.series_id orelse inputs.source_chapter_id;
-    const m_source = try reg_sources.resolve(inputs.datasource, target_id);
-
-    ctx.logInfoFmt("Fetching pages for chapter '{s}' (chapter_number: {s}) via source '{s}'", .{
-        inputs.source_chapter_id,
-        inputs.chapter_number orelse "?",
-        m_source.getSourceId(),
-    });
-
-    const pages = try m_source.getPageUrls(alloc, inputs.source_chapter_id);
-
-    var page_list = try alloc.alloc(ChapterPageItem, pages.len);
-    for (pages, 0..) |p, idx| {
-        page_list[idx] = .{
-            .source_chapter_id = inputs.source_chapter_id,
-            .page_number = p.page_number,
-            .url = p.url,
-        };
-    }
-
-    ctx.logInfoFmt("Total pages discovered for chapter '{s}': {d}", .{ inputs.source_chapter_id, page_list.len });
-    return page_list;
+    return MangaPluginContainer.runWithContext(FetchChapterPagesService, alloc, ctx, inputs);
 }
 
-// =============================================================================
-// 4. Module Manifest & C-ABI Exports
-// =============================================================================
-
+// C-ABI Task Descriptors and Manifest assembled via MangaPluginContainer
 pub const tasks = [_]abi.TaskDescriptor_ABI{
-    abi.defineTask(.{
+    MangaPluginContainer.defineTaskService(FetchSeriesDetailsService, .{
         .name = "fetch_series_details",
         .description = "Retrieves series metadata (title, author, artist, cover URL, available languages) from configured MangaSource",
-        .run = &runFetchSeriesDetails,
     }),
-    abi.defineTask(.{
+    MangaPluginContainer.defineTaskService(FetchChaptersService, .{
         .name = "fetch_chapters",
         .description = "Retrieves chapters list for series in the specified language(s) from configured MangaSource",
-        .run = &runFetchChapters,
     }),
-    abi.defineTask(.{
+    MangaPluginContainer.defineTaskService(FetchChapterPagesService, .{
         .name = "fetch_chapter_pages",
         .description = "Retrieves page URLs and metadata for a specific chapter from configured MangaSource",
-        .run = &runFetchChapterPages,
     }),
 };
 
