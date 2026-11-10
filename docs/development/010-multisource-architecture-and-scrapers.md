@@ -3,9 +3,9 @@
 | Metadata | Value |
 | :--- | :--- |
 | **ID** | `ARCH-010` |
-| **Depends On** | [`ARCH-005`](./005-mangadex-client-library.md), [`ARCH-009`](./009-unified-sqlite-storage-and-schema.md) |
-| **Area** | `apps/mangadex/lib/sources/` |
-| **Status** | `SPECIFICATION & DESIGN` |
+| **Depends On** | [`ARCH-005`](./005-mangadex-client-library.md), [`ARCH-009`](./009-unified-sqlite-storage-and-schema.md), [`ARCH-011`](./011-pipeline-yaml-specification-and-orchestration.md) |
+| **Area** | `apps/mangadex/lib/sources/` & `apps/mangadex/plugin/catalog.zig` |
+| **Status** | `IMPLEMENTED (Contract, Registry & MangaDex Driver) / DESIGN (Scrapers & Sidecar)` |
 
 ---
 
@@ -103,10 +103,18 @@ pub const MangaSource = struct {
         getDetails: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator, source_series_id: []const u8) anyerror!SourceSeriesDetails,
         getChapters: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator, source_series_id: []const u8, lang: []const u8) anyerror![]SourceChapter,
         getPageUrls: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator, source_chapter_id: []const u8) anyerror![]SourcePageUrl,
+        canHandle: ?*const fn (ctx: *anyopaque, identifier: []const u8) bool = null,
     };
 
     pub fn getSourceId(self: MangaSource) []const u8 {
         return self.vtable.getSourceId(self.ptr);
+    }
+
+    pub fn canHandle(self: MangaSource, identifier: []const u8) bool {
+        if (self.vtable.canHandle) |ch_fn| {
+            return ch_fn(self.ptr, identifier);
+        }
+        return false;
     }
 
     pub fn search(self: MangaSource, allocator: std.mem.Allocator, query: []const u8) ![]SourceMangaSummary {
@@ -151,17 +159,21 @@ Web scrapers fall into three technical tiers based on server defenses:
 
 ---
 
-## 4. Source Registry & Dynamic Dispatching
+## 4. Source Registry & Dynamic Capability Validation
 
-The `SourceRegistry` manages active source drivers and resolves them dynamically at runtime:
+The `SourceRegistry` manages active source drivers and resolves them dynamically at runtime (`apps/mangadex/lib/sources/registry.zig`):
 
 ```zig
 pub const SourceRegistry = struct {
     sources: std.StringHashMapUnmanaged(MangaSource) = .empty,
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
 
-    pub fn init(allocator: std.mem.Allocator) SourceRegistry {
+    pub fn init(allocator: Allocator) SourceRegistry {
         return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *SourceRegistry) void {
+        self.sources.deinit(self.allocator);
     }
 
     pub fn register(self: *SourceRegistry, source: MangaSource) !void {
@@ -171,60 +183,187 @@ pub const SourceRegistry = struct {
     pub fn get(self: *const SourceRegistry, source_id: []const u8) ?MangaSource {
         return self.sources.get(source_id);
     }
+
+    pub fn has(self: *const SourceRegistry, source_id: []const u8) bool {
+        return self.sources.contains(source_id);
+    }
+
+    /// Finds the first registered provider whose `canHandle` recognizes the series identifier or URL.
+    pub fn findByCanHandle(self: *const SourceRegistry, identifier: []const u8) ?MangaSource {
+        var it = self.sources.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.*.canHandle(identifier)) {
+                return entry.value_ptr.*;
+            }
+        }
+        return null;
+    }
+
+    pub fn count(self: *const SourceRegistry) usize {
+        return self.sources.count();
+    }
 };
+```
+
+In the pipeline plugin (`apps/mangadex/plugin/catalog.zig`), tasks instantiate a `RegisteredSources` context that registers all enabled drivers and resolves the target driver per-job dynamically without requiring explicit source binding in the work item:
+
+```zig
+// Dynamic driver resolution:
+// 1. If job.datasource is explicitly provided -> use that driver.
+// 2. If omitted -> consult drivers via canHandle(job.series_id) (UUID v4 vs. URL pattern).
+// 3. Fallback to default "mangadex" or reject unsupported items.
+const m_source = try reg_sources.resolve(job.datasource, job.series_id);
+const details = try m_source.getDetails(alloc, job.series_id);
 ```
 
 ---
 
-## 5. Declarative Multi-Source Configuration in `pipeline.yaml`
+## 5. Reactive Inbound Datasource Emitters & Heterogeneous Jobs
 
-Users can track different manga series from different sources within the same configuration file without code changes:
+Aligned with [`ARCH-014`](./014-inbound-emitter-datasources-and-reactive-dispatch.md), **datasources act as reactive event emitters**, and pipelines subscribe to them via task-level `inputs:`.
+
+### 5.1. Decoupling Pipeline & Datasource from Work Items
+
+Work items describe *what* they are, not *who* processes them. Therefore:
+1. **No `pipeline:` field**: Work items never reference internal pipeline names.
+2. **Optional `datasource:` field**: The target driver is either:
+   * **Inferred from the emitting datasource** (e.g. an inbound RSS feed or MangaDex webhook emitter).
+   * **Inferred via `canHandle(identifier)`** (a UUID string resolves `mangadex`; a full HTTP/HTTPS URL resolves `html_generic` or specific scrapers).
+   * **Filtered declaratively at step level** using Flowdata's `where:` expressions (`where: "series_id != null"`).
+
+```mermaid
+flowchart TD
+    DS["Emitter Datasource<br/>(tracked_targets / jobs.yaml watcher)"]
+
+    subgraph Core ["Engine Reactive Dispatcher (ARCH-014)"]
+        FanOut["Event Reactor & Subscription Matcher"]
+    end
+
+    subgraph PipeManga ["Pipeline: manga_ingestion"]
+        T1["fetch_series_details<br/>(inputs: input: tracked_targets)<br/>where: canHandle(series_id)"]
+        T2["fetch_chapters"]
+        T1 --> T2
+    end
+
+    subgraph PipeVidsec ["Pipeline: forensic_inspection"]
+        V1["inspect_mp4_boxes<br/>(inputs: input: tracked_targets)<br/>where: video_file != null"]
+    end
+
+    DS -- "emitRecord(jobItem)" --> FanOut
+    FanOut -- "Manga Work Item" --> T1
+    FanOut -- "Video Work Item" --> V1
+```
+
+### 5.2. Heterogeneous Work Item Definitions (`configs/jobs.yaml`)
+
+A single watched datasource can emit heterogeneous items consumed by completely different pipelines or sub-pipelines:
 
 ```yaml
-version: "2.0.0"
+# configs/jobs.yaml - Heterogeneous items, NO pipeline name, optional datasource
+# 1. MangaDex series by UUID (auto-detected via canHandle UUID signature)
+- title: "Chainsaw Man"
+  series_id: "a1c7d817-0e59-4555-b52e-322e2365879e"
+  languages: ["es-la", "en"]
+  chapters: "latest:3"
 
-# Source configurations & Rate Limiting
-sources:
-  - id: mangadex
-    type: official_api
-    rate_limit_rps: 5
-    timeouts:
-      connect_ms: 5000
-      read_idle_ms: 15000
+# 2. Scraped series by canonical Web URL (auto-detected via canHandle URL pattern)
+- title: "Kingdom"
+  series_id: "https://visortmo.com/library/manga/manga-kingdom-spanish"
+  languages: ["es"]
+  chapters: "all"
 
-  - id: tmo_scraper
-    type: html_scraper
-    base_url: "https://visortmo.com"
-    rate_limit_rps: 2
-    headers:
-      User-Agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+# 3. Explicit datasource override (optional)
+- title: "Custom Feed Manga"
+  datasource: html_generic
+  series_id: "custom-slug-456"
+  languages: ["en"]
 
-# Subscribed series with explicit source bindings
-subscriptions:
-  - title: "One Piece"
-    source: mangadex
-    source_series_id: "a1c7d817-0e59-4555-b52e-322e2365879e"
-    languages: ["es-la", "en"]
-    chapters: "latest:3"
-
-  - title: "Kingdom"
-    source: tmo_scraper
-    source_series_id: "manga-kingdom-spanish"
-    languages: ["es"]
-    chapters: "all"
+# 4. Completely different domain item (consumed by security forensics pipeline)
+- title: "Airport Security Cam Dump"
+  video_file: "./samples/test_dump.mp4"
+  inspection_depth: "deep"
 ```
+
+### 5.3. Declarative Configuration in `pipeline.yaml`
+
+```yaml
+version: 2
+
+# 1. Layer 7 Network Policies & Anti-Bot Rate Limiting
+networks:
+  mangadex_api:
+    driver: egress
+    rate_limit:
+      requests_per_second: 5
+      burst: 10
+    headers:
+      User-Agent: "${MANGADEX_USER_AGENT:-FlowdataMangaDex/1.0.0}"
+
+  scraper_net:
+    driver: egress
+    rate_limit:
+      requests_per_second: 2
+      burst: 4
+    headers:
+      User-Agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+# 2. Storage, Emitters & Remote Provider Datasources
+datasources:
+  # Reactive Inbound Emitter (watches jobs.yaml via inotify)
+  tracked_targets:
+    driver: yaml_file
+    path: "./configs/jobs.yaml"
+    watch: true
+
+  # RAM buffer for pipeline coordination
+  pipeline_memory:
+    driver: memory
+
+  # Long-term SQLite Sink
+  catalog_db:
+    driver: sqlite
+    path: "${MANGADEX_DB_PATH:-./mangadex.db}"
+    schema: "./configs/schemas.yaml"
+
+  # Registered Remote Content Providers
+  mangadex:
+    driver: mangadex
+    network: mangadex_api
+    api_url: "${MANGADEX_API_URL:-https://api.mangadex.org}"
+
+  html_generic:
+    driver: html_generic
+    network: scraper_net
+
+# 3. Pipelines Subscribed to Emitter Datasource
+pipelines:
+  main:
+    steps:
+      - id: fetch_details
+        uses: manga_catalog/fetch_series_details
+        inputs:
+          input: tracked_targets
+        where: "series_id != null"
+        outputs:
+          series_details:
+            datasource: pipeline_memory
 
 ---
 
 ## 6. Module Directory Layout
 
+Drivers are cleanly decoupled into dedicated subdirectories under `apps/mangadex/lib/sources/drivers/`:
+
 ```text
 apps/mangadex/lib/sources/
-├── mod.zig                       # Re-exports MangaSource, SourceRegistry, and contracts
-├── contract.zig                  # VTable and DTOs (SourceMangaSummary, SourceChapter, etc.)
-├── registry.zig                  # SourceRegistry implementation
+├── mod.zig                                 # Re-exports MangaSource, SourceRegistry, contracts, and drivers
+├── contract.zig                            # VTable and DTOs (SourceMangaSummary, SourceChapter, etc.)
+├── registry.zig                            # SourceRegistry implementation
+├── mangadex_source.zig                     # Backward-compatibility alias
 └── drivers/
-    ├── mangadex_driver.zig       # Implements MangaSource using mangadex_sdk
-    ├── tmo_driver.zig            # Example Tier 1 HTML scraper
-    └── sidecar_client.zig        # Optional FlareSolverr bridge client for Cloudflare bypass
+    ├── mangadex/
+    │   └── mangadex_driver.zig             # Official MangaDex driver using mangadex_sdk
+    ├── html_generic/
+    │   └── html_generic_driver.zig         # Generic HTML scraper skeleton / placeholder
+    └── sidecar/                            # (Postponed) FlareSolverr bridge client for Cloudflare bypass
 ```

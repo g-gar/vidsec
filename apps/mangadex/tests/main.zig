@@ -12,4 +12,5 @@ test {
     _ = @import("komga_test.zig");
     _ = @import("zip_archive_test.zig");
     _ = @import("comicinfo_test.zig");
+    _ = @import("sources");
 }

@@ -46,10 +46,18 @@ pub const MangaSource = struct {
         getDetails: *const fn (ctx: *anyopaque, allocator: Allocator, source_series_id: []const u8) anyerror!SourceSeriesDetails,
         getChapters: *const fn (ctx: *anyopaque, allocator: Allocator, source_series_id: []const u8, lang: []const u8) anyerror![]SourceChapter,
         getPageUrls: *const fn (ctx: *anyopaque, allocator: Allocator, source_chapter_id: []const u8) anyerror![]SourcePageUrl,
+        canHandle: ?*const fn (ctx: *anyopaque, identifier: []const u8) bool = null,
     };
 
     pub fn getSourceId(self: MangaSource) []const u8 {
         return self.vtable.getSourceId(self.ptr);
+    }
+
+    pub fn canHandle(self: MangaSource, identifier: []const u8) bool {
+        if (self.vtable.canHandle) |ch_fn| {
+            return ch_fn(self.ptr, identifier);
+        }
+        return false;
     }
 
     pub fn search(self: MangaSource, allocator: Allocator, query: []const u8) ![]SourceMangaSummary {

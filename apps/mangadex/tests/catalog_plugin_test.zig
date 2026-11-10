@@ -212,3 +212,48 @@ test "Catalog tasks return typed structs and C-ABI trampoline auto-emits outputs
     const row2 = host.emitted_rows.items[1];
     try std.testing.expect(std.mem.indexOf(u8, row2, "source_chapter_id=ch-es-1;") != null);
 }
+
+test "Catalog dynamic datasource resolution and unknown source error" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const test_alloc = arena.allocator();
+
+    var host = MockPluginHost.init(test_alloc);
+    defer host.deinit();
+    const ctx = host.taskContext();
+
+    // 1. Explicit 'mangadex' datasource resolves properly
+    const details = try catalog.runFetchSeriesDetails(test_alloc, ctx, .{
+        .series_id = "series-test-uuid",
+        .datasource = "mangadex",
+    });
+    try std.testing.expectEqualStrings("Chainsaw Man", details.title);
+
+    // 2. Unknown datasource returns error.SourceNotFound
+    const bad_res = catalog.runFetchSeriesDetails(test_alloc, ctx, .{
+        .series_id = "series-test-uuid",
+        .datasource = "non_existent_provider",
+    });
+    try std.testing.expectError(error.SourceNotFound, bad_res);
+
+    // 3. Generic HTML placeholder returns error.NotImplemented
+    const placeholder_res = catalog.runFetchSeriesDetails(test_alloc, ctx, .{
+        .series_id = "series-test-uuid",
+        .datasource = "html_generic",
+    });
+    try std.testing.expectError(error.NotImplemented, placeholder_res);
+
+    // 4. Auto-detection when datasource is omitted: generic URL resolves html_generic
+    const auto_html = catalog.runFetchSeriesDetails(test_alloc, ctx, .{
+        .series_id = "https://visortmo.com/library/manga/123/kingdom",
+        .datasource = null,
+    });
+    try std.testing.expectError(error.NotImplemented, auto_html);
+
+    // 5. Auto-detection when datasource is omitted: UUID or fallback resolves mangadex
+    const auto_md = try catalog.runFetchSeriesDetails(test_alloc, ctx, .{
+        .series_id = "series-test-uuid",
+        .datasource = null,
+    });
+    try std.testing.expectEqualStrings("Chainsaw Man", auto_md.title);
+}

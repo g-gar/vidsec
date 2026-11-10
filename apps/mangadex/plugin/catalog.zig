@@ -8,9 +8,50 @@ const adapters = @import("mangadex_app").adapters;
 
 const TaskContext = abi.TaskContext;
 const MangaDexClient = sdk.MangaDexClient;
+const MangaSource = sources.MangaSource;
 const MangaDexSource = sources.MangaDexSource;
+const HtmlGenericSource = sources.HtmlGenericSource;
+const SourceRegistry = sources.SourceRegistry;
 const FlowdataHttpAdapter = adapters.FlowdataHttpAdapter;
 const AppConfig = @import("mangadex_app").config.AppConfig;
+
+pub const RegisteredSources = struct {
+    registry: SourceRegistry,
+    mangadex_client: MangaDexClient,
+    mangadex_driver: MangaDexSource,
+    html_generic_driver: HtmlGenericSource,
+
+    pub fn init(self: *RegisteredSources, alloc: Allocator, ctx: TaskContext, http_bridge: *FlowdataHttpAdapter) !void {
+        self.registry = SourceRegistry.init(alloc);
+        self.mangadex_client = createClient(alloc, ctx, http_bridge);
+        self.mangadex_driver = MangaDexSource.init(&self.mangadex_client);
+        self.html_generic_driver = HtmlGenericSource.init("html_generic", "https://visortmo.com");
+
+        try self.registry.register(self.mangadex_driver.mangaSource());
+        try self.registry.register(self.html_generic_driver.mangaSource());
+    }
+
+    pub fn deinit(self: *RegisteredSources) void {
+        self.registry.deinit();
+    }
+
+    pub fn resolve(self: *const RegisteredSources, requested_source_id: ?[]const u8, identifier: []const u8) !MangaSource {
+        // 1. Explicit datasource requested
+        if (requested_source_id) |s| {
+            if (s.len > 0) {
+                return self.registry.get(s) orelse error.SourceNotFound;
+            }
+        }
+
+        // 2. Dynamic discovery: ask registered sources if any can handle this identifier/URL
+        if (self.registry.findByCanHandle(identifier)) |src| {
+            return src;
+        }
+
+        // 3. Fallback to default "mangadex" if available
+        return self.registry.get("mangadex") orelse error.SourceNotFound;
+    }
+};
 
 fn createClient(alloc: Allocator, ctx: TaskContext, http_bridge: *FlowdataHttpAdapter) MangaDexClient {
     var app_cfg = AppConfig.load(alloc, "configs/.env") catch AppConfig.load(alloc, ".env") catch AppConfig{};
@@ -108,12 +149,13 @@ pub const MangaJob = struct {
 
 pub fn runFetchSeriesDetails(alloc: Allocator, ctx: TaskContext, job: MangaJob) !SeriesDetails {
     var http_bridge = FlowdataHttpAdapter.fromTaskContext(ctx);
-    var client = createClient(alloc, ctx, &http_bridge);
+    var reg_sources: RegisteredSources = undefined;
+    try reg_sources.init(alloc, ctx, &http_bridge);
+    defer reg_sources.deinit();
 
-    var source = MangaDexSource.init(&client);
-    const m_source = source.mangaSource();
+    const m_source = try reg_sources.resolve(job.datasource, job.series_id);
 
-    ctx.logInfoFmt("Fetching series details for series_id={s}", .{job.series_id});
+    ctx.logInfoFmt("Fetching series details for series_id={s} via source '{s}'", .{ job.series_id, m_source.getSourceId() });
     const details = try m_source.getDetails(alloc, job.series_id);
 
     var langs_buf: std.ArrayListUnmanaged(u8) = .empty;
@@ -147,10 +189,11 @@ pub const FetchChaptersInputs = struct {
 
 pub fn runFetchChapters(alloc: Allocator, ctx: TaskContext, inputs: FetchChaptersInputs) ![]ChapterItem {
     var http_bridge = FlowdataHttpAdapter.fromTaskContext(ctx);
-    var client = createClient(alloc, ctx, &http_bridge);
+    var reg_sources: RegisteredSources = undefined;
+    try reg_sources.init(alloc, ctx, &http_bridge);
+    defer reg_sources.deinit();
 
-    var source = MangaDexSource.init(&client);
-    const m_source = source.mangaSource();
+    const m_source = try reg_sources.resolve(inputs.datasource, inputs.series_id);
 
     var chapters_list: std.ArrayListUnmanaged(ChapterItem) = .empty;
 
@@ -159,7 +202,7 @@ pub fn runFetchChapters(alloc: Allocator, ctx: TaskContext, inputs: FetchChapter
         const lang = std.mem.trim(u8, raw_lang, " \t\r\n");
         if (lang.len == 0) continue;
 
-        ctx.logInfoFmt("Fetching chapters for series '{s}' in language '{s}'", .{ inputs.series_id, lang });
+        ctx.logInfoFmt("Fetching chapters for series '{s}' in language '{s}' via source '{s}'", .{ inputs.series_id, lang, m_source.getSourceId() });
         const chapters = try m_source.getChapters(alloc, inputs.series_id, lang);
         for (chapters) |ch| {
             try chapters_list.append(alloc, .{
@@ -186,18 +229,22 @@ pub const FetchChapterPagesInputs = struct {
     source_chapter_id: []const u8,
     chapter_number: ?[]const u8 = null,
     series_id: ?[]const u8 = null,
+    datasource: ?[]const u8 = null,
 };
 
 pub fn runFetchChapterPages(alloc: Allocator, ctx: TaskContext, inputs: FetchChapterPagesInputs) ![]ChapterPageItem {
     var http_bridge = FlowdataHttpAdapter.fromTaskContext(ctx);
-    var client = createClient(alloc, ctx, &http_bridge);
+    var reg_sources: RegisteredSources = undefined;
+    try reg_sources.init(alloc, ctx, &http_bridge);
+    defer reg_sources.deinit();
 
-    var source = MangaDexSource.init(&client);
-    const m_source = source.mangaSource();
+    const target_id = inputs.series_id orelse inputs.source_chapter_id;
+    const m_source = try reg_sources.resolve(inputs.datasource, target_id);
 
-    ctx.logInfoFmt("Fetching pages for chapter '{s}' (chapter_number: {s})", .{
+    ctx.logInfoFmt("Fetching pages for chapter '{s}' (chapter_number: {s}) via source '{s}'", .{
         inputs.source_chapter_id,
         inputs.chapter_number orelse "?",
+        m_source.getSourceId(),
     });
 
     const pages = try m_source.getPageUrls(alloc, inputs.source_chapter_id);
