@@ -11,6 +11,7 @@ schemas:
     catalog_series:
       columns:
         series_id:           { type: text, pk: true }
+        source_id:           { type: text, default: "'mangadex'" }
         title:               { type: text }
         author:              { type: text, nullable: true }
         artist:              { type: text, nullable: true }
@@ -19,6 +20,9 @@ schemas:
         cover_url:           { type: text, nullable: true }
         available_languages: { type: text, default: "''" }
         summary:             { type: text, nullable: true }
+        alt_titles_json:     { type: text, nullable: true }
+        genres_json:         { type: text, nullable: true }
+        last_synced_at:      { type: int64, nullable: true }
 
     # 2. Manga Chapters with Foreign Key referencing Series
     discovered_chapters:
@@ -30,8 +34,15 @@ schemas:
         title:               { type: text, nullable: true }
         language:            { type: text }
         scanlation_group:    { type: text, nullable: true }
+        page_count:          { type: int64, default: 0 }
+        status:              { type: text, default: "'discovered'" }
+        cbz_output_path:     { type: text, nullable: true }
+        retry_count:         { type: int64, default: 0 }
+        error_message:       { type: text, nullable: true }
+        updated_at:          { type: int64, nullable: true }
       indexes:
         - series_id
+        - status
 
     # 3. Ephemeral Chapter Pages with Foreign Key referencing Chapters
     discovered_pages:
@@ -39,8 +50,26 @@ schemas:
         source_chapter_id:   { type: text, ref: discovered_chapters.source_chapter_id, on_delete: cascade }
         page_number:         { type: int64 }
         url:                 { type: text }
+        image_blob:          { type: blob, nullable: true }
+        byte_size:           { type: int64, default: 0 }
+        status:              { type: text, default: "'pending'" }
+        downloaded_at:       { type: int64, nullable: true }
       primary_key:
         - source_chapter_id
         - page_number
       indexes:
         - source_chapter_id
+
+    # 4. Egress / Destination Delivery History (e.g. Komga, Kavita)
+    egress_history:
+      columns:
+        id:                  { type: text, pk: true }
+        source_chapter_id:   { type: text, ref: discovered_chapters.source_chapter_id, on_delete: cascade }
+        target:              { type: text }
+        external_book_id:    { type: text, nullable: true }
+        delivered_at:        { type: int64 }
+        status:              { type: text, default: "'success'" }
+        details:             { type: text, nullable: true }
+      indexes:
+        - source_chapter_id
+        - target

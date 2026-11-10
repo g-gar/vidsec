@@ -182,10 +182,23 @@ pub const SqliteRepository = struct {
             }
         }
 
-        var opened_db = if (std.mem.eql(u8, db_path, ":memory:"))
-            try Db.openMemory(.{})
+        const is_mem = std.mem.eql(u8, db_path, ":memory:");
+        var opened_db = if (is_mem)
+            try Db.openMemory(.{
+                .busy_timeout_ms = 5000,
+                .foreign_keys = true,
+            })
         else
-            try Db.openFile(allocator, db_path, .{});
+            try Db.openFile(allocator, db_path, .{
+                .busy_timeout_ms = 5000,
+                .foreign_keys = true,
+                .journal_mode = .wal,
+                .synchronous = .normal,
+            });
+
+        if (!is_mem) {
+            opened_db.exec("PRAGMA auto_vacuum = INCREMENTAL;") catch {};
+        }
 
         if (schema_path) |spath| {
             if (flowdata.readFileBytes(allocator, spath)) |bytes| {
