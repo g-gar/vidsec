@@ -23,6 +23,12 @@ pub const ReflectFn_ABI = *const fn (
     field_len: usize,
 ) callconv(.c) ReflectedValue_ABI;
 
+pub const PayloadRepr_ABI = enum(u8) {
+    bytes = 0,
+    typed = 1,
+    dynamic = 2,
+};
+
 /// C-ABI compliant zero-copy fat handle for passing typed items, slices, or raw byte streams
 /// between host dataflow engine and dynamic plugin tasks.
 pub const PayloadHandle_ABI = extern struct {
@@ -32,6 +38,18 @@ pub const PayloadHandle_ABI = extern struct {
     element_align: u32 = 1,
     is_stream: bool = false,
     reflect_fn: ?ReflectFn_ABI = null,
+    // ARCH-016 additions
+    repr: PayloadRepr_ABI = .bytes,
+    schema_id: u64 = 0,
+    type_name_ptr: ?[*]const u8 = null,
+    type_name_len: usize = 0,
+
+    pub fn typeName(self: PayloadHandle_ABI) []const u8 {
+        if (self.type_name_ptr) |p| {
+            return p[0..self.type_name_len];
+        }
+        return "";
+    }
 
     pub fn empty() PayloadHandle_ABI {
         return .{};
@@ -64,6 +82,7 @@ pub const PayloadHandle_ABI = extern struct {
             }
         };
 
+        const name = @typeName(T);
         return .{
             .ptr = @ptrCast(item),
             .len = 1,
@@ -71,6 +90,10 @@ pub const PayloadHandle_ABI = extern struct {
             .element_align = @alignOf(T),
             .is_stream = false,
             .reflect_fn = &Trampoline.reflect,
+            .repr = .typed,
+            .schema_id = @import("lowered.zig").schemaId(T),
+            .type_name_ptr = name.ptr,
+            .type_name_len = name.len,
         };
     }
 
@@ -101,6 +124,7 @@ pub const PayloadHandle_ABI = extern struct {
             }
         };
 
+        const name = @typeName(T);
         return .{
             .ptr = @ptrCast(items.ptr),
             .len = items.len,
@@ -108,6 +132,10 @@ pub const PayloadHandle_ABI = extern struct {
             .element_align = @alignOf(T),
             .is_stream = true,
             .reflect_fn = if (items.len > 0) &Trampoline.reflect else null,
+            .repr = .typed,
+            .schema_id = @import("lowered.zig").schemaId(T),
+            .type_name_ptr = name.ptr,
+            .type_name_len = name.len,
         };
     }
 

@@ -6,6 +6,7 @@ pub const ReflectedValue = types.ReflectedValue;
 pub const reflectField = types.reflectField;
 pub const reflectAny = types.reflectAny;
 pub const PayloadHandle = types.PayloadHandle;
+pub const PayloadRepr = types.PayloadRepr;
 pub const DynamicField = types.DynamicField;
 pub const DynamicRecord = types.DynamicRecord;
 

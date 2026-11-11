@@ -149,4 +149,36 @@ pub const HostApiVTable_ABI = extern struct {
         ctx: *TaskContext_ABI,
         handle: NetStreamHandle_ABI,
     ) callconv(.c) HostError_ABI = null,
+
+    // --- 9. Multi-Channel I/O & Host Allocators (ARCH-016) ---
+    /// Returns the number of bound input channels available to this task.
+    input_count: ?*const fn (ctx: *TaskContext_ABI) callconv(.c) usize = null,
+
+    /// Retrieves the PayloadHandle_ABI for a named bound input channel.
+    input_payload: ?*const fn (
+        ctx: *TaskContext_ABI,
+        name: [*:0]const u8,
+        out: *@import("payload_handle_abi.zig").PayloadHandle_ABI,
+    ) callconv(.c) HostError_ABI = null,
+
+    /// Obtains a C-ABI memory context allocated from the host engine's task output arena.
+    get_output_allocator: ?*const fn (
+        ctx: *TaskContext_ABI,
+    ) callconv(.c) ?*const @import("mem_context_abi.zig").MemContext_ABI = null,
+
+    /// Obtains execution options (including workers budget) configured for the step.
+    get_execution_options: ?*const fn (
+        ctx: *TaskContext_ABI,
+        out_options: *@import("execution_options_abi.zig").ExecutionOptions_ABI,
+    ) callconv(.c) HostError_ABI = null,
+
+    /// Returns non-zero (true) if cancellation was requested for this step / pipeline run.
+    is_cancelled: ?*const fn (ctx: *TaskContext_ABI) callconv(.c) u8 = null,
+
+    /// Emits a contiguous typed slice directly into a declared output channel (zero-copy).
+    emit_typed_slice: ?*const fn (
+        ctx: *TaskContext_ABI,
+        channel_name: ?[*:0]const u8,
+        slice_payload: *const @import("payload_handle_abi.zig").PayloadHandle_ABI,
+    ) callconv(.c) HostError_ABI = null,
 };

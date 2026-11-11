@@ -140,6 +140,21 @@ fn parseInputs(alloc: Allocator, in_node: yaml_lib.Node) ![]const InputBindingSp
                     .param_name = entry.key,
                     .expr = expr,
                 });
+            } else if (entry.value.asMap() != null) {
+                const sub_map = entry.value;
+                const src_val = if (sub_map.get("from")) |f|
+                    f.asScalar() orelse ""
+                else if (sub_map.get("channel")) |c|
+                    c.asScalar() orelse ""
+                else
+                    "";
+                const expr = try parseInboundStreamExpr(alloc, src_val);
+                const wf = if (sub_map.get("where")) |w| w.asScalar() else null;
+                try list.append(alloc, .{
+                    .param_name = entry.key,
+                    .expr = expr,
+                    .where_filter = wf,
+                });
             }
         }
         return try list.toOwnedSlice(alloc);

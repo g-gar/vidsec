@@ -14,6 +14,8 @@ pub const abi_logger = @import("abi_logger.zig");
 pub const define_blackbox_task = @import("define_blackbox_task.zig");
 pub const di = @import("di.zig");
 pub const define_task_service = @import("define_task_service.zig");
+pub const channels_mod = @import("channels.zig");
+pub const rows_mod = @import("rows.zig");
 
 pub const SdkError = sdk_error.SdkError;
 pub const mapHostError = map_host_error.mapHostError;
@@ -36,3 +38,6 @@ pub const DiContainer = define_task_service.DiContainer;
 pub const DefaultDiContainer = define_task_service.DefaultDiContainer;
 pub const defineTaskService = define_task_service.defineTaskService;
 pub const EmptyContext = define_task_service.EmptyContext;
+pub const Channels = channels_mod.Channels;
+pub const channels = channels_mod.channels;
+pub const Rows = rows_mod.Rows;

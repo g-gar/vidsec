@@ -36,6 +36,11 @@ pub const ModuleManifest_ABI = types.ModuleManifest_ABI;
 // Black Box C-ABI Types & Networking ABI
 pub const MemContext_ABI = types.MemContext_ABI;
 pub const PayloadHandle_ABI = types.PayloadHandle_ABI;
+pub const PayloadRepr_ABI = types.PayloadRepr_ABI;
+pub const Lowered = types.Lowered;
+pub const lowerValue = types.lowerValue;
+pub const liftValue = types.liftValue;
+pub const schemaId = types.schemaId;
 pub const ReflectedTag_ABI = types.ReflectedTag_ABI;
 pub const ReflectedValue_ABI = types.ReflectedValue_ABI;
 pub const ReflectFn_ABI = types.ReflectFn_ABI;
@@ -71,6 +76,9 @@ pub const DiContainer = sdk.DiContainer;
 pub const DefaultDiContainer = sdk.DefaultDiContainer;
 pub const defineTaskService = sdk.defineTaskService;
 pub const EmptyContext = sdk.EmptyContext;
+pub const Channels = sdk.Channels;
+pub const channels = sdk.channels;
+pub const Rows = sdk.Rows;
 
 // Streaming Readers
 pub const BoundedStreamReader = reader.BoundedStreamReader;

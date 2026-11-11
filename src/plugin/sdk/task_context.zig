@@ -91,6 +91,38 @@ pub const TaskContext = struct {
         return row;
     }
 
+    pub fn inputCount(self: TaskContext) usize {
+        if (self.raw.host.input_count) |f| {
+            return f(self.raw);
+        }
+        return 1;
+    }
+
+    pub fn inputPayload(self: TaskContext, name: [:0]const u8) SdkError!?@import("../types/payload_handle_abi.zig").PayloadHandle_ABI {
+        const f = self.raw.host.input_payload orelse return null;
+        var out_handle: @import("../types/payload_handle_abi.zig").PayloadHandle_ABI = undefined;
+        const rc = f(self.raw, name.ptr, &out_handle);
+        if (rc == .not_found) return null;
+        try mapHostError(rc);
+        return out_handle;
+    }
+
+    pub fn isCancelled(self: TaskContext) bool {
+        if (self.raw.host.is_cancelled) |f| {
+            return f(self.raw) != 0;
+        }
+        return false;
+    }
+
+    pub fn outputAllocator(self: TaskContext) std.mem.Allocator {
+        if (self.raw.host.get_output_allocator) |f| {
+            if (f(self.raw)) |mem_ptr| {
+                return mem_ptr.toAllocator();
+            }
+        }
+        return std.heap.page_allocator;
+    }
+
     // --- 4. Parameters (`params:`) ---
 
     pub fn getParam(self: TaskContext, key: [:0]const u8) SdkError!?Value_ABI {
@@ -127,14 +159,24 @@ pub const TaskContext = struct {
         self: TaskContext,
         fields: []const NamedField_ABI,
     ) SdkError!void {
+        return self.emitRowTo(null, fields);
+    }
+
+    pub fn emitRowTo(
+        self: TaskContext,
+        channel_name: ?[:0]const u8,
+        fields: []const NamedField_ABI,
+    ) SdkError!void {
         const f_ptr: [*]const NamedField_ABI = if (fields.len > 0) fields.ptr else undefined;
-        const rc = self.raw.host.emit_row(self.raw, null, f_ptr, fields.len);
+        const ch_ptr = if (channel_name) |c| c.ptr else null;
+        const rc = self.raw.host.emit_row(self.raw, ch_ptr, f_ptr, fields.len);
         try mapHostError(rc);
     }
 
-    /// Serializes and emits a strongly-typed struct or primitive scalar row at compile-time.
-    pub fn emitTypedRow(
+    /// Serializes and emits a strongly-typed struct or primitive scalar row to a named channel.
+    pub fn emitTypedRowTo(
         self: TaskContext,
+        channel_name: ?[:0]const u8,
         row: anytype,
     ) SdkError!void {
         const T = @TypeOf(row);
@@ -146,25 +188,47 @@ pub const TaskContext = struct {
                     const val = @field(row, f.name);
                     fields[i] = NamedField_ABI.init(f.name, Value_ABI.fromAny(val));
                 }
-                return self.emitRow(&fields);
+                return self.emitRowTo(channel_name, &fields);
             },
             .int, .float, .bool => {
                 const fields = [_]NamedField_ABI{
                     NamedField_ABI.init("value", Value_ABI.fromAny(row)),
                 };
-                return self.emitRow(&fields);
+                return self.emitRowTo(channel_name, &fields);
             },
             .pointer => |p| {
                 if (p.size == .slice and p.child == u8) {
                     const fields = [_]NamedField_ABI{
                         NamedField_ABI.init("value", Value_ABI.fromText(row)),
                     };
-                    return self.emitRow(&fields);
+                    return self.emitRowTo(channel_name, &fields);
                 }
                 @compileError("Unsupported pointer type in emitTypedRow: " ++ @typeName(T));
             },
             else => @compileError("emitTypedRow expects a struct or primitive scalar type, got " ++ @typeName(T)),
         }
+    }
+
+    /// Emits a zero-copy contiguous typed slice directly into an output channel (ARCH-016).
+    pub fn emitTypedSlice(
+        self: TaskContext,
+        channel_name: ?[:0]const u8,
+        comptime T: type,
+        slice: []const T,
+    ) SdkError!void {
+        const emit_fn = self.raw.host.emit_typed_slice orelse return error.InvalidOperation;
+        const abi_handle = @import("../types/payload_handle_abi.zig").PayloadHandle_ABI.fromSlice(T, slice);
+        const ch_ptr = if (channel_name) |c| c.ptr else null;
+        const rc = emit_fn(self.raw, ch_ptr, &abi_handle);
+        try mapHostError(rc);
+    }
+
+    /// Serializes and emits a strongly-typed struct or primitive scalar row at compile-time.
+    pub fn emitTypedRow(
+        self: TaskContext,
+        row: anytype,
+    ) SdkError!void {
+        return self.emitTypedRowTo(null, row);
     }
 
     // --- 6. Managed Artifacts & Quarantine ---

@@ -189,6 +189,12 @@ pub fn reflectAny(comptime F: type, val: F) ReflectedValue {
 pub const ReflectFn = *const fn (ptr: *const anyopaque, field_name: []const u8) ?ReflectedValue;
 pub const ContextualReflectFn = *const fn (ctx: *const anyopaque, ptr: *const anyopaque, field_name: []const u8) ?ReflectedValue;
 
+pub const PayloadRepr = enum(u8) {
+    bytes = 0,
+    typed = 1,
+    dynamic = 2,
+};
+
 /// Zero-copy type-erased fat pointer for transporting native Zig structs or streams
 /// across pipeline task boundaries without allocating dynamic wrappers.
 pub const PayloadHandle = struct {
@@ -201,6 +207,8 @@ pub const PayloadHandle = struct {
     reflect_fn: ?ReflectFn = null,
     reflect_ctx: ?*const anyopaque = null,
     reflect_ctx_fn: ?ContextualReflectFn = null,
+    repr: PayloadRepr = .bytes,
+    schema_id: u64 = 0,
 
     pub fn fromScalar(comptime T: type, item: *const T) PayloadHandle {
         const Trampoline = struct {
@@ -218,6 +226,7 @@ pub const PayloadHandle = struct {
             .element_size = @sizeOf(T),
             .element_align = @alignOf(T),
             .reflect_fn = &Trampoline.reflect,
+            .repr = if (T == u8) .bytes else .typed,
         };
     }
 
@@ -229,6 +238,8 @@ pub const PayloadHandle = struct {
             }
         };
 
+        const is_dyn = (T == DynamicRecord);
+        const is_raw_bytes = (T == u8);
         return .{
             .ptr = @ptrCast(items.ptr),
             .len = items.len,
@@ -237,6 +248,19 @@ pub const PayloadHandle = struct {
             .element_size = @sizeOf(T),
             .element_align = @alignOf(T),
             .reflect_fn = if (items.len > 0) &Trampoline.reflect else null,
+            .repr = if (is_raw_bytes) .bytes else if (is_dyn) .dynamic else .typed,
+        };
+    }
+
+    pub fn empty() PayloadHandle {
+        return .{
+            .ptr = &.{},
+            .len = 0,
+            .is_stream = true,
+            .type_name = "empty",
+            .element_size = 0,
+            .element_align = 1,
+            .repr = .bytes,
         };
     }
 

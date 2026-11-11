@@ -311,10 +311,28 @@ pub const PipelineEngine = struct {
                     fillRandomBytes(&step_span_id);
                     const step_start_ns: u64 = nowNs();
 
-                    // Resolve input stream expression via Dataflow algebra
+                    // Resolve input stream expressions via Dataflow algebra (ARCH-016 multi-input support)
                     var step_input = current_input;
+                    var bound_inputs_list: std.ArrayListUnmanaged(modules_mod.BoundInput) = .empty;
                     if (task_spec.inputs.len > 0) {
-                        step_input = try self.resolveStreamExpr(task_spec.inputs[0].expr, current_input, outputs);
+                        for (task_spec.inputs, 0..) |in_binding, in_idx| {
+                            var resolved_payload = try self.resolveStreamExpr(in_binding.expr, current_input, outputs);
+                            if (in_binding.where_filter) |wf| {
+                                resolved_payload = try dataflow.predicate.filterPayload(self.allocator, resolved_payload, wf);
+                            }
+                            try bound_inputs_list.append(outputs_alloc, .{
+                                .name = in_binding.param_name,
+                                .payload = resolved_payload,
+                            });
+                            if (in_idx == 0) {
+                                step_input = resolved_payload;
+                            }
+                        }
+                    } else {
+                        try bound_inputs_list.append(outputs_alloc, .{
+                            .name = "stream",
+                            .payload = current_input,
+                        });
                     }
 
                     if (self.kernel) |k| {
@@ -366,6 +384,7 @@ pub const PipelineEngine = struct {
                         .params = task_spec.static_params,
                         .workers = workers,
                         .net_bridge = step_net_ctx.bridge(),
+                        .bound_inputs = bound_inputs_list.items,
                     });
 
                     switch (outcome.status) {
@@ -398,7 +417,10 @@ pub const PipelineEngine = struct {
                     var last_processed_output = task_output;
 
                     for (task_spec.outputs) |out_ch| {
-                        var channel_payload = task_output;
+                        var channel_payload = if (outcome.channel_outputs.get(out_ch.name)) |ch_pl|
+                            ch_pl
+                        else
+                            task_output;
 
                         if (out_ch.from_field) |src_field| {
                             if (std.mem.eql(u8, src_field, "network.captured_events")) {

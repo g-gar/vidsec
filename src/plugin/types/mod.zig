@@ -18,6 +18,7 @@ pub const task_descriptor_abi = @import("task_descriptor_abi.zig");
 pub const module_manifest_abi = @import("module_manifest_abi.zig");
 
 // Black Box C-ABI Types
+pub const lowered = @import("lowered.zig");
 pub const mem_context_abi = @import("mem_context_abi.zig");
 pub const payload_handle_abi = @import("payload_handle_abi.zig");
 pub const execution_options_abi = @import("execution_options_abi.zig");
@@ -47,6 +48,11 @@ pub const ModuleManifest_ABI = module_manifest_abi.ModuleManifest_ABI;
 
 pub const MemContext_ABI = mem_context_abi.MemContext_ABI;
 pub const PayloadHandle_ABI = payload_handle_abi.PayloadHandle_ABI;
+pub const Lowered = lowered.Lowered;
+pub const lowerValue = lowered.lowerValue;
+pub const liftValue = lowered.liftValue;
+pub const schemaId = lowered.schemaId;
+pub const PayloadRepr_ABI = payload_handle_abi.PayloadRepr_ABI;
 pub const ReflectedTag_ABI = payload_handle_abi.ReflectedTag_ABI;
 pub const ReflectedValue_ABI = payload_handle_abi.ReflectedValue_ABI;
 pub const ReflectFn_ABI = payload_handle_abi.ReflectFn_ABI;

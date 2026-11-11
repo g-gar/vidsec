@@ -23,6 +23,24 @@ pub const TaskDescriptor_ABI = extern struct {
     execute: TaskExecuteFn_ABI = &defaultExecuteStub,
     /// Modern pure blackbox entrypoint: (MemContext, InPayload, Options) -> TaskResult.
     execute_blackbox: ?TaskFn_ABI = null,
+    // ARCH-016 flags: bit 0: lift_elemental, bit 1: concurrency_safe, bit 2: passthrough
+    flags: u32 = 0,
+
+    pub const FLAG_LIFT_ELEMENTAL: u32 = 1 << 0;
+    pub const FLAG_CONCURRENCY_SAFE: u32 = 1 << 1;
+    pub const FLAG_PASSTHROUGH: u32 = 1 << 2;
+
+    pub fn isLiftElemental(self: TaskDescriptor_ABI) bool {
+        return (self.flags & FLAG_LIFT_ELEMENTAL) != 0;
+    }
+
+    pub fn isConcurrencySafe(self: TaskDescriptor_ABI) bool {
+        return (self.flags & FLAG_CONCURRENCY_SAFE) != 0;
+    }
+
+    pub fn isPassthrough(self: TaskDescriptor_ABI) bool {
+        return (self.flags & FLAG_PASSTHROUGH) != 0;
+    }
 
     pub fn nameSlice(self: TaskDescriptor_ABI) []const u8 {
         return std.mem.span(self.task_name);

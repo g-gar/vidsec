@@ -20,6 +20,7 @@ pub const TaskOutcomeStatus = enum {
 pub const TaskExecutionOutcome = struct {
     status: TaskOutcomeStatus,
     output: PayloadHandle,
+    channel_outputs: std.StringHashMapUnmanaged(PayloadHandle) = .empty,
 };
 
 /// Domain-agnostic host network bridge passed from the Engine into the Module Task Executor.
@@ -59,6 +60,11 @@ pub const NetworkBridge = struct {
     };
 };
 
+pub const BoundInput = struct {
+    name: []const u8,
+    payload: PayloadHandle,
+};
+
 pub const TaskExecutionRequest = struct {
     allocator: Allocator,
     input_payload: PayloadHandle,
@@ -66,6 +72,10 @@ pub const TaskExecutionRequest = struct {
     params: []const ast_mod.KeyValueParam,
     workers: u32 = 1,
     net_bridge: ?NetworkBridge = null,
+    bound_inputs: []const BoundInput = &.{},
+    is_cancelled_flag: *const bool = &false_flag,
+
+    const false_flag: bool = false;
 };
 
 /// Bridges an `abi.ReflectFn_ABI` function pointer into `dataflow.PayloadHandle`'s pure
@@ -89,26 +99,49 @@ pub fn reflectAbiBridge(
 
 /// Converts a C-ABI `PayloadHandle_ABI` into a native `dataflow.PayloadHandle`.
 pub fn fromAbiPayload(abi_payload: abi.PayloadHandle_ABI, fallback_type_name: []const u8) PayloadHandle {
+    const tname = if (abi_payload.typeName().len > 0)
+        abi_payload.typeName()
+    else
+        fallback_type_name;
+
+    const repr: dataflow.PayloadRepr = switch (abi_payload.repr) {
+        .bytes => .bytes,
+        .typed => .typed,
+        .dynamic => .dynamic,
+    };
+
     return .{
         .ptr = abi_payload.ptr orelse &{},
         .len = abi_payload.len,
         .element_size = abi_payload.element_size,
         .element_align = @truncate(abi_payload.element_align),
         .is_stream = abi_payload.is_stream,
-        .type_name = fallback_type_name,
+        .type_name = tname,
         .reflect_ctx = if (abi_payload.reflect_fn) |rf| @ptrCast(rf) else null,
         .reflect_ctx_fn = if (abi_payload.reflect_fn != null) &reflectAbiBridge else null,
+        .repr = repr,
+        .schema_id = abi_payload.schema_id,
     };
 }
 
 /// Converts a native `dataflow.PayloadHandle` into a C-ABI `PayloadHandle_ABI`.
 pub fn toAbiPayload(payload: PayloadHandle) abi.PayloadHandle_ABI {
+    const abi_repr: abi.PayloadRepr_ABI = switch (payload.repr) {
+        .bytes => .bytes,
+        .typed => .typed,
+        .dynamic => .dynamic,
+    };
+
     return .{
         .ptr = payload.ptr,
         .len = payload.len,
         .element_size = payload.element_size,
         .element_align = payload.element_align,
         .is_stream = payload.is_stream,
+        .repr = abi_repr,
+        .schema_id = payload.schema_id,
+        .type_name_ptr = payload.type_name.ptr,
+        .type_name_len = payload.type_name.len,
     };
 }
 
@@ -150,7 +183,13 @@ const ModuleHostState = struct {
     input_payload: PayloadHandle,
     params: []const ast_mod.KeyValueParam,
     net_bridge: ?NetworkBridge = null,
+    bound_inputs: []const BoundInput = &.{},
+    workers: u32 = 1,
+    is_cancelled_flag: *const bool,
     emitted_records: std.ArrayListUnmanaged(dataflow.DynamicRecord) = .empty,
+    channel_outputs: std.StringHashMapUnmanaged(PayloadHandle) = .empty,
+    primary_emitted_slice: ?PayloadHandle = null,
+    mem_abi: abi.MemContext_ABI = undefined,
 
     fn streamSize(raw_ctx: *abi.TaskContext_ABI) callconv(.c) u64 {
         const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
@@ -364,6 +403,68 @@ const ModuleHostState = struct {
         return .ok;
     }
 
+    fn inputCount(raw_ctx: *abi.TaskContext_ABI) callconv(.c) usize {
+        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
+        return self.bound_inputs.len;
+    }
+
+    fn inputPayload(raw_ctx: *abi.TaskContext_ABI, name_ptr: [*:0]const u8, out: *abi.PayloadHandle_ABI) callconv(.c) abi.HostError_ABI {
+        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
+        const name = std.mem.span(name_ptr);
+        for (self.bound_inputs) |bi| {
+            if (std.mem.eql(u8, bi.name, name)) {
+                out.* = toAbiPayload(bi.payload);
+                return .ok;
+            }
+        }
+        if (std.mem.eql(u8, name, "stream") or std.mem.eql(u8, name, "input") or std.mem.eql(u8, name, "primary") or name.len == 0) {
+            if (self.bound_inputs.len > 0) {
+                for (self.bound_inputs) |bi| {
+                    if (bi.payload.is_stream) {
+                        out.* = toAbiPayload(bi.payload);
+                        return .ok;
+                    }
+                }
+                out.* = toAbiPayload(self.bound_inputs[0].payload);
+                return .ok;
+            }
+            out.* = toAbiPayload(self.input_payload);
+            return .ok;
+        }
+        return .not_found;
+    }
+
+    fn getOutputAllocator(raw_ctx: *abi.TaskContext_ABI) callconv(.c) ?*const abi.MemContext_ABI {
+        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
+        return &self.mem_abi;
+    }
+
+    fn getExecutionOptions(raw_ctx: *abi.TaskContext_ABI, out_options: *abi.ExecutionOptions_ABI) callconv(.c) abi.HostError_ABI {
+        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
+        out_options.* = .{
+            .workers = self.workers,
+            .opaque_net_ctx = self,
+            .net_request_fn = &netRequestOpaque,
+        };
+        return .ok;
+    }
+
+    fn isCancelled(raw_ctx: *abi.TaskContext_ABI) callconv(.c) u8 {
+        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
+        return if (self.is_cancelled_flag.*) 1 else 0;
+    }
+
+    fn emitTypedSlice(raw_ctx: *abi.TaskContext_ABI, ch_name: ?[*:0]const u8, slice_payload: *const abi.PayloadHandle_ABI) callconv(.c) abi.HostError_ABI {
+        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
+        const channel = if (ch_name) |c| std.mem.span(c) else "out";
+        const native_handle = fromAbiPayload(slice_payload.*, slice_payload.typeName());
+        self.channel_outputs.put(self.allocator, channel, native_handle) catch return .out_of_memory;
+        if (self.primary_emitted_slice == null or std.mem.eql(u8, channel, "out")) {
+            self.primary_emitted_slice = native_handle;
+        }
+        return .ok;
+    }
+
     const vtable = abi.HostApiVTable_ABI{
         .stream_size = &streamSize,
         .stream_read_at = &streamReadAt,
@@ -382,6 +483,12 @@ const ModuleHostState = struct {
         .net_send = &netSend,
         .net_recv = &netRecv,
         .net_close = &netClose,
+        .input_count = &inputCount,
+        .input_payload = &inputPayload,
+        .get_output_allocator = &getOutputAllocator,
+        .get_execution_options = &getExecutionOptions,
+        .is_cancelled = &isCancelled,
+        .emit_typed_slice = &emitTypedSlice,
     };
 };
 
@@ -396,7 +503,11 @@ pub fn executeTask(
         .input_payload = req.input_payload,
         .params = req.params,
         .net_bridge = req.net_bridge,
+        .bound_inputs = req.bound_inputs,
+        .workers = req.workers,
+        .is_cancelled_flag = req.is_cancelled_flag,
     };
+    host_state.mem_abi = abi.MemContext_ABI.fromAllocator(&host_state.allocator);
 
     if (desc.execute_blackbox) |bb_fn| {
         var alloc_copy = req.allocator;
@@ -421,13 +532,18 @@ pub fn executeTask(
     };
     const status = desc.execute(&raw_ctx);
 
-    const out_payload = if (host_state.emitted_records.items.len > 0)
+    const out_payload = if (host_state.primary_emitted_slice) |ps|
+        ps
+    else if (host_state.emitted_records.items.len > 0)
         PayloadHandle.fromSlice(dataflow.DynamicRecord, host_state.emitted_records.items)
+    else if (desc.isPassthrough())
+        req.input_payload
     else
-        req.input_payload;
+        PayloadHandle.empty();
 
     return .{
         .status = mapAbiStatus(status),
         .output = out_payload,
+        .channel_outputs = host_state.channel_outputs,
     };
 }

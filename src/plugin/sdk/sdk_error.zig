@@ -11,5 +11,6 @@ pub const SdkError = error{
     NetworkAcquireTimeout,
     NetworkUpstreamError,
     TypeMismatch,
+    InvalidOperation,
     UnexpectedHostError,
 };

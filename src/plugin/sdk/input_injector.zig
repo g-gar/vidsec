@@ -29,7 +29,7 @@ pub fn injectInputs(comptime Inputs: type, ctx: TaskContext) (SdkError || InputI
 }
 
 /// Resolves a single field value from context, applying defaults and type conversions.
-fn resolveField(comptime field: std.builtin.Type.StructField, ctx: TaskContext, key_z: [:0]const u8) (SdkError || InputInjectorError)!field.type {
+pub fn resolveField(comptime field: std.builtin.Type.StructField, ctx: TaskContext, key_z: [:0]const u8) (SdkError || InputInjectorError)!field.type {
     const T = field.type;
     const has_default = (field.default_value_ptr != null);
 
@@ -38,8 +38,51 @@ fn resolveField(comptime field: std.builtin.Type.StructField, ctx: TaskContext, 
         return ctx.streamReader();
     }
 
-    // 2. Struct injection (e.g. nested `job: struct { ... }`)
+    // 1a. Lazy Rows iterator injection (ARCH-016 §6.4)
+    if (@typeInfo(T) == .@"struct" and @hasDecl(T, "is_flowdata_rows")) {
+        const Elem = T.ElementType;
+        if (try ctx.inputPayload(key_z)) |handle| {
+            return T.init(handle.asSlice(Elem));
+        }
+        if (try ctx.inputPayload("primary")) |handle| {
+            return T.init(handle.asSlice(Elem));
+        }
+        if (has_default) {
+            const def_ptr = field.default_value_ptr.?;
+            return @as(*const T, @ptrCast(@alignCast(def_ptr))).*;
+        }
+        ctx.logErrorFmt("Required input rows '{s}' is missing from task configuration", .{field.name});
+        return error.MissingRequiredInput;
+    }
+
+    // 1b. Bound Input Channel check (ARCH-016 Multi-Input): typed slice `[]const Elem`
+    if (@typeInfo(T) == .pointer and @typeInfo(T).pointer.size == .slice) {
+        const Elem = @typeInfo(T).pointer.child;
+        if (try ctx.inputPayload(key_z)) |handle| {
+            return handle.asSlice(Elem);
+        }
+        if (Elem == u8) {
+            if (try ctx.getParam(key_z)) |val| {
+                if (val.asText()) |txt| return txt;
+            }
+        }
+        if (has_default) {
+            const def_ptr = field.default_value_ptr.?;
+            return @as(*const T, @ptrCast(@alignCast(def_ptr))).*;
+        }
+        if (@typeInfo(T) == .optional) {
+            return null;
+        }
+        ctx.logErrorFmt("Required input slice '{s}' is missing from task configuration", .{field.name});
+        return error.MissingRequiredInput;
+    }
+
+    // 1c. Bound Input Channel check: scalar struct `T`
     if (@typeInfo(T) == .@"struct") {
+        if (try ctx.inputPayload(key_z)) |handle| {
+            return handle.asScalar(T).*;
+        }
+        // Fall back to nested struct injection (e.g. nested params)
         return injectInputs(T, ctx);
     }
 
@@ -137,7 +180,9 @@ pub fn computeRequiredParams(comptime Inputs: type) []const [*:0]const u8 {
             const fields = @typeInfo(Inputs).@"struct".fields;
             var count: usize = 0;
             inline for (fields) |f| {
+                const is_slice_input = (@typeInfo(f.type) == .pointer and @typeInfo(f.type).pointer.size == .slice and @typeInfo(f.type).pointer.child != u8);
                 if (f.type != reader.BoundedStreamReader and
+                    !is_slice_input and
                     f.default_value_ptr == null and
                     @typeInfo(f.type) != .optional)
                 {
@@ -160,7 +205,9 @@ pub fn computeRequiredParams(comptime Inputs: type) []const [*:0]const u8 {
             var params: [count][*:0]const u8 = undefined;
             var idx: usize = 0;
             inline for (fields) |f| {
+                const is_slice_input = (@typeInfo(f.type) == .pointer and @typeInfo(f.type).pointer.size == .slice and @typeInfo(f.type).pointer.child != u8);
                 if (f.type != reader.BoundedStreamReader and
+                    !is_slice_input and
                     f.default_value_ptr == null and
                     @typeInfo(f.type) != .optional)
                 {

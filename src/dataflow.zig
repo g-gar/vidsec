@@ -16,6 +16,7 @@ pub const ContextualReflectFn = dataflow.types.ContextualReflectFn;
 pub const reflectField = dataflow.reflectField;
 pub const reflectAny = dataflow.reflectAny;
 pub const PayloadHandle = dataflow.PayloadHandle;
+pub const PayloadRepr = dataflow.PayloadRepr;
 pub const DynamicField = dataflow.DynamicField;
 pub const DynamicRecord = dataflow.DynamicRecord;
 

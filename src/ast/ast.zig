@@ -149,6 +149,7 @@ pub const InboundStreamExpr = struct {
 pub const InputBindingSpec = struct {
     param_name: []const u8,
     expr: InboundStreamExpr,
+    where_filter: ?[]const u8 = null,
 };
 
 pub const ChannelOutputSpec = struct {
