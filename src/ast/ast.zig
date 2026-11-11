@@ -7,12 +7,19 @@ const network = @import("../transport/outbound/mod.zig");
 // RUNTIME, NETWORK, AND DATASOURCE SPECIFICATIONS
 // =============================================================================
 
+pub const SchedulerMode = enum {
+    sequential,
+    dag,
+};
+
 pub const RuntimeConfig = struct {
     /// Worker thread quota for multi-core data parallelism.
     /// Default is 1 (deterministic single-threaded).
     workers: usize = 1,
     /// Default virtual network adapter assigned to steps that omit `network:`.
     default_network: []const u8 = "isolated",
+    /// Scheduler mode: sequential (default) or dag (ARCH-017).
+    scheduler: SchedulerMode = .sequential,
 };
 
 pub const ConfigParam = repository.ConfigParam;
@@ -176,6 +183,8 @@ pub const TaskStepSpec = struct {
     concurrency: ?usize = null,
     static_params: []const KeyValueParam = &.{},
     outputs: []const ChannelOutputSpec = &.{},
+    /// Explicit step ordering dependencies (ARCH-017 §3.1).
+    after: []const []const u8 = &.{},
 
     pub fn getInput(self: TaskStepSpec, param_name: []const u8) ?InboundStreamExpr {
         for (self.inputs) |in| {
@@ -319,6 +328,10 @@ pub const PipelineBuilder = struct {
 
     pub fn setDefaultNetwork(self: *PipelineBuilder, net_id: []const u8) void {
         self.runtime.default_network = net_id;
+    }
+
+    pub fn setScheduler(self: *PipelineBuilder, scheduler: SchedulerMode) void {
+        self.runtime.scheduler = scheduler;
     }
 
     pub fn addModule(self: *PipelineBuilder, spec: ModuleSpec) ValidationError!void {

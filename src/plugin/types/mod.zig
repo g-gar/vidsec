@@ -25,6 +25,7 @@ pub const execution_options_abi = @import("execution_options_abi.zig");
 pub const task_result_abi = @import("task_result_abi.zig");
 pub const task_fn_abi = @import("task_fn_abi.zig");
 pub const net_abi = @import("net_abi.zig");
+pub const item_error = @import("item_error.zig");
 
 pub const FLOWDATA_ABI_VERSION = abi_version.FLOWDATA_ABI_VERSION;
 pub const ABI_VERSION = abi_version.ABI_VERSION;
@@ -63,4 +64,5 @@ pub const TaskFn_ABI = task_fn_abi.TaskFn_ABI;
 pub const NetRequest_ABI = net_abi.NetRequest_ABI;
 pub const NetResponse_ABI = net_abi.NetResponse_ABI;
 pub const NetStreamHandle_ABI = net_abi.NetStreamHandle_ABI;
+pub const ItemError = item_error.ItemError;
 pub const NetRequestFn_ABI = net_abi.NetRequestFn_ABI;

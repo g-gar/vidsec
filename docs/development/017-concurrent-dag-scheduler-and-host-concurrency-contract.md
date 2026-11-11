@@ -6,7 +6,7 @@
 | **Depends On** | [`ARCH-002`](./002-open-kernel-extension-system.md), [`ARCH-004`](./004-observability-otel-and-dag-visualizer.md), [`ARCH-011`](./011-pipeline-yaml-specification-and-orchestration.md), [`ARCH-016`](./016-reactive-bifurcation-parallel-expansion-and-join.md) (Typed Payload Contract, multi-channel I/O) |
 | **Unblocks** | `ARCH-016` Phase 16.5 (parallel elemental lifting) |
 | **Area** | `src/engine/`, `src/dataflow/`, `src/transport/outbound/`, `src/repository/`, `src/kernel/`, `src/plugin/loader/` |
-| **Status** | `DESIGN & ARCHITECTURE SPECIFICATION` |
+| **Status** | `COMPLETED (Phases 1-3 Core Engine & Scheduler Fully Verified)` |
 
 ---
 
@@ -249,13 +249,13 @@ pipelines:
 
 ## 8. Implementation Plan
 
-| Phase | Deliverable | Behavior change | Risk |
+| Phase | Deliverable | Behavior change | Status |
 |---|---|---|---|
-| **P1** | Host Concurrency Contract (§4) + worker pool with help-while-waiting + thread-safe backing allocator | None (still sequential). **Unblocks ARCH-016 16.5** | **High** |
-| **P2** | Plan compiler (`ExecutionPlan`, validations, `after:`), executed in topological order in `sequential` mode | Stricter load-time validation only | Medium |
-| **P3** | Coordinator + concurrent dispatch (`scheduler: dag`), MPSC completions, deterministic failure reporting | Independent steps run concurrently | High |
-| **P4** | Per-step arenas, channel refcounting, `max_inflight_bytes` backpressure, `max_concurrent` caps | Lower memory peaks | Medium |
-| **P5** | Routers / sub-pipelines as sub-graphs, halt/cancel semantics, `dag_viz` live states | Routers participate in the DAG | Medium |
+| **P1** | Host Concurrency Contract (§4) + worker pool with help-while-waiting + thread-safe backing allocator | None (still sequential). **Unblocks ARCH-016 16.5** | **COMPLETED** |
+| **P2** | Plan compiler (`ExecutionPlan`, validations, `after:`), executed in topological order in `sequential` mode | Stricter load-time validation only | **COMPLETED** |
+| **P3** | Coordinator + concurrent dispatch (`scheduler: dag`), MPSC completions, deterministic failure reporting | Independent steps run concurrently | **COMPLETED** |
+| **P4** | Per-step arenas, channel refcounting, `max_inflight_bytes` backpressure, `max_concurrent` caps | Lower memory peaks | Future Enhancement |
+| **P5** | Routers / sub-pipelines as sub-graphs, halt/cancel semantics, `dag_viz` live states | Routers participate in the DAG | Future Enhancement |
 
 `scheduler: sequential` stays the default until P5 passes the mode-equivalence suite. After that, `dag` becomes the default.
 

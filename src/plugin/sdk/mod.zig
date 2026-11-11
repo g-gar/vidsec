@@ -41,3 +41,4 @@ pub const EmptyContext = define_task_service.EmptyContext;
 pub const Channels = channels_mod.Channels;
 pub const channels = channels_mod.channels;
 pub const Rows = rows_mod.Rows;
+pub const ItemError = @import("../types/item_error.zig").ItemError;

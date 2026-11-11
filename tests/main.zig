@@ -13,4 +13,7 @@ test {
     _ = @import("core/otel_extension_test.zig");
     _ = @import("core/dag_viz_extension_test.zig");
     _ = @import("core/bifurcation_multichannel_test.zig");
+    _ = @import("core/concurrency_contract_test.zig");
+    _ = @import("core/execution_plan_test.zig");
+    _ = @import("core/dag_scheduler_test.zig");
 }

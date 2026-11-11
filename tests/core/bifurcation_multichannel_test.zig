@@ -257,6 +257,10 @@ test "ARCH-016 Phase 16.4: Elemental Auto-Lifting (Map, Filter, Expansion)" {
     var repo_reg = flowdata.repository.RepositoryRegistry.init(alloc);
     defer repo_reg.deinit();
 
+    const MemoryRepository = @import("flowdata_extensions").datasource.MemoryRepository;
+    var mem_repo = MemoryRepository.init(alloc);
+    try repo_reg.register("pipeline_memory", mem_repo.storageRepository());
+
     const pipeline_yaml =
         \\version: 2
         \\pipelines:
@@ -295,6 +299,7 @@ test "ARCH-016 Phase 16.4: Elemental Auto-Lifting (Map, Filter, Expansion)" {
 
     const ast = try flowdata.yaml.loadPipelineAstFromYaml(alloc, pipeline_yaml, .{});
     var engine = flowdata.engine.PipelineEngine.init(alloc, ast, &mod_reg, &repo_reg);
+    defer engine.deinit();
     const summary = try engine.run(flowdata.dataflow.PayloadHandle.empty());
 
     try testing.expectEqual(@as(usize, 4), summary.steps_executed);
@@ -344,6 +349,10 @@ test "ARCH-016 Phase 16.4: Composite Elemental task with broadcast scalar input"
     var repo_reg = flowdata.repository.RepositoryRegistry.init(alloc);
     defer repo_reg.deinit();
 
+    const MemoryRepository = @import("flowdata_extensions").datasource.MemoryRepository;
+    var mem_repo = MemoryRepository.init(alloc);
+    try repo_reg.register("pipeline_memory", mem_repo.storageRepository());
+
     const pipeline_yaml =
         \\version: 2
         \\pipelines:
@@ -368,6 +377,7 @@ test "ARCH-016 Phase 16.4: Composite Elemental task with broadcast scalar input"
 
     const ast = try flowdata.yaml.loadPipelineAstFromYaml(alloc, pipeline_yaml, .{});
     var engine = flowdata.engine.PipelineEngine.init(alloc, ast, &mod_reg, &repo_reg);
+    defer engine.deinit();
     const summary = try engine.run(flowdata.dataflow.PayloadHandle.empty());
 
     try testing.expectEqual(@as(usize, 2), summary.steps_executed);
@@ -420,6 +430,10 @@ test "ARCH-016 Phase 16.4: Lazy Rows(T) stream iterator injection" {
     var repo_reg = flowdata.repository.RepositoryRegistry.init(alloc);
     defer repo_reg.deinit();
 
+    const MemoryRepository = @import("flowdata_extensions").datasource.MemoryRepository;
+    var mem_repo = MemoryRepository.init(alloc);
+    try repo_reg.register("pipeline_memory", mem_repo.storageRepository());
+
     const pipeline_yaml =
         \\version: 2
         \\pipelines:
@@ -442,7 +456,564 @@ test "ARCH-016 Phase 16.4: Lazy Rows(T) stream iterator injection" {
 
     const ast = try flowdata.yaml.loadPipelineAstFromYaml(alloc, pipeline_yaml, .{});
     var engine = flowdata.engine.PipelineEngine.init(alloc, ast, &mod_reg, &repo_reg);
+    defer engine.deinit();
     const summary = try engine.run(flowdata.dataflow.PayloadHandle.empty());
 
     try testing.expectEqual(@as(usize, 2), summary.steps_executed);
+}
+
+const ParallelNum = struct {
+    id: u64,
+    val: u64,
+};
+
+const ParallelOut = struct {
+    id: u64,
+    doubled: u64,
+};
+
+const ParallelProducer = struct {
+    pub const Context = struct {
+        pub const concurrency_safe = true;
+    };
+    pub fn execute(_: *ParallelProducer, alloc: std.mem.Allocator) ![]const ParallelNum {
+        const items = try alloc.alloc(ParallelNum, 100);
+        for (0..100) |i| {
+            items[i] = .{ .id = i, .val = i * 10 };
+        }
+        return items;
+    }
+};
+
+const ParallelMapper = struct {
+    pub const Context = struct {
+        pub const concurrency_safe = true;
+    };
+    pub fn execute(_: *ParallelMapper, item: ParallelNum) !ParallelOut {
+        return .{
+            .id = item.id,
+            .doubled = item.val * 2,
+        };
+    }
+};
+
+test "ARCH-016 Phase 16.5: Parallel intra-step elemental lifting with 4 worker pool and helpWhile" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const prod_desc = plugin.defineTaskService(ParallelProducer, .{
+        .name = "produce_stream",
+    });
+    const map_desc = plugin.defineTaskService(ParallelMapper, .{
+        .name = "map_parallel",
+        .lift = .elemental,
+    });
+
+    var tasks = [_]plugin.TaskDescriptor_ABI{ prod_desc, map_desc };
+    const manifest = plugin.ModuleManifest_ABI{
+        .module_name = "parallel_demo",
+        .module_version = .{ .major = 1, .minor = 0, .patch = 0 },
+        .tasks_ptr = &tasks,
+        .tasks_len = tasks.len,
+    };
+
+    var mod_reg = flowdata.plugin.ModuleRegistry.init(alloc);
+    defer mod_reg.deinit();
+    try mod_reg.registerStaticModule("parallel_demo", &manifest);
+
+    var repo_reg = flowdata.repository.RepositoryRegistry.init(alloc);
+    defer repo_reg.deinit();
+
+    const MemoryRepository = @import("flowdata_extensions").datasource.MemoryRepository;
+    var mem_repo = MemoryRepository.init(alloc);
+    try repo_reg.register("pipeline_memory", mem_repo.storageRepository());
+
+    const pipeline_yaml =
+        \\version: 2
+        \\runtime:
+        \\  workers: 4
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: step_prod
+        \\        uses: parallel_demo/produce_stream
+        \\        outputs:
+        \\          stream_data:
+        \\            datasource: pipeline_memory
+        \\
+        \\      - id: step_map
+        \\        uses: parallel_demo/map_parallel
+        \\        concurrency: 4
+        \\        inputs:
+        \\          primary: stream_data
+        \\        outputs:
+        \\          results:
+        \\            datasource: pipeline_memory
+    ;
+
+    const ast = try flowdata.yaml.loadPipelineAstFromYaml(alloc, pipeline_yaml, .{});
+    var engine = flowdata.engine.PipelineEngine.init(alloc, ast, &mod_reg, &repo_reg);
+    defer engine.deinit();
+    const summary = try engine.run(flowdata.dataflow.PayloadHandle.empty());
+
+    try testing.expectEqual(@as(usize, 2), summary.steps_executed);
+    try testing.expect(!summary.halted_early);
+
+    // Verify results from repository
+    const out_repo = repo_reg.get("pipeline_memory").?;
+    const payload = out_repo.readPayload("results").?;
+    try testing.expectEqual(@as(usize, 100), payload.len);
+    try testing.expect(payload.is_stream);
+
+    const out_slice = payload.asSlice(ParallelOut);
+    for (out_slice, 0..) |elem, i| {
+        try testing.expectEqual(@as(u64, i), elem.id);
+        try testing.expectEqual(@as(u64, i * 20), elem.doubled);
+    }
+}
+
+const ParallelFilter = struct {
+    pub const Context = struct {
+        pub const concurrency_safe = true;
+    };
+    pub fn execute(_: *ParallelFilter, item: ParallelNum) !?ParallelOut {
+        if (item.id % 2 == 0) {
+            return ParallelOut{
+                .id = item.id,
+                .doubled = item.val * 2,
+            };
+        }
+        return null;
+    }
+};
+
+const Parallel50Producer = struct {
+    pub const Context = struct {
+        pub const concurrency_safe = true;
+    };
+    pub fn execute(_: *Parallel50Producer, alloc: std.mem.Allocator) ![]const ParallelNum {
+        const items = try alloc.alloc(ParallelNum, 50);
+        for (0..50) |i| {
+            items[i] = .{ .id = i, .val = i * 10 };
+        }
+        return items;
+    }
+};
+
+const ParallelExpander = struct {
+    pub const Context = struct {
+        pub const concurrency_safe = true;
+    };
+    pub fn execute(_: *ParallelExpander, alloc: std.mem.Allocator, item: ParallelNum) ![]const ParallelOut {
+        var slice = try alloc.alloc(ParallelOut, 2);
+        slice[0] = .{ .id = item.id * 2, .doubled = item.val };
+        slice[1] = .{ .id = item.id * 2 + 1, .doubled = item.val + 1 };
+        return slice;
+    }
+};
+
+const ParallelFallibleMapper = struct {
+    pub const Context = struct {
+        pub const concurrency_safe = true;
+    };
+    pub fn execute(_: *ParallelFallibleMapper, item: ParallelNum) !ParallelOut {
+        if (item.id == 13 or item.id == 42) {
+            return error.InvalidData;
+        }
+        return .{
+            .id = item.id,
+            .doubled = item.val * 2,
+        };
+    }
+};
+
+test "ARCH-016 Phase 16.5: Parallel Filter (1 -> 0..1) with order preservation and compaction" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const prod_desc = plugin.defineTaskService(ParallelProducer, .{
+        .name = "produce_stream",
+    });
+    const filter_desc = plugin.defineTaskService(ParallelFilter, .{
+        .name = "filter_parallel",
+        .lift = .elemental,
+    });
+
+    var tasks = [_]plugin.TaskDescriptor_ABI{ prod_desc, filter_desc };
+    const manifest = plugin.ModuleManifest_ABI{
+        .module_name = "parallel_filter_demo",
+        .module_version = .{ .major = 1, .minor = 0, .patch = 0 },
+        .tasks_ptr = &tasks,
+        .tasks_len = tasks.len,
+    };
+
+    var mod_reg = flowdata.plugin.ModuleRegistry.init(alloc);
+    defer mod_reg.deinit();
+    try mod_reg.registerStaticModule("parallel_filter_demo", &manifest);
+
+    var repo_reg = flowdata.repository.RepositoryRegistry.init(alloc);
+    defer repo_reg.deinit();
+
+    const MemoryRepository = @import("flowdata_extensions").datasource.MemoryRepository;
+    var mem_repo = MemoryRepository.init(alloc);
+    try repo_reg.register("pipeline_memory", mem_repo.storageRepository());
+
+    const pipeline_yaml =
+        \\version: 2
+        \\runtime:
+        \\  workers: 4
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: step_prod
+        \\        uses: parallel_filter_demo/produce_stream
+        \\        outputs:
+        \\          stream_data:
+        \\            datasource: pipeline_memory
+        \\
+        \\      - id: step_filter
+        \\        uses: parallel_filter_demo/filter_parallel
+        \\        concurrency: 4
+        \\        inputs:
+        \\          primary: stream_data
+        \\        outputs:
+        \\          results:
+        \\            datasource: pipeline_memory
+    ;
+
+    const ast = try flowdata.yaml.loadPipelineAstFromYaml(alloc, pipeline_yaml, .{});
+    var engine = flowdata.engine.PipelineEngine.init(alloc, ast, &mod_reg, &repo_reg);
+    defer engine.deinit();
+    const summary = try engine.run(flowdata.dataflow.PayloadHandle.empty());
+
+    try testing.expectEqual(@as(usize, 2), summary.steps_executed);
+    try testing.expect(!summary.halted_early);
+
+    const out_repo = repo_reg.get("pipeline_memory").?;
+    const payload = out_repo.readPayload("results").?;
+    try testing.expectEqual(@as(usize, 50), payload.len);
+    try testing.expect(payload.is_stream);
+
+    const out_slice = payload.asSlice(ParallelOut);
+    for (out_slice, 0..) |elem, i| {
+        try testing.expectEqual(@as(u64, i * 2), elem.id);
+        try testing.expectEqual(@as(u64, (i * 2) * 20), elem.doubled);
+    }
+}
+
+test "ARCH-016 Phase 16.5: Parallel Expansion (1 -> M) with order preservation and flattening" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const prod_desc = plugin.defineTaskService(Parallel50Producer, .{
+        .name = "produce_50_stream",
+    });
+    const expand_desc = plugin.defineTaskService(ParallelExpander, .{
+        .name = "expand_parallel",
+        .lift = .elemental,
+    });
+
+    var tasks = [_]plugin.TaskDescriptor_ABI{ prod_desc, expand_desc };
+    const manifest = plugin.ModuleManifest_ABI{
+        .module_name = "parallel_expand_demo",
+        .module_version = .{ .major = 1, .minor = 0, .patch = 0 },
+        .tasks_ptr = &tasks,
+        .tasks_len = tasks.len,
+    };
+
+    var mod_reg = flowdata.plugin.ModuleRegistry.init(alloc);
+    defer mod_reg.deinit();
+    try mod_reg.registerStaticModule("parallel_expand_demo", &manifest);
+
+    var repo_reg = flowdata.repository.RepositoryRegistry.init(alloc);
+    defer repo_reg.deinit();
+
+    const MemoryRepository = @import("flowdata_extensions").datasource.MemoryRepository;
+    var mem_repo = MemoryRepository.init(alloc);
+    try repo_reg.register("pipeline_memory", mem_repo.storageRepository());
+
+    const pipeline_yaml =
+        \\version: 2
+        \\runtime:
+        \\  workers: 4
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: step_prod
+        \\        uses: parallel_expand_demo/produce_50_stream
+        \\        outputs:
+        \\          stream_data:
+        \\            datasource: pipeline_memory
+        \\
+        \\      - id: step_expand
+        \\        uses: parallel_expand_demo/expand_parallel
+        \\        concurrency: 4
+        \\        inputs:
+        \\          primary: stream_data
+        \\        outputs:
+        \\          results:
+        \\            datasource: pipeline_memory
+    ;
+
+    const ast = try flowdata.yaml.loadPipelineAstFromYaml(alloc, pipeline_yaml, .{});
+    var engine = flowdata.engine.PipelineEngine.init(alloc, ast, &mod_reg, &repo_reg);
+    defer engine.deinit();
+    const summary = try engine.run(flowdata.dataflow.PayloadHandle.empty());
+
+    try testing.expectEqual(@as(usize, 2), summary.steps_executed);
+    try testing.expect(!summary.halted_early);
+
+    const out_repo = repo_reg.get("pipeline_memory").?;
+    const payload = out_repo.readPayload("results").?;
+    try testing.expectEqual(@as(usize, 100), payload.len);
+    try testing.expect(payload.is_stream);
+
+    const out_slice = payload.asSlice(ParallelOut);
+    for (out_slice, 0..) |elem, i| {
+        try testing.expectEqual(@as(u64, i), elem.id);
+    }
+}
+
+test "ARCH-016 Phase 16.5: Parallel elemental lifting with fail_fast error policy" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const prod_desc = plugin.defineTaskService(ParallelProducer, .{
+        .name = "produce_stream",
+    });
+    const map_desc = plugin.defineTaskService(ParallelFallibleMapper, .{
+        .name = "map_fallible",
+        .lift = .elemental,
+    });
+
+    var tasks = [_]plugin.TaskDescriptor_ABI{ prod_desc, map_desc };
+    const manifest = plugin.ModuleManifest_ABI{
+        .module_name = "parallel_fail_demo",
+        .module_version = .{ .major = 1, .minor = 0, .patch = 0 },
+        .tasks_ptr = &tasks,
+        .tasks_len = tasks.len,
+    };
+
+    var mod_reg = flowdata.plugin.ModuleRegistry.init(alloc);
+    defer mod_reg.deinit();
+    try mod_reg.registerStaticModule("parallel_fail_demo", &manifest);
+
+    var repo_reg = flowdata.repository.RepositoryRegistry.init(alloc);
+    defer repo_reg.deinit();
+
+    const MemoryRepository = @import("flowdata_extensions").datasource.MemoryRepository;
+    var mem_repo = MemoryRepository.init(alloc);
+    try repo_reg.register("pipeline_memory", mem_repo.storageRepository());
+
+    const pipeline_yaml =
+        \\version: 2
+        \\runtime:
+        \\  workers: 4
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: step_prod
+        \\        uses: parallel_fail_demo/produce_stream
+        \\        outputs:
+        \\          stream_data:
+        \\            datasource: pipeline_memory
+        \\
+        \\      - id: step_map
+        \\        uses: parallel_fail_demo/map_fallible
+        \\        concurrency: 4
+        \\        inputs:
+        \\          primary: stream_data
+        \\        params:
+        \\          on_item_error: "fail_fast"
+        \\        outputs:
+        \\          results:
+        \\            datasource: pipeline_memory
+    ;
+
+    const ast = try flowdata.yaml.loadPipelineAstFromYaml(alloc, pipeline_yaml, .{});
+    var engine = flowdata.engine.PipelineEngine.init(alloc, ast, &mod_reg, &repo_reg);
+    defer engine.deinit();
+    try testing.expectError(error.TaskExecutionFailed, engine.run(flowdata.dataflow.PayloadHandle.empty()));
+}
+
+test "ARCH-016 Phase 16.5: Parallel elemental lifting with skip error policy" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const prod_desc = plugin.defineTaskService(ParallelProducer, .{
+        .name = "produce_stream",
+    });
+    const map_desc = plugin.defineTaskService(ParallelFallibleMapper, .{
+        .name = "map_fallible",
+        .lift = .elemental,
+    });
+
+    var tasks = [_]plugin.TaskDescriptor_ABI{ prod_desc, map_desc };
+    const manifest = plugin.ModuleManifest_ABI{
+        .module_name = "parallel_skip_demo",
+        .module_version = .{ .major = 1, .minor = 0, .patch = 0 },
+        .tasks_ptr = &tasks,
+        .tasks_len = tasks.len,
+    };
+
+    var mod_reg = flowdata.plugin.ModuleRegistry.init(alloc);
+    defer mod_reg.deinit();
+    try mod_reg.registerStaticModule("parallel_skip_demo", &manifest);
+
+    var repo_reg = flowdata.repository.RepositoryRegistry.init(alloc);
+    defer repo_reg.deinit();
+
+    const MemoryRepository = @import("flowdata_extensions").datasource.MemoryRepository;
+    var mem_repo = MemoryRepository.init(alloc);
+    try repo_reg.register("pipeline_memory", mem_repo.storageRepository());
+
+    const pipeline_yaml =
+        \\version: 2
+        \\runtime:
+        \\  workers: 4
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: step_prod
+        \\        uses: parallel_skip_demo/produce_stream
+        \\        outputs:
+        \\          stream_data:
+        \\            datasource: pipeline_memory
+        \\
+        \\      - id: step_map
+        \\        uses: parallel_skip_demo/map_fallible
+        \\        concurrency: 4
+        \\        inputs:
+        \\          primary: stream_data
+        \\        params:
+        \\          on_item_error: "skip"
+        \\        outputs:
+        \\          results:
+        \\            datasource: pipeline_memory
+    ;
+
+    const ast = try flowdata.yaml.loadPipelineAstFromYaml(alloc, pipeline_yaml, .{});
+    var engine = flowdata.engine.PipelineEngine.init(alloc, ast, &mod_reg, &repo_reg);
+    defer engine.deinit();
+    const summary = try engine.run(flowdata.dataflow.PayloadHandle.empty());
+
+    try testing.expectEqual(@as(usize, 2), summary.steps_executed);
+    try testing.expect(!summary.halted_early);
+
+    const out_repo = repo_reg.get("pipeline_memory").?;
+    const payload = out_repo.readPayload("results").?;
+    // 100 items - 2 skipped (13 and 42) = 98 items
+    try testing.expectEqual(@as(usize, 98), payload.len);
+    try testing.expect(payload.is_stream);
+
+    const out_slice = payload.asSlice(ParallelOut);
+    var expected_id: u64 = 0;
+    for (out_slice) |elem| {
+        if (expected_id == 13 or expected_id == 42) expected_id += 1;
+        try testing.expectEqual(expected_id, elem.id);
+        try testing.expectEqual(expected_id * 20, elem.doubled);
+        expected_id += 1;
+    }
+}
+
+test "ARCH-016 Phase 16.5: Parallel elemental lifting with collect error policy and errors channel" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const prod_desc = plugin.defineTaskService(ParallelProducer, .{
+        .name = "produce_stream",
+    });
+    const map_desc = plugin.defineTaskService(ParallelFallibleMapper, .{
+        .name = "map_fallible",
+        .lift = .elemental,
+    });
+
+    var tasks = [_]plugin.TaskDescriptor_ABI{ prod_desc, map_desc };
+    const manifest = plugin.ModuleManifest_ABI{
+        .module_name = "parallel_collect_demo",
+        .module_version = .{ .major = 1, .minor = 0, .patch = 0 },
+        .tasks_ptr = &tasks,
+        .tasks_len = tasks.len,
+    };
+
+    var mod_reg = flowdata.plugin.ModuleRegistry.init(alloc);
+    defer mod_reg.deinit();
+    try mod_reg.registerStaticModule("parallel_collect_demo", &manifest);
+
+    var repo_reg = flowdata.repository.RepositoryRegistry.init(alloc);
+    defer repo_reg.deinit();
+
+    const MemoryRepository = @import("flowdata_extensions").datasource.MemoryRepository;
+    var mem_repo = MemoryRepository.init(alloc);
+    try repo_reg.register("pipeline_memory", mem_repo.storageRepository());
+
+    const pipeline_yaml =
+        \\version: 2
+        \\runtime:
+        \\  workers: 4
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: step_prod
+        \\        uses: parallel_collect_demo/produce_stream
+        \\        outputs:
+        \\          stream_data:
+        \\            datasource: pipeline_memory
+        \\
+        \\      - id: step_map
+        \\        uses: parallel_collect_demo/map_fallible
+        \\        concurrency: 4
+        \\        inputs:
+        \\          primary: stream_data
+        \\        params:
+        \\          on_item_error: "collect"
+        \\        outputs:
+        \\          results:
+        \\            datasource: pipeline_memory
+        \\          errors:
+        \\            datasource: pipeline_memory
+        \\            from: errors
+    ;
+
+    const ast = try flowdata.yaml.loadPipelineAstFromYaml(alloc, pipeline_yaml, .{});
+    var engine = flowdata.engine.PipelineEngine.init(alloc, ast, &mod_reg, &repo_reg);
+    defer engine.deinit();
+    const summary = try engine.run(flowdata.dataflow.PayloadHandle.empty());
+
+    try testing.expectEqual(@as(usize, 2), summary.steps_executed);
+    try testing.expect(!summary.halted_early);
+
+    const out_repo = repo_reg.get("pipeline_memory").?;
+
+    // 1. Verify primary results
+    const payload = out_repo.readPayload("results").?;
+    try testing.expectEqual(@as(usize, 98), payload.len);
+    try testing.expect(payload.is_stream);
+
+    const out_slice = payload.asSlice(ParallelOut);
+    var expected_id: u64 = 0;
+    for (out_slice) |elem| {
+        if (expected_id == 13 or expected_id == 42) expected_id += 1;
+        try testing.expectEqual(expected_id, elem.id);
+        try testing.expectEqual(expected_id * 20, elem.doubled);
+        expected_id += 1;
+    }
+
+    // 2. Verify errors channel
+    const err_payload = out_repo.readPayload("errors").?;
+    try testing.expectEqual(@as(usize, 2), err_payload.len);
+    try testing.expect(err_payload.is_stream);
+
+    const err_slice = err_payload.asSlice(plugin.ItemError);
+    try testing.expectEqual(@as(u64, 13), err_slice[0].index);
+    try testing.expectEqualStrings("InvalidData", err_slice[0].error_name);
+
+    try testing.expectEqual(@as(u64, 42), err_slice[1].index);
+    try testing.expectEqualStrings("InvalidData", err_slice[1].error_name);
 }

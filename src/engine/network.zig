@@ -5,6 +5,7 @@ const dataflow = @import("flowdata_dataflow");
 const repository_mod = @import("../repository/mod.zig");
 const network_mod = @import("../transport/outbound/mod.zig");
 const runner_mod = @import("runner.zig");
+const Mutex = @import("../concurrency/mod.zig").Mutex;
 
 pub const NetworkRegistry = network_mod.NetworkRegistry;
 pub const NetworkAdapter = network_mod.NetworkAdapter;
@@ -51,6 +52,7 @@ pub const EngineNetworkController = struct {
     network_specs: []const ast_mod.NetworkSpec = &.{},
     stream_table: std.AutoHashMapUnmanaged(u64, ActiveStreamEntry) = .empty,
     next_stream_handle: u64 = 1,
+    stream_mutex: Mutex = .{},
 
     pub fn init(
         allocator: Allocator,
@@ -90,11 +92,13 @@ pub const EngineNetworkController = struct {
     }
 
     pub fn deinit(self: *EngineNetworkController) void {
+        self.stream_mutex.lock();
         var it = self.stream_table.valueIterator();
         while (it.next()) |entry| {
             entry.adapter.streamClose(entry.stream_id);
         }
         self.stream_table.deinit(self.allocator);
+        self.stream_mutex.unlock();
         if (self.owned_registry) |*reg| {
             reg.deinit();
         }
@@ -182,6 +186,8 @@ pub const EngineNetworkController = struct {
         const trace_tag = self.formatTraceTag(step_id, task_name);
         const adapter_stream_id = try target.connectStream(url, operation, trace_tag);
 
+        self.stream_mutex.lock();
+        defer self.stream_mutex.unlock();
         const stream_handle = self.next_stream_handle;
         self.next_stream_handle += 1;
 
@@ -199,7 +205,12 @@ pub const EngineNetworkController = struct {
         handle: u64,
         payload: []const u8,
     ) NetError!void {
-        const entry = self.stream_table.get(handle) orelse return error.StreamNotFound;
+        self.stream_mutex.lock();
+        const entry = self.stream_table.get(handle) orelse {
+            self.stream_mutex.unlock();
+            return error.StreamNotFound;
+        };
+        self.stream_mutex.unlock();
         _ = try entry.adapter.streamSend(entry.stream_id, payload);
     }
 
@@ -209,7 +220,12 @@ pub const EngineNetworkController = struct {
         handle: u64,
         dest: []u8,
     ) NetError!usize {
-        const entry = self.stream_table.get(handle) orelse return error.StreamNotFound;
+        self.stream_mutex.lock();
+        const entry = self.stream_table.get(handle) orelse {
+            self.stream_mutex.unlock();
+            return error.StreamNotFound;
+        };
+        self.stream_mutex.unlock();
         if (dest.len == 0) return 0;
         return entry.adapter.streamRecv(entry.stream_id, dest);
     }
@@ -219,7 +235,12 @@ pub const EngineNetworkController = struct {
         self: *EngineNetworkController,
         handle: u64,
     ) NetError!void {
-        const kv = self.stream_table.fetchRemove(handle) orelse return error.StreamNotFound;
+        self.stream_mutex.lock();
+        const kv = self.stream_table.fetchRemove(handle) orelse {
+            self.stream_mutex.unlock();
+            return error.StreamNotFound;
+        };
+        self.stream_mutex.unlock();
         kv.value.adapter.streamClose(kv.value.stream_id);
     }
 

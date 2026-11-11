@@ -235,107 +235,336 @@ pub fn DiContainer(comptime ContextImpl: type) type {
                         const err_policy = ctx.getParamText("on_item_error", "fail_fast") catch "fail_fast";
                         const is_skip = std.mem.eql(u8, err_policy, "skip");
                         const is_collect = std.mem.eql(u8, err_policy, "collect");
+                        const is_fail_fast = !is_skip and !is_collect;
 
-                        // 6. Execute loop by cardinality
-                        if (is_optional) {
-                            // Filter: 1 -> 0..1
-                            var out_list: std.ArrayListUnmanaged(ElemType) = .empty;
-                            for (in_items, 0..) |item, i| {
-                                if (ctx.isCancelled()) return .halt_pipeline;
-                                const input_arg = if (is_composite_elemental) blk: {
-                                    var comp = broadcast_inputs;
-                                    @field(comp, elemental_field_name) = item;
-                                    break :blk comp;
-                                } else item;
+                        const ItemError = @import("../types/item_error.zig").ItemError;
 
-                                const res = if (takes_allocator)
-                                    service.execute(alloc, input_arg)
-                                else
-                                    service.execute(input_arg);
+                        const ErrorCollector = struct {
+                            policy_fail_fast: bool,
+                            policy_collect: bool,
+                            min_fail_idx: std.atomic.Value(usize) = std.atomic.Value(usize).init(std.math.maxInt(usize)),
+                            fail_err_name: [64]u8 = [_]u8{0} ** 64,
+                            fail_err_len: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+                            cancel_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+                            collected_errors: []?ItemError,
 
-                                if (res) |maybe_item| {
-                                    if (maybe_item) |val| {
-                                        out_list.append(alloc, val) catch return .fatal_error;
+                            fn recordError(self: *@This(), idx: usize, err: anyerror) void {
+                                if (self.policy_fail_fast) {
+                                    self.cancel_flag.store(true, .release);
+                                    while (true) {
+                                        const cur = self.min_fail_idx.load(.acquire);
+                                        if (idx >= cur) break;
+                                        if (self.min_fail_idx.cmpxchgWeak(cur, idx, .acq_rel, .acquire) == null) {
+                                            const err_name = @errorName(err);
+                                            const len = @min(err_name.len, self.fail_err_name.len);
+                                            @memcpy(self.fail_err_name[0..len], err_name[0..len]);
+                                            self.fail_err_len.store(len, .release);
+                                            break;
+                                        }
                                     }
-                                } else |err| {
-                                    if (is_skip or is_collect) {
-                                        ctx.logWarnFmt("Task '{s}' item {d} skipped on error: {s}", .{ spec.name, i, @errorName(err) });
-                                        continue;
-                                    }
-                                    ctx.logErrorFmt("Task '{s}' item {d} failed: {s}", .{ spec.name, i, @errorName(err) });
-                                    return .fatal_error;
+                                }
+                                if (self.policy_collect) {
+                                    self.collected_errors[idx] = ItemError{
+                                        .index = @intCast(idx),
+                                        .error_name = @errorName(err),
+                                        .message = "",
+                                    };
                                 }
                             }
-                            ctx.emitTypedSlice(null, ElemType, out_list.items) catch |err| {
+                        };
+
+                        var empty_err_buf = [0]?ItemError{};
+                        const err_slots: []?ItemError = if (is_collect) blk: {
+                            const s = alloc.alloc(?ItemError, in_items.len) catch return .fatal_error;
+                            @memset(s, null);
+                            break :blk s;
+                        } else &empty_err_buf;
+
+                        var err_collector = ErrorCollector{
+                            .policy_fail_fast = is_fail_fast,
+                            .policy_collect = is_collect,
+                            .collected_errors = err_slots,
+                        };
+
+                        const workers_budget = ctx.workerCount();
+
+                        // 6. Execute by cardinality across workers with dynamic compaction
+                        if (is_optional) {
+                            // Filter: 1 -> 0..1
+                            const slots = alloc.alloc(?ElemType, in_items.len) catch return .fatal_error;
+                            @memset(slots, null);
+
+                            const FilterChunkCtx = struct {
+                                items: []const ItemType,
+                                slots: []?ElemType,
+                                broadcast: Inputs,
+                                srv: *Service,
+                                task_ctx: TaskContext,
+                                allocator: Allocator,
+                                err_col: *ErrorCollector,
+
+                                fn executeChunk(pctx: *@This(), start: usize, end: usize) u8 {
+                                    for (start..end) |i| {
+                                        if (pctx.err_col.cancel_flag.load(.acquire) or pctx.task_ctx.isCancelled()) return 1;
+                                        const input_arg = if (is_composite_elemental) blk: {
+                                            var comp = pctx.broadcast;
+                                            @field(comp, elemental_field_name) = pctx.items[i];
+                                            break :blk comp;
+                                        } else pctx.items[i];
+
+                                        const res = if (takes_allocator)
+                                            pctx.srv.execute(pctx.allocator, input_arg)
+                                        else
+                                            pctx.srv.execute(input_arg);
+
+                                        if (res) |maybe_item| {
+                                            pctx.slots[i] = maybe_item;
+                                        } else |err| {
+                                            pctx.err_col.recordError(i, err);
+                                            if (pctx.err_col.policy_fail_fast) return 1;
+                                        }
+                                    }
+                                    return 0;
+                                }
+                            };
+
+                            var chunk_ctx = FilterChunkCtx{
+                                .items = in_items,
+                                .slots = slots,
+                                .broadcast = broadcast_inputs,
+                                .srv = &service,
+                                .task_ctx = ctx,
+                                .allocator = alloc,
+                                .err_col = &err_collector,
+                            };
+
+                            _ = ctx.parallelFor(in_items.len, workers_budget, FilterChunkCtx, &chunk_ctx, FilterChunkCtx.executeChunk) catch {};
+
+                            if (ctx.isCancelled()) return .halt_pipeline;
+
+                            if (is_fail_fast and err_collector.min_fail_idx.load(.acquire) != std.math.maxInt(usize)) {
+                                const min_idx = err_collector.min_fail_idx.load(.acquire);
+                                const err_name = err_collector.fail_err_name[0..err_collector.fail_err_len.load(.acquire)];
+                                ctx.logErrorFmt("Task '{s}' item {d} failed: {s}", .{ spec.name, min_idx, err_name });
+                                return .fatal_error;
+                            }
+
+                            // Compact filtered results in index order
+                            var count: usize = 0;
+                            for (slots) |s| {
+                                if (s != null) count += 1;
+                            }
+                            var compacted = alloc.alloc(ElemType, count) catch return .fatal_error;
+                            var w: usize = 0;
+                            for (slots) |s| {
+                                if (s) |val| {
+                                    compacted[w] = val;
+                                    w += 1;
+                                }
+                            }
+                            ctx.emitTypedSlice(null, ElemType, compacted) catch |err| {
                                 ctx.logErrorFmt("Task '{s}' failed to emit filtered slice: {s}", .{ spec.name, @errorName(err) });
                                 return .fatal_error;
                             };
+
+                            if (is_collect) {
+                                var err_count: usize = 0;
+                                for (err_slots) |e| if (e != null) { err_count += 1; };
+                                var compact_errs = alloc.alloc(ItemError, err_count) catch return .fatal_error;
+                                var ew: usize = 0;
+                                for (err_slots) |e| {
+                                    if (e) |val| {
+                                        compact_errs[ew] = val;
+                                        ew += 1;
+                                    }
+                                }
+                                ctx.emitTypedSlice("errors", ItemError, compact_errs) catch {};
+                            }
+
                             return .ok;
                         } else if (is_slice) {
                             // Expansion: 1 -> M
-                            var out_list: std.ArrayListUnmanaged(ElemType) = .empty;
-                            for (in_items, 0..) |item, i| {
-                                if (ctx.isCancelled()) return .halt_pipeline;
-                                const input_arg = if (is_composite_elemental) blk: {
-                                    var comp = broadcast_inputs;
-                                    @field(comp, elemental_field_name) = item;
-                                    break :blk comp;
-                                } else item;
+                            const slots = alloc.alloc([]const ElemType, in_items.len) catch return .fatal_error;
+                            @memset(slots, &.{});
 
-                                const res = if (takes_allocator)
-                                    service.execute(alloc, input_arg)
-                                else
-                                    service.execute(input_arg);
+                            const ExpandChunkCtx = struct {
+                                items: []const ItemType,
+                                slots: [][]const ElemType,
+                                broadcast: Inputs,
+                                srv: *Service,
+                                task_ctx: TaskContext,
+                                allocator: Allocator,
+                                err_col: *ErrorCollector,
 
-                                if (res) |slice_items| {
-                                    out_list.appendSlice(alloc, slice_items) catch return .fatal_error;
-                                } else |err| {
-                                    if (is_skip or is_collect) {
-                                        ctx.logWarnFmt("Task '{s}' item {d} skipped on error: {s}", .{ spec.name, i, @errorName(err) });
-                                        continue;
+                                fn executeChunk(pctx: *@This(), start: usize, end: usize) u8 {
+                                    for (start..end) |i| {
+                                        if (pctx.err_col.cancel_flag.load(.acquire) or pctx.task_ctx.isCancelled()) return 1;
+                                        const input_arg = if (is_composite_elemental) blk: {
+                                            var comp = pctx.broadcast;
+                                            @field(comp, elemental_field_name) = pctx.items[i];
+                                            break :blk comp;
+                                        } else pctx.items[i];
+
+                                        const res = if (takes_allocator)
+                                            pctx.srv.execute(pctx.allocator, input_arg)
+                                        else
+                                            pctx.srv.execute(input_arg);
+
+                                        if (res) |slice_items| {
+                                            pctx.slots[i] = slice_items;
+                                        } else |err| {
+                                            pctx.err_col.recordError(i, err);
+                                            if (pctx.err_col.policy_fail_fast) return 1;
+                                        }
                                     }
-                                    ctx.logErrorFmt("Task '{s}' item {d} failed: {s}", .{ spec.name, i, @errorName(err) });
-                                    return .fatal_error;
+                                    return 0;
+                                }
+                            };
+
+                            var chunk_ctx = ExpandChunkCtx{
+                                .items = in_items,
+                                .slots = slots,
+                                .broadcast = broadcast_inputs,
+                                .srv = &service,
+                                .task_ctx = ctx,
+                                .allocator = alloc,
+                                .err_col = &err_collector,
+                            };
+
+                            _ = ctx.parallelFor(in_items.len, workers_budget, ExpandChunkCtx, &chunk_ctx, ExpandChunkCtx.executeChunk) catch {};
+
+                            if (ctx.isCancelled()) return .halt_pipeline;
+
+                            if (is_fail_fast and err_collector.min_fail_idx.load(.acquire) != std.math.maxInt(usize)) {
+                                const min_idx = err_collector.min_fail_idx.load(.acquire);
+                                const err_name = err_collector.fail_err_name[0..err_collector.fail_err_len.load(.acquire)];
+                                ctx.logErrorFmt("Task '{s}' item {d} failed: {s}", .{ spec.name, min_idx, err_name });
+                                return .fatal_error;
+                            }
+
+                            // Flatten slices in index order
+                            var total_elements: usize = 0;
+                            for (slots) |s| total_elements += s.len;
+                            var flattened = alloc.alloc(ElemType, total_elements) catch return .fatal_error;
+                            var offset: usize = 0;
+                            for (slots) |s| {
+                                if (s.len > 0) {
+                                    @memcpy(flattened[offset .. offset + s.len], s);
+                                    offset += s.len;
                                 }
                             }
-                            ctx.emitTypedSlice(null, ElemType, out_list.items) catch |err| {
+                            ctx.emitTypedSlice(null, ElemType, flattened) catch |err| {
                                 ctx.logErrorFmt("Task '{s}' failed to emit expanded slice: {s}", .{ spec.name, @errorName(err) });
                                 return .fatal_error;
                             };
+
+                            if (is_collect) {
+                                var err_count: usize = 0;
+                                for (err_slots) |e| if (e != null) { err_count += 1; };
+                                var compact_errs = alloc.alloc(ItemError, err_count) catch return .fatal_error;
+                                var ew: usize = 0;
+                                for (err_slots) |e| {
+                                    if (e) |val| {
+                                        compact_errs[ew] = val;
+                                        ew += 1;
+                                    }
+                                }
+                                ctx.emitTypedSlice("errors", ItemError, compact_errs) catch {};
+                            }
+
                             return .ok;
                         } else {
                             // Map: 1 -> 1
-                            var out_slice = alloc.alloc(ElemType, in_items.len) catch return .fatal_error;
-                            var written: usize = 0;
-                            for (in_items, 0..) |item, i| {
-                                if (ctx.isCancelled()) return .halt_pipeline;
-                                const input_arg = if (is_composite_elemental) blk: {
-                                    var comp = broadcast_inputs;
-                                    @field(comp, elemental_field_name) = item;
-                                    break :blk comp;
-                                } else item;
+                            const slots = alloc.alloc(?ElemType, in_items.len) catch return .fatal_error;
+                            @memset(slots, null);
 
-                                const res = if (takes_allocator)
-                                    service.execute(alloc, input_arg)
-                                else
-                                    service.execute(input_arg);
+                            const MapChunkCtx = struct {
+                                items: []const ItemType,
+                                slots: []?ElemType,
+                                broadcast: Inputs,
+                                srv: *Service,
+                                task_ctx: TaskContext,
+                                allocator: Allocator,
+                                err_col: *ErrorCollector,
 
-                                if (res) |val| {
-                                    out_slice[written] = val;
-                                    written += 1;
-                                } else |err| {
-                                    if (is_skip or is_collect) {
-                                        ctx.logWarnFmt("Task '{s}' item {d} skipped on error: {s}", .{ spec.name, i, @errorName(err) });
-                                        continue;
+                                fn executeChunk(pctx: *@This(), start: usize, end: usize) u8 {
+                                    for (start..end) |i| {
+                                        if (pctx.err_col.cancel_flag.load(.acquire) or pctx.task_ctx.isCancelled()) return 1;
+                                        const input_arg = if (is_composite_elemental) blk: {
+                                            var comp = pctx.broadcast;
+                                            @field(comp, elemental_field_name) = pctx.items[i];
+                                            break :blk comp;
+                                        } else pctx.items[i];
+
+                                        const res = if (takes_allocator)
+                                            pctx.srv.execute(pctx.allocator, input_arg)
+                                        else
+                                            pctx.srv.execute(input_arg);
+
+                                        if (res) |val| {
+                                            pctx.slots[i] = val;
+                                        } else |err| {
+                                            pctx.err_col.recordError(i, err);
+                                            if (pctx.err_col.policy_fail_fast) return 1;
+                                        }
                                     }
-                                    ctx.logErrorFmt("Task '{s}' item {d} failed: {s}", .{ spec.name, i, @errorName(err) });
-                                    return .fatal_error;
+                                    return 0;
+                                }
+                            };
+
+                            var chunk_ctx = MapChunkCtx{
+                                .items = in_items,
+                                .slots = slots,
+                                .broadcast = broadcast_inputs,
+                                .srv = &service,
+                                .task_ctx = ctx,
+                                .allocator = alloc,
+                                .err_col = &err_collector,
+                            };
+
+                            _ = ctx.parallelFor(in_items.len, workers_budget, MapChunkCtx, &chunk_ctx, MapChunkCtx.executeChunk) catch {};
+
+                            if (ctx.isCancelled()) return .halt_pipeline;
+
+                            if (is_fail_fast and err_collector.min_fail_idx.load(.acquire) != std.math.maxInt(usize)) {
+                                const min_idx = err_collector.min_fail_idx.load(.acquire);
+                                const err_name = err_collector.fail_err_name[0..err_collector.fail_err_len.load(.acquire)];
+                                ctx.logErrorFmt("Task '{s}' item {d} failed: {s}", .{ spec.name, min_idx, err_name });
+                                return .fatal_error;
+                            }
+
+                            // Compact / extract items in index order
+                            var count: usize = 0;
+                            for (slots) |s| {
+                                if (s != null) count += 1;
+                            }
+                            var compacted = alloc.alloc(ElemType, count) catch return .fatal_error;
+                            var w: usize = 0;
+                            for (slots) |s| {
+                                if (s) |val| {
+                                    compacted[w] = val;
+                                    w += 1;
                                 }
                             }
-                            ctx.emitTypedSlice(null, ElemType, out_slice[0..written]) catch |err| {
+                            ctx.emitTypedSlice(null, ElemType, compacted) catch |err| {
                                 ctx.logErrorFmt("Task '{s}' failed to emit mapped slice: {s}", .{ spec.name, @errorName(err) });
                                 return .fatal_error;
                             };
+
+                            if (is_collect) {
+                                var err_count: usize = 0;
+                                for (err_slots) |e| if (e != null) { err_count += 1; };
+                                var compact_errs = alloc.alloc(ItemError, err_count) catch return .fatal_error;
+                                var ew: usize = 0;
+                                for (err_slots) |e| {
+                                    if (e) |val| {
+                                        compact_errs[ew] = val;
+                                        ew += 1;
+                                    }
+                                }
+                                ctx.emitTypedSlice("errors", ItemError, compact_errs) catch {};
+                            }
+
                             return .ok;
                         }
                     }

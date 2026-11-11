@@ -107,6 +107,44 @@ pub const TaskContext = struct {
         return out_handle;
     }
 
+    pub fn executionOptions(self: TaskContext) ?@import("../types/execution_options_abi.zig").ExecutionOptions_ABI {
+        const f = self.raw.host.get_execution_options orelse return null;
+        var opts: @import("../types/execution_options_abi.zig").ExecutionOptions_ABI = undefined;
+        const rc = f(self.raw, &opts);
+        if (rc != .ok) return null;
+        return opts;
+    }
+
+    pub fn workerCount(self: TaskContext) usize {
+        if (self.executionOptions()) |opts| {
+            return @intCast(opts.workers);
+        }
+        return 1;
+    }
+
+    pub fn parallelFor(
+        self: TaskContext,
+        total_items: usize,
+        workers_budget: usize,
+        comptime CtxType: type,
+        ctx: *CtxType,
+        comptime worker_fn: *const fn (ctx: *CtxType, start: usize, end: usize) u8,
+    ) SdkError!void {
+        const f = self.raw.host.parallel_for orelse {
+            const rc = worker_fn(ctx, 0, total_items);
+            if (rc != 0) return SdkError.InvalidOperation;
+            return;
+        };
+        const Trampoline = struct {
+            fn run(raw: *anyopaque, start: usize, end: usize) callconv(.c) u8 {
+                const typed_ctx: *CtxType = @ptrCast(@alignCast(raw));
+                return worker_fn(typed_ctx, start, end);
+            }
+        };
+        const rc = f(self.raw, total_items, workers_budget, &Trampoline.run, ctx);
+        try mapHostError(rc);
+    }
+
     pub fn isCancelled(self: TaskContext) bool {
         if (self.raw.host.is_cancelled) |f| {
             return f(self.raw) != 0;

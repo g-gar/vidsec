@@ -18,6 +18,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/dataflow.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
 
     // 3. Core Flowdata Engine module
@@ -46,6 +47,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("extensions/datasource/memory/src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     ds_memory_mod.addImport("flowdata", flowdata_mod);
 

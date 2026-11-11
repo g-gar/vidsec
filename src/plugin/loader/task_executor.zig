@@ -4,6 +4,7 @@ const abi = @import("flowdata_plugin");
 const dataflow = @import("flowdata_dataflow");
 const ast_mod = @import("../../ast/ast.zig");
 const network_mod = @import("../../transport/outbound/mod.zig");
+const Mutex = @import("../../concurrency/mod.zig").Mutex;
 
 pub const PayloadHandle = dataflow.PayloadHandle;
 pub const ReflectedValue = dataflow.ReflectedValue;
@@ -74,6 +75,7 @@ pub const TaskExecutionRequest = struct {
     net_bridge: ?NetworkBridge = null,
     bound_inputs: []const BoundInput = &.{},
     is_cancelled_flag: *const bool = &false_flag,
+    worker_pool: ?*@import("../../concurrency/mod.zig").WorkerPool = null,
 
     const false_flag: bool = false;
 };
@@ -186,6 +188,7 @@ const ModuleHostState = struct {
     bound_inputs: []const BoundInput = &.{},
     workers: u32 = 1,
     is_cancelled_flag: *const bool,
+    worker_pool: ?*@import("../../concurrency/mod.zig").WorkerPool = null,
     emitted_records: std.ArrayListUnmanaged(dataflow.DynamicRecord) = .empty,
     channel_outputs: std.StringHashMapUnmanaged(PayloadHandle) = .empty,
     primary_emitted_slice: ?PayloadHandle = null,
@@ -308,6 +311,8 @@ const ModuleHostState = struct {
         return .ok;
     }
 
+    var log_mutex: Mutex = .{};
+
     fn logEvent(_: *abi.TaskContext_ABI, level: abi.LogLevel_ABI, msg_ptr: [*]const u8, len: usize) callconv(.c) void {
         const msg = if (len > 0) msg_ptr[0..len] else "";
         const lvl_str = switch (level) {
@@ -316,6 +321,8 @@ const ModuleHostState = struct {
             .warn => "WARN",
             .err => "ERROR",
         };
+        log_mutex.lock();
+        defer log_mutex.unlock();
         std.debug.print("[Task {s}] {s}\n", .{ lvl_str, msg });
     }
 
@@ -445,8 +452,34 @@ const ModuleHostState = struct {
             .workers = self.workers,
             .opaque_net_ctx = self,
             .net_request_fn = &netRequestOpaque,
+            .opaque_worker_pool = self.worker_pool,
         };
         return .ok;
+    }
+
+    fn hostParallelFor(
+        raw_ctx: *abi.TaskContext_ABI,
+        total_items: usize,
+        workers_budget: usize,
+        worker_fn: *const fn (worker_ctx: *anyopaque, start: usize, end: usize) callconv(.c) u8,
+        worker_ctx: *anyopaque,
+    ) callconv(.c) abi.HostError_ABI {
+        const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
+        if (self.worker_pool) |pool| {
+            const Wrapper = struct {
+                w_fn: *const fn (*anyopaque, usize, usize) callconv(.c) u8,
+                w_ctx: *anyopaque,
+                fn run(w: @This(), start: usize, end: usize) anyerror!void {
+                    const rc = w.w_fn(w.w_ctx, start, end);
+                    if (rc != 0) return error.WorkerFailed;
+                }
+            };
+            pool.parallelFor(total_items, workers_budget, Wrapper, .{ .w_fn = worker_fn, .w_ctx = worker_ctx }, Wrapper.run) catch return .io_error;
+            return .ok;
+        } else {
+            const rc = worker_fn(worker_ctx, 0, total_items);
+            return if (rc == 0) .ok else .io_error;
+        }
     }
 
     fn isCancelled(raw_ctx: *abi.TaskContext_ABI) callconv(.c) u8 {
@@ -489,6 +522,7 @@ const ModuleHostState = struct {
         .get_execution_options = &getExecutionOptions,
         .is_cancelled = &isCancelled,
         .emit_typed_slice = &emitTypedSlice,
+        .parallel_for = &hostParallelFor,
     };
 };
 
@@ -506,6 +540,7 @@ pub fn executeTask(
         .bound_inputs = req.bound_inputs,
         .workers = req.workers,
         .is_cancelled_flag = req.is_cancelled_flag,
+        .worker_pool = req.worker_pool,
     };
     host_state.mem_abi = abi.MemContext_ABI.fromAllocator(&host_state.allocator);
 

@@ -4,6 +4,7 @@ const flowdata = @import("flowdata");
 const PayloadHandle = flowdata.dataflow.PayloadHandle;
 const repository = flowdata.repository;
 const StorageRepository = repository.StorageRepository;
+const Mutex = flowdata.concurrency.Mutex;
 
 /// High-performance in-memory repository for zero-copy streaming between pipeline tasks.
 /// Stores PayloadHandles by channel name in RAM with O(1) pointer updates.
@@ -14,6 +15,7 @@ pub const MemoryRepository = struct {
 
     allocator: Allocator,
     payloads: std.StringHashMapUnmanaged(PayloadHandle) = .empty,
+    mutex: Mutex = .{},
 
     pub fn init(allocator: Allocator) MemoryRepository {
         return .{
@@ -22,6 +24,8 @@ pub const MemoryRepository = struct {
     }
 
     pub fn deinit(self: *MemoryRepository) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         var iter = self.payloads.iterator();
         while (iter.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
@@ -30,6 +34,8 @@ pub const MemoryRepository = struct {
     }
 
     pub fn writePayload(self: *MemoryRepository, channel: []const u8, payload: PayloadHandle) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.payloads.getPtr(channel)) |existing| {
             existing.* = payload;
             return;
@@ -40,10 +46,16 @@ pub const MemoryRepository = struct {
     }
 
     pub fn readPayload(self: *const MemoryRepository, channel: []const u8) ?PayloadHandle {
+        const mutable = @constCast(self);
+        mutable.mutex.lock();
+        defer mutable.mutex.unlock();
         return self.payloads.get(channel);
     }
 
     pub fn recordCount(self: *const MemoryRepository, channel: []const u8) usize {
+        const mutable = @constCast(self);
+        mutable.mutex.lock();
+        defer mutable.mutex.unlock();
         if (self.payloads.get(channel)) |h| return h.len;
         return 0;
     }

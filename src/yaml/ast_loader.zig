@@ -266,6 +266,23 @@ fn parseOutputs(alloc: Allocator, out_node: yaml_lib.Node) ![]const ChannelOutpu
     return &.{};
 }
 
+fn parseStringList(alloc: Allocator, node: yaml_lib.Node) ![]const []const u8 {
+    if (node.asSeq()) |seq| {
+        var list: std.ArrayListUnmanaged([]const u8) = .empty;
+        for (seq) |item| {
+            if (item.asScalar()) |s| {
+                try list.append(alloc, s);
+            }
+        }
+        return try list.toOwnedSlice(alloc);
+    } else if (node.asScalar()) |s| {
+        const single = try alloc.alloc([]const u8, 1);
+        single[0] = s;
+        return single;
+    }
+    return &.{};
+}
+
 fn parseTaskStep(alloc: Allocator, step_node: yaml_lib.Node) !TaskStepSpec {
     const id = if (step_node.get("id")) |i|
         i.asScalar() orelse return error.MissingStepIdentifier
@@ -327,6 +344,13 @@ fn parseTaskStep(alloc: Allocator, step_node: yaml_lib.Node) !TaskStepSpec {
 
     const networks = try network_loader.parseStepNetworks(alloc, step_node);
 
+    const after = if (step_node.get("after")) |a|
+        try parseStringList(alloc, a)
+    else if (step_node.get("depends_on")) |d|
+        try parseStringList(alloc, d)
+    else
+        &.{};
+
     return .{
         .id = id,
         .module = module,
@@ -337,6 +361,7 @@ fn parseTaskStep(alloc: Allocator, step_node: yaml_lib.Node) !TaskStepSpec {
         .concurrency = concurrency,
         .static_params = params,
         .outputs = outputs,
+        .after = after,
     };
 }
 
@@ -415,6 +440,15 @@ pub fn loadPipelineAstFromYaml(
         if (rt.get("default_network")) |dn_node| {
             if (dn_node.asScalar()) |dn_str| {
                 builder.setDefaultNetwork(dn_str);
+            }
+        }
+        if (rt.get("scheduler")) |s_node| {
+            if (s_node.asScalar()) |s_str| {
+                if (std.mem.eql(u8, s_str, "dag")) {
+                    builder.setScheduler(.dag);
+                } else {
+                    builder.setScheduler(.sequential);
+                }
             }
         }
     }

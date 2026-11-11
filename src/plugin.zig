@@ -32,6 +32,7 @@ pub const TaskContext_ABI = types.TaskContext_ABI;
 pub const TaskExecuteFn_ABI = types.TaskExecuteFn_ABI;
 pub const TaskDescriptor_ABI = types.TaskDescriptor_ABI;
 pub const ModuleManifest_ABI = types.ModuleManifest_ABI;
+pub const ItemError = types.ItemError;
 
 // Black Box C-ABI Types & Networking ABI
 pub const MemContext_ABI = types.MemContext_ABI;

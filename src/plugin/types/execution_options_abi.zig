@@ -21,4 +21,6 @@ pub const ExecutionOptions_ABI = extern struct {
     opaque_net_ctx: ?*anyopaque = null,
     /// Optional host network request callback for tasks bound to a `network:` adapter.
     net_request_fn: ?NetRequestFn_ABI = null,
+    /// Optional host worker pool pointer for intra-step data parallelism.
+    opaque_worker_pool: ?*anyopaque = null,
 };

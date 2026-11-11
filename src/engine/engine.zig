@@ -6,6 +6,11 @@ const modules_mod = @import("../plugin/mod.zig");
 const repository_mod = @import("../repository/mod.zig");
 const network_mod = @import("../transport/outbound/mod.zig");
 const engine_net_mod = @import("network.zig");
+const WorkerPool = @import("../concurrency/mod.zig").WorkerPool;
+pub const plan = @import("plan.zig");
+pub const ExecutionPlan = plan.ExecutionPlan;
+pub const compilePlan = plan.compilePlan;
+pub const Coordinator = @import("coordinator.zig").Coordinator;
 
 pub const PipelineAST = ast_mod.PipelineAST;
 pub const ModuleRegistry = modules_mod.ModuleRegistry;
@@ -32,7 +37,7 @@ pub const EngineError = error{
     OutOfMemory,
 };
 
-const StepNetworkContext = struct {
+pub const StepNetworkContext = struct {
     step_id: []const u8,
     task_name: []const u8,
     primary_adapter: ?NetworkAdapter,
@@ -91,7 +96,7 @@ const StepNetworkContext = struct {
     }
 };
 
-fn nowNs() u64 {
+pub fn nowNs() u64 {
     var ts: std.c.timespec = undefined;
     if (std.c.clock_gettime(.REALTIME, &ts) != 0) return 0;
     return @as(u64, @intCast(ts.sec)) * 1_000_000_000 + @as(u64, @intCast(ts.nsec));
@@ -99,7 +104,7 @@ fn nowNs() u64 {
 
 var global_prng: ?std.Random.DefaultPrng = null;
 
-fn fillRandomBytes(buf: []u8) void {
+pub fn fillRandomBytes(buf: []u8) void {
     if (global_prng == null) {
         var seed: u64 = nowNs();
         if (seed == 0) seed = 0x12345678_9abcdef0;
@@ -119,6 +124,7 @@ pub const PipelineEngine = struct {
     networks: ?*NetworkRegistry = null,
     kernel: ?*@import("../kernel/mod.zig").KernelContext = null,
     workers: usize = 1,
+    outputs_arena: std.heap.ArenaAllocator,
 
     pub fn init(
         allocator: Allocator,
@@ -136,7 +142,12 @@ pub const PipelineEngine = struct {
             .networks = null,
             .kernel = null,
             .workers = w,
+            .outputs_arena = std.heap.ArenaAllocator.init(allocator),
         };
+    }
+
+    pub fn deinit(self: *PipelineEngine) void {
+        self.outputs_arena.deinit();
     }
 
     pub fn withNetworks(self: *PipelineEngine, nets: *NetworkRegistry) void {
@@ -177,15 +188,20 @@ pub const PipelineEngine = struct {
         var net_ctrl = try EngineNetworkController.init(self.allocator, self.ast, self.networks);
         defer net_ctrl.deinit();
 
+        // 1c. Bounded worker pool shared by DAG steps and intra-step lifting (ARCH-017 §3.3)
+        var pool: ?*WorkerPool = null;
+        if (self.workers > 1) {
+            pool = try WorkerPool.init(self.allocator, self.workers);
+        }
+        defer if (pool) |p| p.deinit();
+
         // 2. Track intermediate step outputs by step ID
-        var outputs_arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer outputs_arena.deinit();
-        const outputs_alloc = outputs_arena.allocator();
+        const outputs_alloc = self.outputs_arena.allocator();
 
         var outputs: std.StringHashMapUnmanaged(PayloadHandle) = .empty;
 
         // 3. Execute main pipeline
-        try self.executeSubPipeline("main", input_payload, &outputs, outputs_alloc, &net_ctrl, &summary, trace_id, root_span_id);
+        try self.executeSubPipeline("main", input_payload, &outputs, outputs_alloc, &net_ctrl, &summary, trace_id, root_span_id, pool);
 
         if (self.kernel) |k| {
             const end_ns: u64 = nowNs();
@@ -207,7 +223,7 @@ pub const PipelineEngine = struct {
         return summary;
     }
 
-    fn resolveStreamExpr(
+    pub fn resolveStreamExpr(
         self: *PipelineEngine,
         expr: ast_mod.InboundStreamExpr,
         active_input: PayloadHandle,
@@ -286,7 +302,7 @@ pub const PipelineEngine = struct {
         }
     }
 
-    fn executeSubPipeline(
+    pub fn executeSubPipeline(
         self: *PipelineEngine,
         name: []const u8,
         active_input: PayloadHandle,
@@ -296,14 +312,24 @@ pub const PipelineEngine = struct {
         summary: *ExecutionSummary,
         trace_id: [16]u8,
         parent_span_id: [8]u8,
+        pool: ?*WorkerPool,
     ) anyerror!void {
         const pipe = self.ast.getPipeline(name) orelse return error.UnknownSubPipeline;
         summary.final_pipeline = name;
 
+        var exec_plan = try compilePlan(self.allocator, pipe, self.ast);
+        defer exec_plan.deinit();
+
+        if (self.ast.runtime.scheduler == .dag and pool != null and exec_plan.nodes.len > 1) {
+            try Coordinator.run(self, &exec_plan, active_input, outputs, outputs_alloc, net_ctrl, summary, trace_id, parent_span_id, pool.?);
+            return;
+        }
+
         var current_input = active_input;
 
-        for (pipe.steps) |step| {
+        for (exec_plan.topological_order) |node_idx| {
             if (summary.halted_early) break;
+            const step = exec_plan.nodes[node_idx].step;
 
             switch (step) {
                 .task => |task_spec| {
@@ -385,6 +411,7 @@ pub const PipelineEngine = struct {
                         .workers = workers,
                         .net_bridge = step_net_ctx.bridge(),
                         .bound_inputs = bound_inputs_list.items,
+                        .worker_pool = pool,
                     });
 
                     switch (outcome.status) {
@@ -423,7 +450,9 @@ pub const PipelineEngine = struct {
                             task_output;
 
                         if (out_ch.from_field) |src_field| {
-                            if (std.mem.eql(u8, src_field, "network.captured_events")) {
+                            if (outcome.channel_outputs.get(src_field)) |ch_pl| {
+                                channel_payload = ch_pl;
+                            } else if (std.mem.eql(u8, src_field, "network.captured_events")) {
                                 const new_events = try net_ctrl.collectStepEvents(task_spec.id, step_adapter, records_before);
                                 channel_payload = PayloadHandle.fromSlice(NetworkEvent, new_events);
                             } else if (task_output.getReflected(src_field)) |rval| {
@@ -498,7 +527,7 @@ pub const PipelineEngine = struct {
                             if (std.mem.eql(u8, case.goto_pipeline, "continue")) {
                                 break;
                             } else {
-                                try self.executeSubPipeline(case.goto_pipeline, current_input, outputs, outputs_alloc, net_ctrl, summary, trace_id, parent_span_id);
+                                try self.executeSubPipeline(case.goto_pipeline, current_input, outputs, outputs_alloc, net_ctrl, summary, trace_id, parent_span_id, pool);
                                 break;
                             }
                         }
@@ -523,7 +552,7 @@ pub const PipelineEngine = struct {
                                 });
                             }
                             if (!std.mem.eql(u8, def_pipe, "continue")) {
-                                try self.executeSubPipeline(def_pipe, current_input, outputs, outputs_alloc, net_ctrl, summary, trace_id, parent_span_id);
+                                try self.executeSubPipeline(def_pipe, current_input, outputs, outputs_alloc, net_ctrl, summary, trace_id, parent_span_id, pool);
                             }
                         }
                     }
@@ -533,7 +562,7 @@ pub const PipelineEngine = struct {
     }
 };
 
-fn extractCountRef(predicate_expr: []const u8) ?[]const u8 {
+pub fn extractCountRef(predicate_expr: []const u8) ?[]const u8 {
     const idx = std.mem.indexOf(u8, predicate_expr, "count(") orelse return null;
     const after = predicate_expr[idx + "count(".len ..];
     const close = std.mem.indexOfScalar(u8, after, ')') orelse return null;

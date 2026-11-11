@@ -181,4 +181,14 @@ pub const HostApiVTable_ABI = extern struct {
         channel_name: ?[*:0]const u8,
         slice_payload: *const @import("payload_handle_abi.zig").PayloadHandle_ABI,
     ) callconv(.c) HostError_ABI = null,
+
+    /// Dispatches parallel chunk execution across the host's worker pool (ARCH-016 §8.5 & ARCH-017 §3.3).
+    /// If workers_budget <= 1 or no worker pool is available, runs sequentially on the caller thread.
+    parallel_for: ?*const fn (
+        ctx: *TaskContext_ABI,
+        total_items: usize,
+        workers_budget: usize,
+        worker_fn: *const fn (worker_ctx: *anyopaque, start: usize, end: usize) callconv(.c) u8,
+        worker_ctx: *anyopaque,
+    ) callconv(.c) HostError_ABI = null,
 };

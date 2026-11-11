@@ -5,6 +5,7 @@ const RateLimitStrategy = contracts.RateLimitStrategy;
 const AcquireDecision = contracts.AcquireDecision;
 const RateLimitConfig = contracts.RateLimitConfig;
 const PoolConfig = contracts.PoolConfig;
+const Mutex = @import("../../../../concurrency/mod.zig").Mutex;
 
 /// Dual Token Bucket rate-limiter (`requests_per_second` + `max_bandwidth_mbps`)
 /// implementing the polymorphic `RateLimitStrategy` VTable.
@@ -23,6 +24,7 @@ pub const DualTokenBucketStrategy = struct {
     last_refill_ms: u64,
     cooldown_until_ms: u64 = 0,
     active_inflight_count: usize = 0,
+    mutex: Mutex = .{},
 
     pub fn init(spec: RateLimitConfig, pool_spec: PoolConfig, now_ms: u64) DualTokenBucketStrategy {
         const req_cap: f64 = if (spec.burst > 0)
@@ -67,6 +69,9 @@ pub const DualTokenBucketStrategy = struct {
     }
 
     pub fn tryAcquire(self: *DualTokenBucketStrategy, now_ms: u64, payload_bytes: usize) AcquireDecision {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         if (self.spec.respect_retry_after and now_ms < self.cooldown_until_ms) {
             return .rate_limited_retry_after;
         }
@@ -103,12 +108,22 @@ pub const DualTokenBucketStrategy = struct {
     }
 
     pub fn releaseInflight(self: *DualTokenBucketStrategy) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.active_inflight_count > 0) {
             self.active_inflight_count -= 1;
         }
     }
 
+    pub fn activeInflight(self: *DualTokenBucketStrategy) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.active_inflight_count;
+    }
+
     pub fn applyRetryAfter(self: *DualTokenBucketStrategy, now_ms: u64, retry_after_ms: u64) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (!self.spec.respect_retry_after) return;
         const target = now_ms + retry_after_ms;
         if (target > self.cooldown_until_ms) {
@@ -135,7 +150,9 @@ pub const DualTokenBucketStrategy = struct {
             }
 
             fn doActiveInflight(ctx: *const anyopaque) usize {
-                const s: *const DualTokenBucketStrategy = @ptrCast(@alignCast(ctx));
+                const s: *DualTokenBucketStrategy = @constCast(@ptrCast(@alignCast(ctx)));
+                s.mutex.lock();
+                defer s.mutex.unlock();
                 return s.active_inflight_count;
             }
 

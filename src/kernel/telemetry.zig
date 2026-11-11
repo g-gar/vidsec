@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const ast_mod = @import("../ast/ast.zig");
 const outbound_mod = @import("../transport/outbound/mod.zig");
 const repository_mod = @import("../repository/mod.zig");
+const Mutex = @import("../concurrency/mod.zig").Mutex;
 
 pub const RepositoryRegistry = repository_mod.RepositoryRegistry;
 pub const TraceId = [16]u8;
@@ -135,6 +136,7 @@ pub const TelemetrySubscriber = struct {
 pub const TelemetryBus = struct {
     allocator: Allocator,
     subscribers: std.ArrayListUnmanaged(TelemetrySubscriber) = .empty,
+    mutex: Mutex = .{},
 
     pub fn init(allocator: Allocator) TelemetryBus {
         return .{
@@ -144,6 +146,8 @@ pub const TelemetryBus = struct {
     }
 
     pub fn deinit(self: *TelemetryBus) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         for (self.subscribers.items) |s| {
             s.deinit(self.allocator);
         }
@@ -155,6 +159,8 @@ pub const TelemetryBus = struct {
     }
 
     pub fn subscribe(self: *TelemetryBus, sub: TelemetrySubscriber) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         try self.subscribers.append(self.allocator, sub);
     }
 
@@ -166,12 +172,16 @@ pub const TelemetryBus = struct {
     }
 
     fn emitSlow(self: *TelemetryBus, event: *const TelemetryEvent) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         for (self.subscribers.items) |s| {
             s.onEvent(event);
         }
     }
 
     pub fn flushAll(self: *TelemetryBus, repos: *RepositoryRegistry) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         for (self.subscribers.items) |s| {
             try s.flush(repos);
         }
