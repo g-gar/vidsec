@@ -1,35 +1,35 @@
-# 004 — Nuevas Extensiones de Observabilidad (`OpenTelemetry`) y Visualización Interactiva del DAG (`dag_viz`)
+# 004 — New Observability Extensions (`OpenTelemetry`) and Interactive DAG Visualizer (`dag_viz`)
 
-| Metadatos | Valor |
+| Metadata | Value |
 | :--- | :--- |
 | **ID** | `ARCH-004` |
-| **Depende de** | [`ARCH-001`](./001-transport-layer-unification.md), [`ARCH-002`](./002-open-kernel-extension-system.md), [`ARCH-003`](./003-core-debloating-and-pcapng-extraction.md) |
-| **Bloquea a** | Ninguna (Cierra el ciclo de arquitectura) |
-| **Módulos afectados** | `extensions/opentelemetry/` *(nuevo)*, `extensions/dag_viz/` *(nuevo)*, `extensions/mod.zig`, `build.zig`, `tests/core/` |
+| **Depends On** | [`ARCH-001`](./001-transport-layer-unification.md), [`ARCH-002`](./002-open-kernel-extension-system.md), [`ARCH-003`](./003-core-debloating-and-pcapng-extraction.md) |
+| **Blocks** | None (Closes the architecture cycle) |
+| **Affected Modules** | `extensions/opentelemetry/` *(new)*, `extensions/dag_viz/` *(new)*, `extensions/mod.zig`, `build.zig`, `tests/core/` |
 
 ---
 
-## 1. Contexto y Objetivo
+## 1. Context and Objective
 
-Con el **Microkernel Reactivo (`src/kernel/`)** y la capa **`src/transport/`** ya operativos y limpios (`001..003`), esta tarea demuestra el potencial del nuevo ecosistema construyendo dos extensiones de alto valor que se conectan a los **5 Planos del Kernel** sin modificar la lógica interna del motor:
+With the **Reactive Microkernel (`src/kernel/`)** and the **`src/transport/`** layer now operational and decoupled (`001..003`), this task demonstrates the full potential of the new ecosystem by constructing two high-value extensions that interface with the **5 Kernel Planes** without modifying internal engine logic:
 
 1. **`extensions/opentelemetry/` (`ext-otel`)**:
-   * Observabilidad unificada de nivel producción (**Traces**, **Metrics** y **Logs**) basada en el estándar OpenTelemetry y propagación de contexto W3C (`traceparent`).
+   * Production-grade unified observability (**Traces**, **Metrics**, and **Logs**) based on the OpenTelemetry standard and W3C context propagation (`traceparent`).
 2. **`extensions/dag_viz/` (`ext-dag-viz`)**:
-   * Inspector topológico del `PipelineAST` y telemetría de ejecución capaz de exportar el grafo del pipeline en formatos **Mermaid**, **Graphviz DOT** y **HTML Interactivo Standalone** (con métricas de filas/s y latencia por nodo/arista), además de registrar el subcomando `graph` en el `InboundDispatcher` (accesible por CLI, HTTP y gRPC).
+   * Topological inspector for `PipelineAST` and execution telemetry capable of exporting the pipeline graph in **Mermaid**, **Graphviz DOT**, and **Standalone Interactive HTML** formats (with rows/s and latency metrics per node/edge), in addition to registering the `graph` subcommand in `InboundDispatcher` (accessible via CLI, HTTP, and gRPC).
 
 ---
 
-## 2. Parte A: Extensión `extensions/opentelemetry/`
+## 2. Part A: `extensions/opentelemetry/` Extension
 
-### 2.1. Arquitectura y Planos del Kernel que Utiliza
+### 2.1. Architecture and Utilized Kernel Planes
 
-`OpenTelemetryExtension` se engancha a **3 planos del `KernelContext`**:
-1. **Plano 2 (`TelemetryBus`)**: Escucha `pipeline_start/end`, `step_start/end`, `router_decision`, `filter_evaluated`, `task_log` y `outbound_exchange` para construir el árbol de **Spans** (`OtelSpan`), acumular **Métricas** (`OtelCounter`, `OtelHistogram`) y correlacionar **Logs** (`OtelLogRecord`) con su `trace_id` y `span_id`.
-2. **Plano 5 (`OutboundRegistry.registerMiddlewareFactory`)**: Registra un `OtelTracePropagationMiddleware` en la cadena de transporte `outbound` que inyecta el header estándar W3C TraceContext (`traceparent: 00-<trace_id>-<span_id>-01`) y añade atributos semánticos OTel (`http.request.method`, `url.full`, `server.address`, `server.port`, `http.response.status_code`).
-3. **Plano 5 (`RepositoryRegistry`) / Exportación OTLP JSON**: Al finalizar (`flush`), exporta el lote OTLP JSON a un datasource configurado (canal `"otel_telemetry"`), a un archivo o a un colector OTLP/HTTP.
+`OpenTelemetryExtension` hooks into **3 planes of `KernelContext`**:
+1. **Plane 2 (`TelemetryBus`)**: Listens to `pipeline_start/end`, `step_start/end`, `router_decision`, `filter_evaluated`, `task_log`, and `outbound_exchange` to construct the tree of **Spans** (`OtelSpan`), accumulate **Metrics** (`OtelCounter`, `OtelHistogram`), and correlate **Logs** (`OtelLogRecord`) with their `trace_id` and `span_id`.
+2. **Plane 5 (`OutboundRegistry.registerMiddlewareFactory`)**: Registers an `OtelTracePropagationMiddleware` into the `outbound` transport chain that injects the standard W3C TraceContext header (`traceparent: 00-<trace_id>-<span_id>-01`) and attaches semantic OTel attributes (`http.request.method`, `url.full`, `server.address`, `server.port`, `http.response.status_code`).
+3. **Plane 5 (`RepositoryRegistry`) / OTLP JSON Export**: Upon completion (`flush`), exports the OTLP JSON batch to a configured datasource (`"otel_telemetry"` channel), to a file, or to an OTLP/HTTP collector.
 
-### 2.2. Diagrama UML de Clases de `extensions/opentelemetry/`
+### 2.2. UML Class Diagram for `extensions/opentelemetry/`
 
 ```mermaid
 classDiagram
@@ -83,89 +83,89 @@ classDiagram
 
 ---
 
-## 3. Parte B: Extensión `extensions/dag_viz/` (Generador de Grafos Interactivos del DAG)
+## 3. Part B: `extensions/dag_viz/` Extension (Interactive DAG Graph Generator)
 
-### 3.1. Arquitectura y Planos del Kernel que Utiliza
+### 3.1. Architecture and Utilized Kernel Planes
 
-`DagVizExtension` demuestra cómo una extensión puede combinar la estructura estática del compilador (`PipelineAST`) con la telemetría dinámica (`TelemetryBus`) y exponer nuevos endpoints al usuario (`CommandRegistry`):
+`DagVizExtension` demonstrates how an extension can combine static compiler structure (`PipelineAST`) with dynamic telemetry (`TelemetryBus`) and expose new endpoints to the user (`CommandRegistry`):
 
-1. **Plano 1 (`AstPassRegistry`)**: Registra un pase de inspección que construye el modelo topológico `DagTopologyGraph` a partir del `PipelineAST`:
-   * **Nodos**: Sub-pipelines (`main`, `deep_mp4_inspection`, ...), pasos de tarea (`TaskStepSpec` con su `module/task`, `concurrency`, `where_filter`), routers (`RouterStepSpec` con sus condiciones `when:` y `default`), `datasources` y adaptadores `networks`.
-   * **Aristas Tipadas**:
-     * Flujo implícito secuencial (`step[i] -> step[i+1]`).
-     * Inyección explícita de canales (`inputs: [{ source: ... }]`).
-     * Salidas hacia datasources (`outputs: [{ channel, datasource, where }]`).
-     * Saltos condicionales de routers (`when: expr -> goto: sub_pipeline`).
-     * Vínculos de red (`step -> network_adapter` y `from: network.captured_events`).
-2. **Plano 2 (`TelemetryBus`)**: Si el pipeline se ejecuta (`run`), `DagVizExtension` anota cada nodo y cada arista del `DagTopologyGraph` con telemetría real de la ejecución:
-   * Duración en microsegundos por paso (`duration_ns`).
-   * Volumen de filas de entrada/salida (`input_count` → `output_count`).
-   * Qué ramas del router se activaron (`taken = true`) y cuáles quedaron inactivas.
-3. **Plano 3 (`CommandRegistry` en `InboundDispatcher`)**: Registra el comando personalizado **`graph`** (`InvocationCommand{ .custom = "graph" }`), de modo que:
-   * Por **CLI**: `<app> graph --pipeline pipeline.yaml [--format html|mermaid|dot|json]` genera inmediatamente el grafo sin necesidad de ejecutar las tareas pesadas.
-   * Por **HTTP**: `GET /v1/graph?format=html` o `POST /v1/graph` devuelve el grafo interactivo.
+1. **Plane 1 (`AstPassRegistry`)**: Registers an inspection pass that constructs the `DagTopologyGraph` topological model from the `PipelineAST`:
+   * **Nodes**: Sub-pipelines (`main`, `deep_mp4_inspection`, ...), task steps (`TaskStepSpec` with its `module/task`, `concurrency`, `where_filter`), routers (`RouterStepSpec` with its `when:` and `default` conditions), `datasources`, and `networks` adapters.
+   * **Typed Edges**:
+     * Implicit sequential flow (`step[i] -> step[i+1]`).
+     * Explicit channel injection (`inputs: [{ source: ... }]`).
+     * Outputs toward datasources (`outputs: [{ channel, datasource, where }]`).
+     * Router conditional jumps (`when: expr -> goto: sub_pipeline`).
+     * Network links (`step -> network_adapter` and `from: network.captured_events`).
+2. **Plane 2 (`TelemetryBus`)**: If the pipeline is executed (`run`), `DagVizExtension` annotates each node and edge of the `DagTopologyGraph` with real execution telemetry:
+   * Duration in microseconds per step (`duration_ns`).
+   * Input/output row volume (`input_count` → `output_count`).
+   * Which router branches were activated (`taken = true`) and which remained dormant.
+3. **Plane 3 (`CommandRegistry` in `InboundDispatcher`)**: Registers the custom command **`graph`** (`InvocationCommand{ .custom = "graph" }`), such that:
+   * Via **CLI**: `<app> graph --pipeline pipeline.yaml [--format html|mermaid|dot|json]` immediately renders the graph without executing heavy tasks.
+   * Via **HTTP**: `GET /v1/graph?format=html` or `POST /v1/graph` returns the interactive graph.
 
-### 3.2. Diagrama de Secuencia de `extensions/dag_viz/`
+### 3.2. Sequence Diagram for `extensions/dag_viz/`
 
 ```mermaid
 sequenceDiagram
-    participant User as Usuario (CLI / HTTP)
+    participant User as User (CLI / HTTP)
     participant Disp as InboundDispatcher
     participant DagExt as DagVizExtension
     participant AST as PipelineAST
     participant Renderer as DagRenderer (Mermaid / DOT / Interactive HTML)
 
-    User->>Disp: Comando "graph --pipeline pipeline.yaml --format html"
+    User->>Disp: Command "graph --pipeline pipeline.yaml --format html"
     Disp->>DagExt: handleGraphCommand(req)
     DagExt->>AST: buildTopologyGraph(allocator, ast, optional_run_telemetry)
     AST-->>DagExt: DagTopologyGraph (nodes, edges, subgraphs)
     DagExt->>Renderer: renderInteractiveHtml(allocator, graph)
-    Renderer-->>DagExt: HTML autocontenido (SVG/Canvas zoom, pan, inspector de nodos, filtros where/when)
+    Renderer-->>DagExt: Self-contained HTML (SVG/Canvas zoom, pan, node inspector, where/when filters)
     DagExt-->>Disp: InvocationResponse (.status = .ok, .output_bytes = html)
-    Disp-->>User: Devuelve grafo interactivo
+    Disp-->>User: Returns interactive graph
 ```
 
-### 3.3. Formatos de Salida de `extensions/dag_viz/`
+### 3.3. Output Formats of `extensions/dag_viz/`
 
-1. **`mermaid`**: Genera un bloque `flowchart TD` con `subgraph` por cada pipeline (`main`, sub-pipelines), formas diferenciadas para tareas (`[...]`), routers (`{...}`), datasources (`[(...)]`) y redes (`((...))`), y etiquetas en las aristas con los predicados `where:` / `when:`.
-2. **`dot` (Graphviz)**: Genera un grafo `digraph FlowdataDAG { ... }` con clusters y estilos listos para `dot -Tsvg`.
-3. **`html` (Grafo Interactivo Standalone)**: Genera un documento HTML5 autocontenido (sin dependencias externas obligatorias, con renderizado SVG/Canvas interactivo, zoom/pan, buscador de nodos y panel lateral que al hacer clic en cualquier nodo muestra su configuración YAML, su filtro `where:`, su red asignada y, si hubo ejecución, sus métricas de tiempo y filas procesadas).
+1. **`mermaid`**: Generates a `flowchart TD` block with `subgraph` for each pipeline (`main`, sub-pipelines), distinct shapes for tasks (`[...]`), routers (`{...}`), datasources (`[(...)]`), and networks (`((...))`), with edge labels displaying `where:` / `when:` predicates.
+2. **`dot` (Graphviz)**: Generates a `digraph FlowdataDAG { ... }` with clusters and styling ready for `dot -Tsvg`.
+3. **`html` (Standalone Interactive Graph)**: Generates a self-contained HTML5 document (zero mandatory external dependencies, with interactive SVG/Canvas rendering, zoom/pan, node search, and a side panel that shows YAML configuration, `where:` filter, assigned network, and runtime latency/row counts upon node click).
 
 ---
 
-## 4. Estructura de Archivos a Crear
+## 4. Directory Structure to Create
 
 ```text
 extensions/
-├── mod.zig                           # Exporta datasource, pcapng, trace_jsonl, artifact, opentelemetry, dag_viz
+├── mod.zig                           # Exports datasource, pcapng, trace_jsonl, artifact, opentelemetry, dag_viz
 ├── opentelemetry/
 │   └── src/
 │       ├── root.zig                  # OpenTelemetryExtension (impl Extension + TelemetrySubscriber)
 │       ├── span.zig                  # OtelSpan, TraceId, SpanId, W3C traceparent formatter/parser
-│       ├── metrics.zig               # OtelMetricsRegistry (contadores e histogramas por step/pipeline)
+│       ├── metrics.zig               # OtelMetricsRegistry (counters and histograms per step/pipeline)
 │       ├── propagation_mw.zig        # OtelTracePropagationMiddleware (impl NetMiddleware)
-│       └── otlp_json.zig             # Serializador zero-dependency a formato estándar OTLP/JSON
+│       └── otlp_json.zig             # Zero-dependency serializer to standard OTLP/JSON format
 └── dag_viz/
     └── src/
         ├── root.zig                  # DagVizExtension (impl Extension + AstPass + TelemetrySubscriber + Command)
         ├── topology.zig              # Extractor PipelineAST -> DagTopologyGraph (Nodes, Edges, Subgraphs)
-        ├── render_mermaid.zig        # Exportador a Mermaid flowchart TD
-        ├── render_dot.zig            # Exportador a Graphviz DOT
-        └── render_html.zig           # Generador de visor HTML5 interactivo standalone con métricas superpuestas
+        ├── render_mermaid.zig        # Exporter to Mermaid flowchart TD
+        ├── render_dot.zig            # Exporter to Graphviz DOT
+        └── render_html.zig           # Standalone interactive HTML5 viewer generator with superimposed metrics
 ```
 
 ---
 
-## 5. Criterios de Aceptación y Verificación
+## 5. Acceptance Criteria and Verification
 
-1. **Tests de `extensions/opentelemetry/` (`tests/core/otel_extension_test.zig`)**:
-   * Al ejecutar un pipeline multi-etapa con router y peticiones de red `outbound`, `OpenTelemetryExtension` captura el `root_span` del pipeline, los `child_spans` de cada paso y petición de red (todos compartiendo el mismo `trace_id` de 16 bytes y enlazados por `parent_span_id`).
-   * El middleware `OtelTracePropagationMiddleware` genera un header `traceparent` W3C válido (`00-<32-hex>-<16-hex>-01`).
-   * `toOtlpJson()` produce un payload JSON válido con `resourceSpans`, `scopeSpans`, `metrics` y `logs`.
-2. **Tests de `extensions/dag_viz/` (`tests/core/dag_viz_extension_test.zig`)**:
-   * Dado un `pipeline.yaml` con múltiples sub-pipelines, `inputs`, `outputs`, `routers`, `datasources` y `networks`, `DagVizExtension` construye el `DagTopologyGraph` exacto.
-   * Verifica que el renderizador Mermaid (`renderMermaid`), DOT (`renderDot`) y HTML interactivo (`renderHtml`) incluyen todos los nodos, aristas condicionales (`when:`), filtros (`where:`) y métricas de ejecución cuando se combina con `TelemetryBus`.
-   * Verifica que invocar el comando `graph` a través del `InboundDispatcher` devuelve `exit_code == 0` y el grafo renderizado.
-3. **Suites en verde**:
-   * `zig build test --summary all` en raíz pasa al 100%.
-   * `cd apps/vidsec && zig build && zig build test --summary all` pasa al 100%.
+1. **Tests for `extensions/opentelemetry/` (`tests/core/otel_extension_test.zig`)**:
+   * When executing a multi-stage pipeline with router and `outbound` network requests, `OpenTelemetryExtension` captures the `root_span` of the pipeline, child spans for each step and network request (all sharing the same 16-byte `trace_id` and linked via `parent_span_id`).
+   * The `OtelTracePropagationMiddleware` generates a valid W3C `traceparent` header (`00-<32-hex>-<16-hex>-01`).
+   * `toOtlpJson()` produces a valid JSON payload containing `resourceSpans`, `scopeSpans`, `metrics`, and `logs`.
+2. **Tests for `extensions/dag_viz/` (`tests/core/dag_viz_extension_test.zig`)**:
+   * Given a `pipeline.yaml` with multiple sub-pipelines, `inputs`, `outputs`, `routers`, `datasources`, and `networks`, `DagVizExtension` constructs the exact `DagTopologyGraph`.
+   * Verifies that the Mermaid renderer (`renderMermaid`), DOT (`renderDot`), and interactive HTML (`renderHtml`) include all nodes, conditional edges (`when:`), filters (`where:`), and execution metrics when combined with `TelemetryBus`.
+   * Verifies that invoking the `graph` command via `InboundDispatcher` yields `exit_code == 0` and the rendered graph.
+3. **Green Test Suites**:
+   * `zig build test --summary all` passes 100% at the root.
+   * `cd apps/vidsec && zig build && zig build test --summary all` passes 100%.

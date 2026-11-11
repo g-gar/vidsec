@@ -1,43 +1,43 @@
-# 001 — Unificación de la Capa de Transporte (`src/transport/{common,inbound,outbound}`) y Apertura de Registros
+# 001 — Transport Layer Unification (`src/transport/{common,inbound,outbound}`) and Open Registries
 
-| Metadatos | Valor |
+| Metadata | Value |
 | :--- | :--- |
 | **ID** | `ARCH-001` |
-| **Depende de** | Ninguna (Primera tarea del roadmap) |
-| **Bloquea a** | [`ARCH-002`](./002-open-kernel-extension-system.md), [`ARCH-003`](./003-core-debloating-and-pcapng-extraction.md) |
-| **Módulos afectados** | `src/host/`, `src/host.zig`, `src/network/`, `src/network.zig`, `src/engine/network.zig`, `src/root.zig`, `build.zig` |
+| **Depends On** | None (First roadmap task) |
+| **Blocks** | [`ARCH-002`](./002-open-kernel-extension-system.md), [`ARCH-003`](./003-core-debloating-and-pcapng-extraction.md) |
+| **Affected Modules** | `src/host/`, `src/host.zig`, `src/network/`, `src/network.zig`, `src/engine/network.zig`, `src/root.zig`, `build.zig` |
 
 ---
 
-## 1. Contexto y Problema Actual (As-Is)
+## 1. Context and Current Problem (As-Is)
 
-Actualmente la comunicación de entrada y salida del motor está fragmentada en dos carpetas con nombres dispares y con cuellos de botella de extensibilidad:
+Engine inbound and outbound communication is currently fragmented across two directories with disparate names and extensibility bottlenecks:
 
-1. **Asimetría conceptual (`src/host/` vs `src/network/`)**:
-   * `src/host/` implementa los transportes **entrantes** (`CLI`, `HTTP`, `gRPC`) que reciben peticiones del exterior y las envían al `HostDispatcher` / `PipelineRunner`.
-   * `src/network/` implementa los transportes **salientes** (`http`, `https`, `ws`, `grpc`, `rtmp`, `tcp`, `udp`, `tls`) que usan las tareas del pipeline para comunicarse con el exterior.
-   * Ambos duplican lógica de sockets POSIX (`src/host/transports/http_transport.zig` vs `src/network/transports/posix_socket.zig`).
-2. **Cierre a la extensibilidad en `src/network/` (`outbound`)**:
-   * En `src/network/drivers/egress_adapter.zig` (`EgressAdapter.createHeap`), el adaptador crea un `TransportRegistry` privado local y llama a `transports.registerDefaultTransports(&transport_reg)`.
-   * `NetworkRegistry` (`src/network/registry.zig`) solo almacena `driver_factories` y `proxy_strategies`. Es imposible registrar desde fuera:
-     * Un nuevo `ProtocolTransport` por esquema URI (ej. `s3://`, `ftp://`, `mqtt://`).
-     * Un nuevo `NetMiddleware` en la tubería de salida (ej. inyección de cabeceras OTel, OAuth2, caché).
-     * Un nuevo `PacketSink` o factorías de `DnsResolver` / `RateLimitStrategy`.
-   * Además, `IsolatedAdapter`, `IngressOnlyAdapter`, `SinkholeAdapter` y `EgressAdapter` son 4 structs separados cuando en realidad `Sinkhole` y `Egress` comparten exactamente la misma cadena de middlewares y solo difieren en el transporte final.
-3. **Cierre a la extensibilidad en `src/host/` (`inbound`)**:
-   * `src/host/app.zig` (`HostApp.runWithArgs`) tiene un `switch (serve_cfg.kind)` estático entre `.http` y `.grpc`. No existe un `InboundRegistry` donde registrar transportes de entrada adicionales (`"unix_socket"`, `"amqp"`, `"kafka"`, `"mcp"`).
+1. **Conceptual asymmetry (`src/host/` vs `src/network/`)**:
+   * `src/host/` implements **inbound** transports (`CLI`, `HTTP`, `gRPC`) that receive external requests and forward them to `HostDispatcher` / `PipelineRunner`.
+   * `src/network/` implements **outbound** transports (`http`, `https`, `ws`, `grpc`, `rtmp`, `tcp`, `udp`, `tls`) used by pipeline tasks to communicate with external targets.
+   * Both duplicate POSIX socket logic (`src/host/transports/http_transport.zig` vs `src/network/transports/posix_socket.zig`).
+2. **Extensibility closure in `src/network/` (`outbound`)**:
+   * In `src/network/drivers/egress_adapter.zig` (`EgressAdapter.createHeap`), the adapter instantiates a private local `TransportRegistry` and calls `transports.registerDefaultTransports(&transport_reg)`.
+   * `NetworkRegistry` (`src/network/registry.zig`) only stores `driver_factories` and `proxy_strategies`. It is impossible to register externally:
+     * A new `ProtocolTransport` by URI scheme (e.g., `s3://`, `ftp://`, `mqtt://`).
+     * A new `NetMiddleware` in the egress pipeline (e.g., OTel header injection, OAuth2, caching).
+     * A new `PacketSink` or `DnsResolver` / `RateLimitStrategy` factories.
+   * Furthermore, `IsolatedAdapter`, `IngressOnlyAdapter`, `SinkholeAdapter`, and `EgressAdapter` are 4 separate structs, when in reality `Sinkhole` and `Egress` share the exact same middleware chain and differ only in the terminal transport.
+3. **Extensibility closure in `src/host/` (`inbound`)**:
+   * `src/host/app.zig` (`HostApp.runWithArgs`) features a static `switch (serve_cfg.kind)` between `.http` and `.grpc`. There is no `InboundRegistry` to register additional inbound transports (`"unix_socket"`, `"amqp"`, `"kafka"`, `"mcp"`).
 
 ---
 
-## 2. Arquitectura Objetivo (To-Be)
+## 2. Target Architecture (To-Be)
 
-Se unifican ambos subsistemas bajo **`src/transport/`** (exportado como módulo `flowdata_transport` en `src/transport.zig`), dividido en tres subdominios claros:
+Both subsystems are unified under **`src/transport/`** (exported as the `flowdata_transport` module in `src/transport.zig`), divided into three clear subdomains:
 
-1. **`src/transport/common/`**: Primitivos compartidos de bajo nivel (`posix_socket.zig`, `uri.zig`, `timeouts.zig`).
-2. **`src/transport/inbound/`**: Capa de transporte entrante (*Mundo Exterior → Motor*).
-3. **`src/transport/outbound/`**: Capa de transporte saliente (*Tarea del Pipeline → Mundo Exterior*).
+1. **`src/transport/common/`**: Shared low-level primitives (`posix_socket.zig`, `uri.zig`, `timeouts.zig`).
+2. **`src/transport/inbound/`**: Inbound transport layer (*Outside World → Engine*).
+3. **`src/transport/outbound/`**: Outbound transport layer (*Pipeline Task → Outside World*).
 
-### 2.1. Diagrama UML de Componentes y Paquetes
+### 2.1. UML Component and Package Diagram
 
 ```mermaid
 flowchart TB
@@ -49,9 +49,9 @@ flowchart TB
 
         subgraph Inbound["src/transport/inbound/"]
             InContracts["contracts/<br/>InboundTransport, InvocationRequest, InvocationResponse"]
-            InReg["registry.zig<br/>InboundRegistry (factories por nombre: 'cli', 'http', 'grpc', ...)"]
+            InReg["registry.zig<br/>InboundRegistry (factories by name: 'cli', 'http', 'grpc', ...)"]
             InDisp["dispatcher.zig<br/>InboundDispatcher (validate, run, health, custom commands)"]
-            InApp["app.zig<br/>TransportApp (Declarative runner para main.zig)"]
+            InApp["app.zig<br/>TransportApp (Declarative runner for main.zig)"]
             InDrivers["drivers/<br/>CliTransport, HttpTransport, GrpcTransport"]
         end
 
@@ -61,7 +61,7 @@ flowchart TB
             OutMW["middleware/<br/>Redirect, Capture, Dns, PolicyGuard, RateLimit, ProxyRouter"]
             OutProto["protocols/<br/>HttpTransport, StreamTransport, SinkholeTransport"]
             OutDrivers["drivers/<br/>IsolatedAdapter, IngressOnlyAdapter, ComposableOutboundAdapter (egress & sinkhole)"]
-            OutSinks["sinks/<br/>MemoryEventSink, PcapngSink (hasta tarea 003)"]
+            OutSinks["sinks/<br/>MemoryEventSink, PcapngSink (until task 003)"]
         end
     end
 
@@ -74,7 +74,7 @@ flowchart TB
 
 ---
 
-### 2.2. Diagrama UML de Clases (`inbound` y `outbound`)
+### 2.2. UML Class Diagram (`inbound` and `outbound`)
 
 ```mermaid
 classDiagram
@@ -137,11 +137,11 @@ classDiagram
 
 ---
 
-### 2.3. Diagrama de Secuencia: Resolución Abierta en `OutboundRegistry`
+### 2.3. Sequence Diagram: Open Resolution in `OutboundRegistry`
 
 ```mermaid
 sequenceDiagram
-    participant Ext as Extensión / App
+    participant Ext as Extension / App
     participant OutReg as OutboundRegistry
     participant Adapter as EgressAdapter
     participant Chain as MiddlewareChain
@@ -151,24 +151,24 @@ sequenceDiagram
     Ext->>OutReg: registerMiddlewareFactory(otelHeaderMiddlewareFactory)
     Ext->>OutReg: registerSinkFactory(customPacketTapFactory)
 
-    Note over OutReg,Adapter: Al iniciar el PipelineEngine con `networks:` del YAML
+    Note over OutReg,Adapter: When starting PipelineEngine with networks: from YAML
     OutReg->>Adapter: createHeap(allocator, spec, &out_reg)
     Adapter->>TReg: cloneFrom(out_reg.protocol_transports)
-    Note right of TReg: Incluye http, https, ws, grpc, rtmp, tcp, udp, tls + "s3"
+    Note right of TReg: Includes http, https, ws, grpc, rtmp, tcp, udp, tls + "s3"
     Adapter->>Chain: use(Redirect -> Capture(default + extra_sinks) -> Dns -> Policy -> RateLimit -> Proxy)
-    Adapter->>Chain: use(extra_middlewares de out_reg)
-    Adapter-->>OutReg: OutboundAdapter listo
+    Adapter->>Chain: use(extra_middlewares from out_reg)
+    Adapter-->>OutReg: OutboundAdapter ready
 ```
 
 ---
 
-## 3. Contratos e Interfaces en Zig a Implementar
+## 3. Zig Contracts and Interfaces to Implement
 
 ### 3.1. `src/transport/inbound/registry.zig` (`InboundRegistry`)
 
-En lugar de que `ServeConfig.TransportKind` sea un `enum { http, grpc }` cerrado:
-* `ServeConfig` en `src/transport/inbound/contracts/envelope.zig` cambia `kind` a `transport_name: []const u8 = "http"` (manteniendo compatibilidad con `--transport http`, `--transport grpc` o cualquier transporte registrado como `--transport unix_socket`).
-* `InboundRegistry` permite registrar factorías por nombre:
+Instead of `ServeConfig.TransportKind` being a closed `enum { http, grpc }`:
+* `ServeConfig` in `src/transport/inbound/contracts/envelope.zig` replaces `kind` with `transport_name: []const u8 = "http"` (maintaining compatibility with `--transport http`, `--transport grpc`, or any registered transport such as `--transport unix_socket`).
+* `InboundRegistry` allows registering factories by name:
 
 ```zig
 pub const InboundTransportConfig = struct {
@@ -198,7 +198,7 @@ pub const InboundRegistry = struct {
 
 ### 3.2. `src/transport/outbound/registry.zig` (`OutboundRegistry` / alias `NetworkRegistry`)
 
-`OutboundRegistry` amplía el actual `NetworkRegistry` para que los protocolos (`ProtocolTransport`), middlewares adicionales (`MiddlewareFactoryFn`) y sinks (`SinkFactoryFn`) estén registrados a nivel del registro y se inyecten automáticamente en `EgressAdapter` y `SinkholeAdapter`:
+`OutboundRegistry` expands the current `NetworkRegistry` so that protocols (`ProtocolTransport`), additional middlewares (`MiddlewareFactoryFn`), and sinks (`SinkFactoryFn`) are registered at the registry level and injected automatically into `EgressAdapter` and `SinkholeAdapter`:
 
 ```zig
 pub const MiddlewareFactoryFn = *const fn (
@@ -225,43 +225,43 @@ pub const AdapterDriverFactoryFn = *const fn (
 ) anyerror!NetworkAdapter;
 ```
 
-Cuando `EgressAdapter.createHeap(allocator, config, ctx)` construye su `TransportRegistry` y su `MiddlewareChain`:
-1. Clona todos los esquemas registrados en `ctx.base_transports` (que incluye los protocolos por defecto más cualquier protocolo registrado vía `outbound_registry.registerProtocol("s3", ...)`).
-2. Instancia los `PacketSink` adicionales de `ctx.extra_sinks` y los añade a `CaptureMiddleware`.
-3. Instancia los `NetMiddleware` adicionales de `ctx.extra_middlewares` y los añade a la `MiddlewareChain`.
+When `EgressAdapter.createHeap(allocator, config, ctx)` constructs its `TransportRegistry` and its `MiddlewareChain`:
+1. It clones all schemes registered in `ctx.base_transports` (including default protocols plus any protocol registered via `outbound_registry.registerProtocol("s3", ...)`).
+2. It instantiates additional `PacketSink` instances from `ctx.extra_sinks` and appends them to `CaptureMiddleware`.
+3. It instantiates additional `NetMiddleware` instances from `ctx.extra_middlewares` and appends them to `MiddlewareChain`.
 
 ---
 
-## 4. Mapa de Migración de Archivos
+## 4. File Migration Map
 
-| Origen (Actual) | Destino (Nuevo) | Acción |
+| Origin (Current) | Destination (New) | Action |
 | :--- | :--- | :--- |
-| `src/network/contracts/uri.zig` | `src/transport/common/uri.zig` | Mover y re-exportar en `outbound/contracts/mod.zig` |
-| `src/network/transports/posix_socket.zig` | `src/transport/common/posix_socket.zig` | Mover y compartir entre `inbound` y `outbound` |
-| `src/host/contracts/*` | `src/transport/inbound/contracts/*` | Mover (`InboundTransport` + alias `HostTransport`) |
-| `src/host/transports/*` | `src/transport/inbound/drivers/*` | Mover (`cli_transport.zig`, `http_transport.zig`, `grpc_transport.zig`) |
-| *(Nuevo)* | `src/transport/inbound/registry.zig` | Crear `InboundRegistry` |
-| `src/host/dispatcher.zig` | `src/transport/inbound/dispatcher.zig` | Mover y añadir soporte para registro de comandos `.custom` |
-| `src/host/app.zig` | `src/transport/inbound/app.zig` | Mover y usar `InboundRegistry` para `--transport <name>` |
-| *(Nuevo)* | `src/transport/inbound/mod.zig` | Crear punto de entrada de `transport.inbound` |
-| `src/network/contracts/*` | `src/transport/outbound/contracts/*` | Mover (`OutboundAdapter` + alias `NetworkAdapter`) |
-| `src/network/strategies/*` | `src/transport/outbound/strategies/*` | Mover |
-| `src/network/middleware/*` | `src/transport/outbound/middleware/*` | Mover |
-| `src/network/sinks/*` | `src/transport/outbound/sinks/*` | Mover |
-| `src/network/transports/*` | `src/transport/outbound/protocols/*` | Mover |
-| `src/network/drivers/*` | `src/transport/outbound/drivers/*` | Mover y actualizar firma `AdapterDriverFactoryFn` con `AdapterDriverContext` |
-| `src/network/registry.zig` | `src/transport/outbound/registry.zig` | Mover y añadir `registerProtocol`, `registerMiddlewareFactory`, `registerSinkFactory` |
-| `src/network/mod.zig` | `src/transport/outbound/mod.zig` | Mover |
-| *(Nuevo)* | `src/transport/mod.zig` y `src/transport.zig` | Crear raíz de `flowdata_transport` (`common`, `inbound`, `outbound`) |
-| `src/host/`, `src/host.zig`, `src/network/`, `src/network.zig` | *(Eliminados)* | Eliminar directorios antiguos; mantener alias `pub const host = transport.inbound;` y `pub const network = transport.outbound;` en `src/root.zig` |
+| `src/network/contracts/uri.zig` | `src/transport/common/uri.zig` | Move and re-export in `outbound/contracts/mod.zig` |
+| `src/network/transports/posix_socket.zig` | `src/transport/common/posix_socket.zig` | Move and share between `inbound` and `outbound` |
+| `src/host/contracts/*` | `src/transport/inbound/contracts/*` | Move (`InboundTransport` + alias `HostTransport`) |
+| `src/host/transports/*` | `src/transport/inbound/drivers/*` | Move (`cli_transport.zig`, `http_transport.zig`, `grpc_transport.zig`) |
+| *(New)* | `src/transport/inbound/registry.zig` | Create `InboundRegistry` |
+| `src/host/dispatcher.zig` | `src/transport/inbound/dispatcher.zig` | Move and add support for registering `.custom` commands |
+| `src/host/app.zig` | `src/transport/inbound/app.zig` | Move and use `InboundRegistry` for `--transport <name>` |
+| *(New)* | `src/transport/inbound/mod.zig` | Create entry point for `transport.inbound` |
+| `src/network/contracts/*` | `src/transport/outbound/contracts/*` | Move (`OutboundAdapter` + alias `NetworkAdapter`) |
+| `src/network/strategies/*` | `src/transport/outbound/strategies/*` | Move |
+| `src/network/middleware/*` | `src/transport/outbound/middleware/*` | Move |
+| `src/network/sinks/*` | `src/transport/outbound/sinks/*` | Move |
+| `src/network/transports/*` | `src/transport/outbound/protocols/*` | Move |
+| `src/network/drivers/*` | `src/transport/outbound/drivers/*` | Move and update `AdapterDriverFactoryFn` signature with `AdapterDriverContext` |
+| `src/network/registry.zig` | `src/transport/outbound/registry.zig` | Move and add `registerProtocol`, `registerMiddlewareFactory`, `registerSinkFactory` |
+| `src/network/mod.zig` | `src/transport/outbound/mod.zig` | Move |
+| *(New)* | `src/transport/mod.zig` and `src/transport.zig` | Create root of `flowdata_transport` (`common`, `inbound`, `outbound`) |
+| `src/host/`, `src/host.zig`, `src/network/`, `src/network.zig` | *(Deleted)* | Remove legacy directories; maintain aliases `pub const host = transport.inbound;` and `pub const network = transport.outbound;` in `src/root.zig` |
 
 ---
 
-## 5. Criterios de Aceptación y Verificación
+## 5. Acceptance Criteria and Verification
 
-1. **Estructura**: Ya no existen las carpetas `src/host/` ni `src/network/`; todo vive bajo `src/transport/{common,inbound,outbound}` y `src/transport.zig`.
-2. **Extensibilidad Outbound**: Un test unitario en `tests/core/network_test.zig` registra un protocolo personalizado (ej. `"customproto"`) y un middleware personalizado directamente en `OutboundRegistry`, ejecuta un pipeline con `driver: egress` hacia `customproto://test/item` y verifica que ambos se invocan.
-3. **Extensibilidad Inbound**: Un test unitario en `tests/core/host_transport_test.zig` registra un transporte inbound personalizado en `InboundRegistry` y un comando `.custom` en `InboundDispatcher`, verificando su resolución dinámica.
-4. **Compatibilidad total**:
-   * `zig build test --summary all` pasa al 100% en la raíz.
-   * `cd apps/vidsec && zig build && zig build test --summary all` pasa al 100%.
+1. **Structure**: Folders `src/host/` and `src/network/` no longer exist; everything lives under `src/transport/{common,inbound,outbound}` and `src/transport.zig`.
+2. **Outbound Extensibility**: A unit test in `tests/core/network_test.zig` registers a custom protocol (e.g., `"customproto"`) and custom middleware directly in `OutboundRegistry`, executes a pipeline with `driver: egress` targeting `customproto://test/item`, and verifies that both are invoked.
+3. **Inbound Extensibility**: A unit test in `tests/core/host_transport_test.zig` registers a custom inbound transport in `InboundRegistry` and a `.custom` command in `InboundDispatcher`, verifying dynamic resolution.
+4. **Full Compatibility**:
+   * `zig build test --summary all` passes 100% at the root.
+   * `cd apps/vidsec && zig build && zig build test --summary all` passes 100%.

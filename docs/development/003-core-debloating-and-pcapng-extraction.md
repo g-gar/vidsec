@@ -1,54 +1,54 @@
-# 003 — Limpieza del Core y Extracción de PCAPNG, Tracer y Artifacts hacia Extensiones
+# 003 — Core Debloating and Extraction of PCAPNG, Tracer, and Artifacts to Extensions
 
-| Metadatos | Valor |
+| Metadata | Value |
 | :--- | :--- |
 | **ID** | `ARCH-003` |
-| **Depende de** | [`ARCH-001`](./001-transport-layer-unification.md), [`ARCH-002`](./002-open-kernel-extension-system.md) |
-| **Bloquea a** | [`ARCH-004`](./004-observability-otel-and-dag-visualizer.md) |
-| **Módulos afectados** | `src/engine/`, `src/transport/outbound/`, `extensions/pcapng/` *(nuevo)*, `extensions/trace_jsonl/` *(nuevo)*, `extensions/artifact/` *(nuevo)* |
+| **Depends On** | [`ARCH-001`](./001-transport-layer-unification.md), [`ARCH-002`](./002-open-kernel-extension-system.md) |
+| **Blocks** | [`ARCH-004`](./004-observability-otel-and-dag-visualizer.md) |
+| **Affected Modules** | `src/engine/`, `src/transport/outbound/`, `extensions/pcapng/` *(new)*, `extensions/trace_jsonl/` *(new)*, `extensions/artifact/` *(new)* |
 
 ---
 
-## 1. Contexto y Problema Actual (As-Is)
+## 1. Context and Current Problem (As-Is)
 
-Tras haber introducido `src/transport/` (`001`) y el `KernelContext` con `TelemetryBus` (`002`), todavía quedan dentro del core de Flowdata tres piezas que no pertenecen a un motor puro de dataflow reactivo:
+Following the introduction of `src/transport/` (`001`) and `KernelContext` with `TelemetryBus` (`002`), three pieces remain within the Flowdata core that do not belong inside a pure reactive dataflow engine:
 
-1. **Generación de binarios `.pcapng` y rotación de archivos en el Core**:
-   * `src/transport/outbound/sinks/pcapng_sink.zig` (`PcapngSink`) está incrustado directamente en `EgressAdapter` y `SinkholeAdapter`.
-   * `src/engine/network.zig` contiene `flushCaptures` y `writePcapWithRotation`, acoplando al motor con el formato binario IETF PCAPNG (bloques SHB, IDB, DSB, EPB) y con la escritura de ficheros rotados `.0`, `.1` en disco.
-2. **Tracer JSONL ad-hoc en `src/engine/tracer.zig`**:
-   * `ExecutionTracer` serializa manualmente eventos a JSONL dentro de `src/engine/`, duplicando la responsabilidad que ahora tiene el `TelemetryBus` de `src/kernel/telemetry.zig`.
-3. **Almacén de Artefactos y Cuarentena SHA-256 en `src/engine/artifact.zig`**:
-   * `ArtifactStore` (`ManagedBuffer`, `carveToQuarantine` con hash SHA-256) vive dentro de `src/engine/`, a pesar de ser una utilidad específica para pipelines de inspección/remediación binaria.
+1. **PCAPNG binary generation and file rotation in the Core**:
+   * `src/transport/outbound/sinks/pcapng_sink.zig` (`PcapngSink`) is embedded directly within `EgressAdapter` and `SinkholeAdapter`.
+   * `src/engine/network.zig` contains `flushCaptures` and `writePcapWithRotation`, coupling the engine directly to the IETF PCAPNG binary format (SHB, IDB, DSB, EPB blocks) and writing rotated `.0`, `.1` files to disk.
+2. **Ad-hoc JSONL tracer in `src/engine/tracer.zig`**:
+   * `ExecutionTracer` manually serializes events to JSONL inside `src/engine/`, duplicating the responsibility now handled by `TelemetryBus` in `src/kernel/telemetry.zig`.
+3. **Artifact Store and SHA-256 Quarantine in `src/engine/artifact.zig`**:
+   * `ArtifactStore` (`ManagedBuffer`, `carveToQuarantine` with SHA-256 hash) resides inside `src/engine/`, despite being a utility specific to binary inspection/remediation pipelines.
 
 ---
 
-## 2. Arquitectura Objetivo (To-Be)
+## 2. Target Architecture (To-Be)
 
-El Core (`src/engine/` y `src/transport/outbound/`) queda completamente limpio de formatos forenses y de serializadores de trazas:
+The Core (`src/engine/` and `src/transport/outbound/`) is left completely clean of forensic formats and trace serializers:
 
 ```mermaid
 flowchart LR
-    subgraph CleanCore["Core Flowdata (Limpio)"]
+    subgraph CleanCore["Core Flowdata (Clean)"]
         OutAdapter["EgressAdapter / SinkholeAdapter"]
         Engine["PipelineEngine"]
         Bus["KernelContext.telemetry<br/>(TelemetryBus)"]
     end
 
-    subgraph ExtractedExtensions["Extensiones Desacopladas (extensions/*)"]
-        ExtPcap["extensions/pcapng/<br/>- Escucha outbound_wire_packet y pipeline_end<br/>- Ensambla bloques PCAPNG (SHB, IDB, DSB, EPB)<br/>- Persiste a Datasource y a disco con rotación"]
-        ExtTrace["extensions/trace_jsonl/<br/>- Escucha todos los eventos de TelemetryBus<br/>- Exporta traza estructurada .jsonl"]
-        ExtArtifact["extensions/artifact/<br/>- ArtifactStore & ManagedBuffer<br/>- Carve a cuarentena con SHA-256"]
+    subgraph ExtractedExtensions["Decoupled Extensions (extensions/*)"]
+        ExtPcap["extensions/pcapng/<br/>- Listens to outbound_wire_packet and pipeline_end<br/>- Assembles PCAPNG blocks (SHB, IDB, DSB, EPB)<br/>- Persists to Datasource and to disk with rotation"]
+        ExtTrace["extensions/trace_jsonl/<br/>- Listens to all TelemetryBus events<br/>- Exports structured .jsonl trace"]
+        ExtArtifact["extensions/artifact/<br/>- ArtifactStore & ManagedBuffer<br/>- Carve to quarantine with SHA-256"]
     end
 
-    OutAdapter -->|"Emite PacketSink / WireTap"| Bus
-    Engine -->|"Emite Step / Router / Pipeline"| Bus
-    Bus -->|"Notifica"| ExtPcap & ExtTrace
+    OutAdapter -->|"Emits PacketSink / WireTap"| Bus
+    Engine -->|"Emits Step / Router / Pipeline"| Bus
+    Bus -->|"Notifies"| ExtPcap & ExtTrace
 ```
 
 ---
 
-### 2.1. Cómo funciona ahora la captura PCAPNG como Extensión (`extensions/pcapng/`)
+### 2.1. How PCAPNG Capture Operates as an Extension (`extensions/pcapng/`)
 
 ```mermaid
 sequenceDiagram
@@ -64,11 +64,11 @@ sequenceDiagram
     PcapExt->>OutReg: registerSinkFactory(&PcapngExtension.createTapSink)
     PcapExt->>Kernel: telemetry.subscribe(pcap_subscriber)
 
-    Note over Adapter,PcapExt: Durante la ejecución del Pipeline
+    Note over Adapter,PcapExt: During Pipeline Execution
     Adapter->>PcapExt: PacketSink.onExchange(record, req_bytes, resp_bytes)
-    PcapExt->>PcapExt: Codifica bloques SHB/IDB/DSB/EPB en su buffer por adapter_id
+    PcapExt->>PcapExt: Encodes SHB/IDB/DSB/EPB blocks into its per-adapter_id buffer
 
-    Note over Kernel,Repo: Al finalizar el Pipeline (telemetry.flushAll)
+    Note over Kernel,Repo: Upon Pipeline Completion (telemetry.flushAll)
     Kernel->>PcapExt: flush(&kernel.datasources, ast.networks)
     PcapExt->>Repo: writePayload(capture.channel, pcap_bytes)
     PcapExt->>PcapExt: writePcapWithRotation(capture.path, pcap_bytes, max_mb, max_files)
@@ -76,7 +76,7 @@ sequenceDiagram
 
 ---
 
-### 2.2. Diagrama UML de Clases de las Extensiones Extraídas
+### 2.2. UML Class Diagram for Extracted Extensions
 
 ```mermaid
 classDiagram
@@ -116,47 +116,47 @@ classDiagram
 
 ---
 
-## 3. Cambios Detallados en el Core y en `extensions/`
+## 3. Detailed Changes in Core and in `extensions/`
 
-### 3.1. Extracción de `extensions/pcapng/`
-1. Mover `src/transport/outbound/sinks/pcapng_sink.zig` → `extensions/pcapng/src/pcapng_writer.zig`.
-2. Mover `writePcapWithRotation` y la lógica de `flushCaptures` de `src/engine/network.zig` → `extensions/pcapng/src/root.zig`.
-3. En `EgressAdapter` y `SinkholeAdapter`:
-   * Eliminar el campo `pcap_sink: ?PcapngSink = null`.
-   * En su lugar, `EgressAdapter` y `SinkholeAdapter` simplemente delegan en los `PacketSink` registrados en `OutboundRegistry` (`ctx.extra_sinks`).
-   * Cuando `extensions/pcapng` está registrada en el `KernelContext`, su `SinkFactoryFn` comprueba `if (config.capture.enabled)` e inyecta automáticamente el `PacketSink` de PCAPNG en el adaptador.
-   * Al terminar el pipeline, `PcapngExtension.flush` vuelca los bytes `.pcapng` al `capture.datasource` y al `capture.path` con rotación ring-buffer.
+### 3.1. Extraction of `extensions/pcapng/`
+1. Move `src/transport/outbound/sinks/pcapng_sink.zig` → `extensions/pcapng/src/pcapng_writer.zig`.
+2. Move `writePcapWithRotation` and `flushCaptures` logic from `src/engine/network.zig` → `extensions/pcapng/src/root.zig`.
+3. In `EgressAdapter` and `SinkholeAdapter`:
+   * Remove the field `pcap_sink: ?PcapngSink = null`.
+   * Instead, `EgressAdapter` and `SinkholeAdapter` simply delegate to `PacketSink` instances registered in `OutboundRegistry` (`ctx.extra_sinks`).
+   * When `extensions/pcapng` is registered in `KernelContext`, its `SinkFactoryFn` inspects `if (config.capture.enabled)` and automatically injects the PCAPNG `PacketSink` into the adapter.
+   * Upon pipeline completion, `PcapngExtension.flush` writes `.pcapng` bytes to `capture.datasource` and to `capture.path` with ring-buffer rotation.
 
-### 3.2. Extracción de `extensions/trace_jsonl/`
-1. Mover `src/engine/tracer.zig` → `extensions/trace_jsonl/src/root.zig`.
-2. Implementar `TelemetrySubscriber` sobre `ExecutionTracer` para que traduzca automáticamente `TelemetryEvent` (`step_start`, `task_log`, `step_end`, `router_decision`) a líneas `.jsonl` y, si `--trace-out <path>` está presente en `RunnerOptions`, escriba el fichero al finalizar.
+### 3.2. Extraction of `extensions/trace_jsonl/`
+1. Move `src/engine/tracer.zig` → `extensions/trace_jsonl/src/root.zig`.
+2. Implement `TelemetrySubscriber` on `ExecutionTracer` so that it automatically translates `TelemetryEvent` (`step_start`, `task_log`, `step_end`, `router_decision`) into `.jsonl` lines, and if `--trace-out <path>` is supplied in `RunnerOptions`, writes the file on completion.
 
-### 3.3. Extracción de `extensions/artifact/`
-1. Mover `src/engine/artifact.zig` → `extensions/artifact/src/root.zig`.
-2. Re-exportar en `extensions/mod.zig` (`extensions.artifact.ArtifactStore`, `extensions.artifact.ManagedBuffer`).
+### 3.3. Extraction of `extensions/artifact/`
+1. Move `src/engine/artifact.zig` → `extensions/artifact/src/root.zig`.
+2. Re-export in `extensions/mod.zig` (`extensions.artifact.ArtifactStore`, `extensions.artifact.ManagedBuffer`).
 
 ---
 
-## 4. Mapa de Migración de Archivos
+## 4. File Migration Map
 
-| Origen (Core) | Destino (`extensions/`) | Acción |
+| Origin (Core) | Destination (`extensions/`) | Action |
 | :--- | :--- | :--- |
-| `src/transport/outbound/sinks/pcapng_sink.zig` | `extensions/pcapng/src/pcapng_writer.zig` | Mover fuera del core |
-| `src/engine/network.zig` (`flushCaptures` / `writePcapWithRotation`) | `extensions/pcapng/src/root.zig` | Convertir en `Extension` suscrita a `OutboundRegistry` y `TelemetryBus` |
-| `src/engine/tracer.zig` | `extensions/trace_jsonl/src/root.zig` | Mover fuera de `src/engine/` y conectar a `TelemetryBus` |
-| `src/engine/artifact.zig` | `extensions/artifact/src/root.zig` | Mover fuera de `src/engine/` a `extensions/artifact/` |
-| `extensions/mod.zig` | `extensions/mod.zig` | Exportar `datasource`, `pcapng`, `trace_jsonl`, `artifact` y un `registerDefaultExtensions(kernel)` |
+| `src/transport/outbound/sinks/pcapng_sink.zig` | `extensions/pcapng/src/pcapng_writer.zig` | Move outside core |
+| `src/engine/network.zig` (`flushCaptures` / `writePcapWithRotation`) | `extensions/pcapng/src/root.zig` | Convert to `Extension` subscribed to `OutboundRegistry` and `TelemetryBus` |
+| `src/engine/tracer.zig` | `extensions/trace_jsonl/src/root.zig` | Move outside `src/engine/` and connect to `TelemetryBus` |
+| `src/engine/artifact.zig` | `extensions/artifact/src/root.zig` | Move outside `src/engine/` to `extensions/artifact/` |
+| `extensions/mod.zig` | `extensions/mod.zig` | Export `datasource`, `pcapng`, `trace_jsonl`, `artifact`, and `registerDefaultExtensions(kernel)` |
 
 ---
 
-## 5. Criterios de Aceptación y Verificación
+## 5. Acceptance Criteria and Verification
 
-1. **Pureza del Core**:
-   * `grep -rn -i "pcapng" src/engine/ src/transport/` devuelve **0 coincidencias** (con la única excepción de la configuración declarativa `CaptureSpec` en `ast` / `contracts`).
-   * `src/engine/` contiene únicamente `engine.zig`, `network.zig` (coordinación de adaptadores y eventos `NetworkEvent` sin PCAPNG) y `runner.zig`.
-2. **Paridad Funcional**:
-   * Todos los tests de captura `.pcapng` en `tests/core/network_test.zig` (magic bytes `0x0A0D0D0A`, bloque TLS `0x0000000A`, persistencia en datasource `egress_pcap_dump` y rotación de ficheros en disco) siguen pasando al 100% usando la extensión `extensions.pcapng`.
-   * Todos los tests de `ArtifactStore` en `tests/core/artifact_test.zig` pasan al 100% usando `extensions.artifact`.
-3. **Suites en verde**:
-   * `zig build test --summary all` en raíz pasa al 100%.
-   * `cd apps/vidsec && zig build && zig build test --summary all` pasa al 100%.
+1. **Core Purity**:
+   * `grep -rn -i "pcapng" src/engine/ src/transport/` returns **0 matches** (with the sole exception of the declarative `CaptureSpec` configuration in `ast` / `contracts`).
+   * `src/engine/` contains solely `engine.zig`, `network.zig` (adapter coordination and `NetworkEvent` events without PCAPNG), and `runner.zig`.
+2. **Functional Parity**:
+   * All `.pcapng` capture tests in `tests/core/network_test.zig` (magic bytes `0x0A0D0D0A`, TLS block `0x0000000A`, persistence in datasource `egress_pcap_dump`, and disk file rotation) continue to pass 100% using `extensions.pcapng`.
+   * All `ArtifactStore` tests in `tests/core/artifact_test.zig` pass 100% using `extensions.artifact`.
+3. **Green Test Suites**:
+   * `zig build test --summary all` passes 100% at the root.
+   * `cd apps/vidsec && zig build && zig build test --summary all` passes 100%.
