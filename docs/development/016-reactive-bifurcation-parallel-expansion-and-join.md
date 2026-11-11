@@ -240,15 +240,15 @@ input_payload: *const fn (ctx: *TaskContext_ABI, name: [*:0]const u8, out: *Payl
 
 The existing `next_row(cursor_name, out_row)` gets implemented over the named input. This gives row-by-row access for dynamic payloads without a new entry point.
 
-### 6.4. Injector Rules
+### 6.4. Injector Rules & Lazy Streaming (`sdk.Rows(T)`)
 
 For each field of `Inputs` (resolved in this order):
 
 | Field type | Source |
 |---|---|
-| `BoundedStreamReader` | Raw `stream` input (unchanged) |
-| `[]const T` (`T` a DTO struct) | Named input `field.name`, whole stream (zero-copy if `schema_id` matches) |
-| `sdk.Rows(T)` | Named input, lazy iterator (for large dynamic inputs) |
+| `BoundedStreamReader` | Raw `stream` input (unchanged, byte-level sliding window) |
+| `sdk.Rows(T)` | Named input, **lazy cursor / streaming iterator** (backed by `next_row` in ABI; critical for gigabyte-scale inputs like video frame metadata or massive logs, avoiding loading millions of records into RAM at once) |
+| `[]const T` (`T` a DTO struct) | Named input `field.name`, whole stream (in-memory contiguous slice, zero-copy if `schema_id` matches) |
 | `T` (DTO struct) **matching a bound input name** | Named input, **scalar**. A stream of length ≠ 1 is an error |
 | `T` (struct) not matching an input | Nested params struct (unchanged) |
 | primitive / `[]const u8` / enum / optional | `params:` (unchanged) |
@@ -318,11 +318,20 @@ With `.lift = .none` (the default, current behavior), `execute` receives the who
 
 Inconsistent declarations are `@compileError`s, for example `.lift = .elemental` with an `Inputs` struct containing slices.
 
-### 8.2. Lifting Semantics
+### 8.2. Lifting Semantics & Broadcast Inputs
 
-- An elemental step binds **exactly one** input channel (named or implicit). More bindings → load-time error. Broadcasting extra scalar inputs to each item is a future extension (§13).
-- Only the `is_stream` flag decides: `is_stream == false` → one invocation, scalar output (map) or stream output (filter/expansion). `is_stream == true` → lifted, stream output. A stream of length 1 stays a stream.
-- An empty stream produces an empty stream (zero invocations).
+- **Primary stream**: An elemental step binds **at least one** stream input channel (`is_stream == true`), which is the stream iterated element by element ($0 \dots N-1$).
+- **Broadcast auxiliary inputs (scalars / single-value streams)**: Any additional input channel bound in `inputs:` that is scalar (`is_stream == false` or `len == 1`) is **broadcast** as read-only context to every elemental worker invocation.
+- In `Service.execute`, these broadcast inputs can be received via typed parameters or through an `Inputs` struct combining the elemental item and broadcast fields:
+  ```zig
+  pub const FetchInputs = struct {
+      req: ResourceRequest,     // Elemental item (iterated from primary stream)
+      auth: ?SessionToken,      // Broadcast scalar (passed identically to all workers)
+  };
+  pub fn execute(self: *DownloadService, alloc: Allocator, inputs: FetchInputs) !ResourceResponse
+  ```
+- Only the `is_stream` flag of the primary input decides: `is_stream == false` → one invocation, scalar output (map) or stream output (filter/expansion). `is_stream == true` → lifted, stream output. A stream of length 1 stays a stream.
+- An empty primary stream produces an empty stream (zero invocations).
 
 ### 8.3. Effective Concurrency (opt-in)
 
@@ -617,8 +626,13 @@ Plugins built against the previous ABI are rejected by the existing version chec
 
 ---
 
-## 15. Open Questions
+## 15. Resolved Design Decisions (from Open Questions)
 
-1. **Broadcast inputs for elemental tasks**: should an elemental step get read-only scalar inputs (e.g. `auth_token`) next to its stream (`inputs: { each: queue, token: auth }`)? This ADR proposes a follow-up.
-2. **`sdk.Rows(T)` vs. full materialization** for very large dynamic inputs. Is lazy iteration needed in v1?
-3. **Schema evolution policy**: should optional/new fields count as structurally compatible both ways (consumer has extra optional fields → defaults)? The proposal is yes.
+1. **Broadcast inputs for elemental tasks (RESOLVED)**:
+   - Elemental tasks can receive auxiliary scalar/constant streams alongside their primary stream.
+   - The engine identifies the primary stream (`is_stream == true, len = N`) to lift and parallelize across workers, while broadcast inputs (`is_stream == false` or `len == 1`) are distributed as constant/read-only context to every worker item invocation.
+2. **Lazy Cursor Streaming (`sdk.Rows(T)`) for large dynamic inputs (RESOLVED)**:
+   - Streaming iterators via `next_row` are a first-class requirement for real-world heavy pipelines (such as video analytics or massive packet traces), preventing full materialization of multi-gigabyte streams into RAM.
+3. **Explicit mapping over implicit schema evolution (RESOLVED)**:
+   - The engine does **not** guess or automatically adapt disparate schema layouts.
+   - Mappings, projection of fields, or conversions between producers and consumers must be explicitly declared in `pipeline.yaml` (e.g. via `from: field` or transformation tasks), keeping the engine zero-overhead, deterministic, and predictable.
