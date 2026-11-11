@@ -5,7 +5,7 @@
 | **ID** | `ARCH-015` |
 | **Depends On** | [`ARCH-002`](./002-open-kernel-extension-system.md), [`ARCH-010`](./010-multisource-architecture-and-scrapers.md), [`ARCH-012`](./012-manga-framework-plugins-and-tasks.md) |
 | **Area** | `src/plugin/sdk/` & `apps/mangadex/plugin/` |
-| **Status** | `DESIGN & ARCHITECTURE SPECIFICATION` |
+| **Status** | `COMPLETED` |
 
 ---
 

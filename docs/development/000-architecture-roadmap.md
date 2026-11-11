@@ -6,7 +6,7 @@
 | **Tipo** | Índice Maestro / Epic Roadmap |
 | **Estado** | `COMPLETED` |
 | **Target Engine** | `Flowdata v2` (Raíz del repositorio) + `apps/vidsec` |
-| **Tareas Hijas** | [`001`](./001-transport-layer-unification.md) → [`002`](./002-open-kernel-extension-system.md) → [`003`](./003-core-debloating-and-pcapng-extraction.md) → [`004`](./004-observability-otel-and-dag-visualizer.md) → [`005`](./005-mangadex-client-library.md) → [`006`](./006-komga-client-library.md) → [`007`](./007-zip-archive-and-cbz-engine.md) → [`008`](./008-comicinfo-metadata-library.md) → [`009`](./009-unified-sqlite-storage-and-schema.md) → [`010`](./010-multisource-architecture-and-scrapers.md) → [`011`](./011-pipeline-yaml-specification-and-orchestration.md) → [`012`](./012-manga-framework-plugins-and-tasks.md) → [`013`](./013-engine-jobs-spec-app-aliases-and-yaml-modularization.md) |
+| **Tareas Hijas** | [`001`](./001-transport-layer-unification.md) → [`002`](./002-open-kernel-extension-system.md) → [`003`](./003-core-debloating-and-pcapng-extraction.md) → [`004`](./004-observability-otel-and-dag-visualizer.md) → [`005`](./005-mangadex-client-library.md) → [`006`](./006-komga-client-library.md) → [`007`](./007-zip-archive-and-cbz-engine.md) → [`008`](./008-comicinfo-metadata-library.md) → [`009`](./009-unified-sqlite-storage-and-schema.md) → [`010`](./010-multisource-architecture-and-scrapers.md) → [`011`](./011-pipeline-yaml-specification-and-orchestration.md) → [`012`](./012-manga-framework-plugins-and-tasks.md) → [`013`](./013-engine-jobs-spec-app-aliases-and-yaml-modularization.md) → [`014`](./014-inbound-emitter-datasources-and-reactive-dispatch.md) → [`015`](./015-declarative-task-services-and-comptime-di.md) → [`016`](./016-reactive-bifurcation-parallel-expansion-and-join.md) |
 
 ---
 
@@ -85,6 +85,9 @@ flowchart LR
 | **11** | [`011-pipeline-yaml-specification-and-orchestration.md`](./011-pipeline-yaml-specification-and-orchestration.md) | Especificación de alto nivel de `pipeline.yaml` para `apps/mangadex`: adapters de red, datasources (SQLite WAL), `sources`, `destinations` (Komga), `subscriptions` y orquestación DAG de 4 etapas. | `READY` |
 | **12** | [`012-manga-framework-plugins-and-tasks.md`](./012-manga-framework-plugins-and-tasks.md) | Catálogo de plugins y tareas deseadas para el framework de manga: catálogo y sincronización, descarga concurrente, procesado de imágenes, empaquetador CBZ y egress Komga/SFTP/webhooks. | `READY` |
 | **13** | [`013-engine-jobs-spec-app-aliases-and-yaml-modularization.md`](./013-engine-jobs-spec-app-aliases-and-yaml-modularization.md) | Refactorización del motor Flowdata: nodo de primer nivel `jobs:` en el AST, registro de alias de dominio en el Kernel (`subscriptions` -> `jobs`), directiva `include:` multi-archivo e interpolación nativa `${file:path.yaml}`. | `READY` |
+| **14** | [`014-inbound-emitter-datasources-and-reactive-dispatch.md`](./014-inbound-emitter-datasources-and-reactive-dispatch.md) | Datasources unificados con emisión reactiva de eventos (`emitRecord`), reactor push y despacho task-level con hot-reloading. | `READY` |
+| **15** | [`015-declarative-task-services-and-comptime-di.md`](./015-declarative-task-services-and-comptime-di.md) | Servicios declarativos de tareas (`defineTaskService`), inyección de dependencias comptime (`DiContainer`), desacoplamiento de Logger y empaquetado modular. | `COMPLETED` |
+| **16** | [`016-reactive-bifurcation-parallel-expansion-and-join.md`](./016-reactive-bifurcation-parallel-expansion-and-join.md) | Bifurcación reactiva de streams, auto-lifting y expansión paralela de tareas atómicas (`concurrency: N`), y join multi-canal en memoria. | `DESIGN & ARCHITECTURE SPECIFICATION` |
 
 ---
 
