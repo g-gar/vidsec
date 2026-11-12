@@ -18,12 +18,12 @@ fn createClient(alloc: Allocator, ctx: TaskContext, http_bridge: *FlowdataHttpAd
     var app_cfg = AppConfig.load(alloc, "configs/.env") catch AppConfig.load(alloc, ".env") catch AppConfig{};
     var interp = flowdata.yaml.EnvInterpolator.init(true);
     defer interp.deinit(alloc);
-    if (AppConfig.readDotEnvFile(alloc, "configs/.env")) |dotenv| {
+    if (AppConfig.readDotEnvFile(alloc, ".env")) |dotenv| {
         defer alloc.free(dotenv);
-        interp.parseDotEnv(alloc, dotenv) catch {};
-    } else if (AppConfig.readDotEnvFile(alloc, ".env")) |dotenv| {
+        if (dotenv.len > 0) interp.parseDotEnv(alloc, dotenv) catch {};
+    } else if (AppConfig.readDotEnvFile(alloc, "configs/.env")) |dotenv| {
         defer alloc.free(dotenv);
-        interp.parseDotEnv(alloc, dotenv) catch {};
+        if (dotenv.len > 0) interp.parseDotEnv(alloc, dotenv) catch {};
     }
 
     // 1. Resolve User-Agent: task param in pipeline.yaml > .env / env var > fallback
@@ -78,6 +78,11 @@ pub const MangaContext = struct {
     }
 
     pub fn deinit(_: *MangaContext) void {}
+
+    /// @Bean Factory Method: Injects HttpTransport implementation into Services declaring `http: HttpTransport`.
+    pub fn provideHttpTransport(self: *MangaContext) sdk.HttpTransport {
+        return self.http.httpTransport();
+    }
 
     /// @Bean Factory Method: Automatically discovered at comptime by Flowdata's DI engine
     /// whenever a Service declares a field `source: MangaSource`.

@@ -9,6 +9,7 @@ const dataflow = @import("flowdata_dataflow");
 
 const c_stdio = @cImport({
     @cInclude("stdio.h");
+    @cInclude("sys/stat.h");
 });
 
 pub const RunnerError = error{
@@ -43,8 +44,39 @@ pub fn readFileBytes(allocator: Allocator, path: []const u8) RunnerError![]u8 {
     return buf;
 }
 
-/// Writes `data` to `path` on disk using `libc` (`fopen`/`fwrite`).
+pub fn ensureParentDirs(allocator: Allocator, path: []const u8) void {
+    const slash_idx = std.mem.lastIndexOfScalar(u8, path, '/') orelse return;
+    if (slash_idx == 0) return;
+    const parent = path[0..slash_idx];
+
+    var it = std.mem.splitScalar(u8, parent, '/');
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(allocator);
+
+    if (parent[0] == '/') {
+        buf.append(allocator, '/') catch return;
+    }
+
+    while (it.next()) |seg| {
+        if (seg.len == 0 or std.mem.eql(u8, seg, ".")) {
+            if (seg.len > 0) {
+                buf.appendSlice(allocator, seg) catch return;
+                buf.append(allocator, '/') catch return;
+            }
+            continue;
+        }
+        buf.appendSlice(allocator, seg) catch return;
+        if (allocator.dupeZ(u8, buf.items)) |dir_z| {
+            defer allocator.free(dir_z);
+            _ = c_stdio.mkdir(dir_z.ptr, 0o755);
+        } else |_| return;
+        buf.append(allocator, '/') catch return;
+    }
+}
+
+/// Writes `data` to `path` on disk using `libc` (`fopen`/`fwrite`), ensuring parent directories exist.
 pub fn writeFileBytes(allocator: Allocator, path: []const u8, data: []const u8) RunnerError!void {
+    ensureParentDirs(allocator, path);
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
 
@@ -108,9 +140,12 @@ pub const PipelineRunner = struct {
             env_interp.scheme_resolver = &S.resolve;
         }
 
-        if (options.dotenv_path) |env_path| {
-            const env_bytes = try readFileBytes(arena, env_path);
-            try env_interp.parseDotEnv(arena, env_bytes);
+        const default_env: ?[]const u8 = if (readFileBytes(arena, ".env")) |_| ".env" else |_| null;
+        const effective_env_path = options.dotenv_path orelse default_env;
+        if (effective_env_path) |env_path| {
+            if (readFileBytes(arena, env_path)) |env_bytes| {
+                try env_interp.parseDotEnv(arena, env_bytes);
+            } else |_| {}
         }
 
         const pipeline_yaml_bytes = try readFileBytes(arena, options.pipeline_yaml_path);
@@ -250,6 +285,7 @@ pub const PipelineRunner = struct {
             &self.registry,
             &self.repos,
         );
+        defer eng.deinit();
         eng.withKernel(self.options.kernel);
 
         const input_payload = dataflow.PayloadHandle.fromSlice(u8, file_bytes);
@@ -283,6 +319,7 @@ pub const PipelineRunner = struct {
             &self.registry,
             &self.repos,
         );
+        defer eng.deinit();
         eng.withKernel(self.options.kernel);
 
         const input_payload = dataflow.PayloadHandle.fromSlice(u8, bytes);

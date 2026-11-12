@@ -12,6 +12,9 @@ pub fn main(init: std.process.Init) !u8 {
             extensions.inbound_cli.extension,
             extensions.inbound_http.extension,
             extensions.inbound_grpc.extension,
+            extensions.trace_jsonl.extension,
+            extensions.opentelemetry.extension,
+            extensions.dag_viz.extension,
         },
     });
 }

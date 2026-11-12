@@ -467,6 +467,8 @@ fn resolveDataEdges(
                 matched_any = true;
             } else if (isKnownExternalInput(sref)) {
                 // Known pipeline external input
+            } else if (isKnownDatasource(sref, ast_spec)) {
+                // Known declared datasource input
             } else if (isDeclaredInAnyPipeline(sref, ast_spec)) {
                 // Cross-pipeline reference
             } else {
@@ -505,4 +507,11 @@ fn isKnownExternalInput(sref: []const u8) bool {
         std.mem.eql(u8, sref, "primary") or
         std.mem.eql(u8, sref, "file") or
         std.mem.eql(u8, sref, "");
+}
+
+fn isKnownDatasource(sref: []const u8, ast_spec: ast.PipelineAST) bool {
+    for (ast_spec.datasources) |ds| {
+        if (std.mem.eql(u8, ds.id, sref)) return true;
+    }
+    return false;
 }

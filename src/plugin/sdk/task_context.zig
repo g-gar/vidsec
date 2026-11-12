@@ -173,22 +173,33 @@ pub const TaskContext = struct {
 
     pub fn getParamInt(self: TaskContext, key: [:0]const u8, default_val: i64) SdkError!i64 {
         const val = (try self.getParam(key)) orelse return default_val;
-        return val.asInt() orelse error.TypeMismatch;
+        if (val.asInt()) |iv| return iv;
+        if (val.asText()) |txt| return std.fmt.parseInt(i64, txt, 10) catch default_val;
+        return error.TypeMismatch;
     }
 
     pub fn getParamFloat(self: TaskContext, key: [:0]const u8, default_val: f64) SdkError!f64 {
         const val = (try self.getParam(key)) orelse return default_val;
-        return val.asFloat() orelse error.TypeMismatch;
+        if (val.asFloat()) |fv| return fv;
+        if (val.asInt()) |iv| return @floatFromInt(iv);
+        if (val.asText()) |txt| return std.fmt.parseFloat(f64, txt) catch default_val;
+        return error.TypeMismatch;
     }
 
     pub fn getParamBool(self: TaskContext, key: [:0]const u8, default_val: bool) SdkError!bool {
         const val = (try self.getParam(key)) orelse return default_val;
-        return val.asBool() orelse error.TypeMismatch;
+        if (val.asBool()) |bv| return bv;
+        if (val.asText()) |txt| {
+            if (std.mem.eql(u8, txt, "true")) return true;
+            if (std.mem.eql(u8, txt, "false")) return false;
+        }
+        return error.TypeMismatch;
     }
 
     pub fn getParamText(self: TaskContext, key: [:0]const u8, default_val: []const u8) SdkError![]const u8 {
         const val = (try self.getParam(key)) orelse return default_val;
-        return val.asText() orelse error.TypeMismatch;
+        if (val.asText()) |txt| return txt;
+        return error.TypeMismatch;
     }
 
     // --- 5. Relational Output Sink (`emit_row`) ---

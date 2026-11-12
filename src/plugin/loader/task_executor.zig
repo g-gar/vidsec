@@ -220,60 +220,84 @@ const ModuleHostState = struct {
         return .end_of_stream;
     }
 
+    fn reflectedToAbiValue(rval: dataflow.ReflectedValue, out_val: *abi.Value_ABI) bool {
+        switch (rval) {
+            .boolean => |b| {
+                out_val.* = abi.Value_ABI.fromBool(b);
+                return true;
+            },
+            .int => |iv| {
+                out_val.* = abi.Value_ABI.fromInt(iv);
+                return true;
+            },
+            .uint => |uv| {
+                out_val.* = abi.Value_ABI.fromInt(@intCast(uv));
+                return true;
+            },
+            .float => |fv| {
+                out_val.* = abi.Value_ABI.fromFloat(fv);
+                return true;
+            },
+            .string => |s| {
+                out_val.* = abi.Value_ABI.fromText(s);
+                return true;
+            },
+            .bytes => |b| {
+                out_val.* = abi.Value_ABI.fromBlob(b);
+                return true;
+            },
+            else => return false,
+        }
+    }
+
+    fn extractReflectedValue(payload: PayloadHandle, key: []const u8) ?dataflow.ReflectedValue {
+        if (payload.getReflected(key)) |rval| return rval;
+        if (payload.repr == .dynamic and payload.len > 0) {
+            const records: [*]const dataflow.DynamicRecord = @ptrCast(@alignCast(payload.ptr));
+            const rec = &records[0];
+            if (rec.getReflected(key)) |rval| return rval;
+            if (rec.getReflected("xml_data")) |rval| return rval;
+            if (rec.getReflected("value")) |rval| return rval;
+            if (rec.fields.len == 1) return rec.fields[0].value;
+        }
+        if (payload.getReflected("xml_data")) |rval| return rval;
+        if (payload.getReflected("value")) |rval| return rval;
+        return null;
+    }
+
     fn getParam(raw_ctx: *abi.TaskContext_ABI, key_ptr: [*:0]const u8, out_val: *abi.Value_ABI) callconv(.c) abi.HostError_ABI {
         const self: *@This() = @ptrCast(@alignCast(raw_ctx.opaque_host_state));
         const key = std.mem.span(key_ptr);
         for (self.params) |p| {
             if (std.mem.eql(u8, p.key, key)) {
-                if (std.mem.eql(u8, p.value, "true")) {
-                    out_val.* = abi.Value_ABI.fromBool(true);
-                    return .ok;
-                }
-                if (std.mem.eql(u8, p.value, "false")) {
-                    out_val.* = abi.Value_ABI.fromBool(false);
-                    return .ok;
-                }
-                if (std.fmt.parseInt(i64, p.value, 10)) |iv| {
-                    out_val.* = abi.Value_ABI.fromInt(iv);
-                    return .ok;
-                } else |_| {}
-                if (std.fmt.parseFloat(f64, p.value)) |fv| {
-                    out_val.* = abi.Value_ABI.fromFloat(fv);
-                    return .ok;
-                } else |_| {}
                 out_val.* = abi.Value_ABI.fromText(p.value);
                 return .ok;
             }
         }
 
+        // Check if field is present in bound_inputs (bound via inputs: in pipeline YAML)
+        for (self.bound_inputs) |bi| {
+            if (std.mem.eql(u8, bi.name, key)) {
+                if (extractReflectedValue(bi.payload, key)) |rval| {
+                    if (reflectedToAbiValue(rval, out_val)) return .ok;
+                }
+                if (bi.payload.repr == .bytes or std.mem.eql(u8, bi.payload.type_name, "u8")) {
+                    const bytes: [*]const u8 = @ptrCast(bi.payload.ptr);
+                    out_val.* = abi.Value_ABI.fromText(bytes[0..bi.payload.len]);
+                    return .ok;
+                }
+            }
+        }
+
         // Check if field is present in input_payload (propagated from previous tasks or datasources)
         if (self.input_payload.getReflected(key)) |rval| {
-            switch (rval) {
-                .boolean => |b| {
-                    out_val.* = abi.Value_ABI.fromBool(b);
-                    return .ok;
-                },
-                .int => |iv| {
-                    out_val.* = abi.Value_ABI.fromInt(iv);
-                    return .ok;
-                },
-                .uint => |uv| {
-                    out_val.* = abi.Value_ABI.fromInt(@intCast(uv));
-                    return .ok;
-                },
-                .float => |fv| {
-                    out_val.* = abi.Value_ABI.fromFloat(fv);
-                    return .ok;
-                },
-                .string => |s| {
-                    out_val.* = abi.Value_ABI.fromText(s);
-                    return .ok;
-                },
-                .bytes => |b| {
-                    out_val.* = abi.Value_ABI.fromBlob(b);
-                    return .ok;
-                },
-                else => {},
+            if (reflectedToAbiValue(rval, out_val)) return .ok;
+        }
+
+        // Check if any bound input contains the field
+        for (self.bound_inputs) |bi| {
+            if (bi.payload.getReflected(key)) |rval| {
+                if (reflectedToAbiValue(rval, out_val)) return .ok;
             }
         }
 

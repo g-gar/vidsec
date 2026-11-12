@@ -22,7 +22,10 @@ pub fn injectInputs(comptime Inputs: type, ctx: TaskContext) (SdkError || InputI
 
     inline for (info.@"struct".fields) |field| {
         const key_z: [:0]const u8 = (field.name ++ "\x00")[0..field.name.len :0];
-        @field(inputs, field.name) = try resolveField(field, ctx, key_z);
+        @field(inputs, field.name) = resolveField(field, ctx, key_z) catch |err| {
+            ctx.logErrorFmt("Field '{s}' failed resolution in inputs: {s}", .{ field.name, @errorName(err) });
+            return err;
+        };
     }
 
     return inputs;
@@ -150,7 +153,7 @@ fn convertValue(comptime T: type, val: types.Value_ABI) InputInjectorError!T {
         },
         .pointer => |ptr_info| {
             if (ptr_info.size == .slice and ptr_info.child == u8) {
-                return val.asText() orelse return error.TypeMismatch;
+                return val.asText() orelse val.asBlob() orelse return error.TypeMismatch;
             }
             @compileError("Unsupported pointer type in task inputs: " ++ @typeName(T));
         },

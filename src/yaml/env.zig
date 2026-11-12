@@ -2,6 +2,10 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const yaml = @import("lib/mod.zig");
 
+const c_stdlib = @cImport({
+    @cInclude("stdlib.h");
+});
+
 pub const EnvError = error{
     MissingRequiredEnvVar,
     MalformedEnvExpression,
@@ -74,9 +78,10 @@ pub const EnvInterpolator = struct {
                 }
             }
 
-            const owned_key = try arena.dupe(u8, key);
-            const owned_val = try arena.dupe(u8, raw_val);
-            try self.vars.put(arena, owned_key, owned_val);
+            const owned_key_z = try arena.dupeZ(u8, key);
+            const owned_val_z = try arena.dupeZ(u8, raw_val);
+            try self.vars.put(arena, owned_key_z, owned_val_z);
+            _ = c_stdlib.setenv(owned_key_z.ptr, owned_val_z.ptr, 0);
         }
     }
 

@@ -427,7 +427,15 @@ pub const Coordinator = struct {
                 }
 
                 if (self.engine.repos.get(out_ch.datasource)) |repo| {
-                    try repo.writePayload(out_ch.name, channel_payload);
+                    repo.writePayload(out_ch.name, channel_payload) catch |err| {
+                        std.log.err("[Coordinator Step '{s}'] Failed to write channel '{s}' to datasource '{s}': {s}", .{
+                            task_spec.id,
+                            out_ch.name,
+                            out_ch.datasource,
+                            @errorName(err),
+                        });
+                        return err;
+                    };
                 }
 
                 try self.outputs.put(self.outputs_alloc, out_ch.name, channel_payload);

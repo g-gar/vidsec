@@ -75,7 +75,24 @@ pub const SqliteRepository = struct {
                 try ddl_buf.appendSlice(self.allocator, reflectedSqlType(f.value));
             }
             try ddl_buf.appendSlice(self.allocator, ");");
-            try self.db.exec(ddl_buf.items);
+            self.db.exec(ddl_buf.items) catch |err| {
+                std.log.err("[SQLite writePayload] DDL exec failed: {s} | DDL: {s}", .{
+                    self.db.lastErrorMessage(),
+                    ddl_buf.items,
+                });
+                return err;
+            };
+
+            // Dynamically ensure columns exist if the table was pre-created with fewer columns
+            for (first.fields) |f| {
+                var alter_buf: [256]u8 = undefined;
+                const alter_sql = std.fmt.bufPrint(
+                    &alter_buf,
+                    "ALTER TABLE \"{s}\" ADD COLUMN \"{s}\" {s};",
+                    .{ table_name, f.name, reflectedSqlType(f.value) },
+                ) catch continue;
+                self.db.exec(alter_sql) catch {};
+            }
 
             // 2. Prepare INSERT statement
             var ins_buf = std.ArrayListUnmanaged(u8).empty;
@@ -97,7 +114,14 @@ pub const SqliteRepository = struct {
             }
             try ins_buf.appendSlice(self.allocator, ");");
 
-            var stmt = try self.db.prepare(ins_buf.items);
+            var stmt = self.db.prepare(ins_buf.items) catch |err| {
+                std.log.err("[SQLite writePayload] prepare failed for table '{s}': {s} | SQL: {s}", .{
+                    table_name,
+                    self.db.lastErrorMessage(),
+                    ins_buf.items,
+                });
+                return err;
+            };
             defer stmt.deinit();
 
             for (records) |rec| {
@@ -105,7 +129,13 @@ pub const SqliteRepository = struct {
                 for (rec.fields, 1..) |f, col_idx| {
                     try stmt.bindValue(col_idx, reflectedToSqlite(f.value));
                 }
-                try stmt.execStep();
+                stmt.execStep() catch |err| {
+                    std.log.err("[SQLite writePayload] execStep failed for table '{s}': {s}", .{
+                        table_name,
+                        self.db.lastErrorMessage(),
+                    });
+                    return err;
+                };
             }
         }
     }
@@ -203,9 +233,13 @@ pub const SqliteRepository = struct {
         if (schema_path) |spath| {
             if (flowdata.readFileBytes(allocator, spath)) |bytes| {
                 defer allocator.free(bytes);
-                var catalog = flowdata.yaml.SchemaCatalog.parseYaml(allocator, bytes, null) catch null;
+                var schema_arena = std.heap.ArenaAllocator.init(allocator);
+                defer schema_arena.deinit();
+                const arena = schema_arena.allocator();
+
+                var catalog = flowdata.yaml.SchemaCatalog.parseYaml(arena, bytes, null) catch null;
                 if (catalog) |*cat| {
-                    cat.yamlValidate(allocator) catch {};
+                    cat.yamlValidate(arena) catch {};
                     schema_provisioner.provisionCatalog(allocator, &opened_db, cat) catch {};
                 }
             } else |_| {}

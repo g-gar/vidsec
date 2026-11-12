@@ -95,12 +95,15 @@ pub const FlowdataHttpAdapter = struct {
                     .headers_ptr = if (fields.items.len > 0) fields.items.ptr else null,
                     .headers_len = fields.items.len,
                     .body = flowdata.plugin.Slice_ABI.fromSlice(body),
-                }) catch |err| return switch (err) {
-                    error.NetworkRateLimited => error.RateLimited,
-                    error.NetworkAcquireTimeout => error.Timeout,
-                    error.InvalidArgument => error.InvalidUrl,
-                    error.OutOfMemory => error.OutOfMemory,
-                    else => error.NetworkFailure,
+                }) catch |err| {
+                    task_ctx.logErrorFmt("netRequest failed for {s} '{s}': {s}", .{ method.asText(), url, @errorName(err) });
+                    return switch (err) {
+                        error.NetworkRateLimited => error.RateLimited,
+                        error.NetworkAcquireTimeout => error.Timeout,
+                        error.InvalidArgument => error.InvalidUrl,
+                        error.OutOfMemory => error.OutOfMemory,
+                        else => error.NetworkFailure,
+                    };
                 };
 
                 task_ctx.logInfoFmt("HTTP {s} {s} => status={d} len={d}", .{ method.asText(), url, res.status_code, res.body.toSlice().len });

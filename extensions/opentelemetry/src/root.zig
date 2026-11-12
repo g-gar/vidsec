@@ -232,6 +232,7 @@ pub const OpenTelemetryExtension = struct {
             fn deinitExt(ctx_ptr: *anyopaque, _: Allocator) void {
                 const s: *OpenTelemetryExtension = @ptrCast(@alignCast(ctx_ptr));
                 s.deinit();
+                global_otel_instance = null;
             }
 
             const vtable = Extension.VTable{
@@ -249,9 +250,17 @@ pub const OpenTelemetryExtension = struct {
 
 var global_otel_instance: ?OpenTelemetryExtension = null;
 
+fn getEnv(name: [*:0]const u8) ?[]const u8 {
+    const ptr = std.c.getenv(name) orelse return null;
+    return std.mem.span(ptr);
+}
+
 pub fn getGlobalOtel(allocator: Allocator) *OpenTelemetryExtension {
     if (global_otel_instance == null) {
-        global_otel_instance = OpenTelemetryExtension.init(allocator, "flowdata-service");
+        const svc_name = getEnv("OTEL_SERVICE_NAME") orelse "flowdata";
+        var inst = OpenTelemetryExtension.init(allocator, svc_name);
+        inst.export_file_path = getEnv("OTEL_EXPORTER_FILE_PATH") orelse getEnv("FLOWDATA_OTEL_OUT");
+        global_otel_instance = inst;
     }
     return &global_otel_instance.?;
 }

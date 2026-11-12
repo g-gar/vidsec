@@ -38,7 +38,9 @@ pub const YamlFileRepository = struct {
         if (root_node.asSeq()) |seq| {
             for (seq, 0..) |item, idx| {
                 const job = try yaml.parseJobEntry(arena_alloc, item, idx);
-                try jobs_list.append(arena_alloc, job);
+                if (job.enabled) {
+                    try jobs_list.append(arena_alloc, job);
+                }
             }
         } else if (root_node.asMap()) |_| {
             const j_node = root_node.get("jobs") orelse root_node.get("targets") orelse root_node.get("items");
@@ -46,7 +48,9 @@ pub const YamlFileRepository = struct {
                 if (jn.asSeq()) |seq| {
                     for (seq, 0..) |item, idx| {
                         const job = try yaml.parseJobEntry(arena_alloc, item, idx);
-                        try jobs_list.append(arena_alloc, job);
+                        if (job.enabled) {
+                            try jobs_list.append(arena_alloc, job);
+                        }
                     }
                 }
             }

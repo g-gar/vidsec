@@ -57,6 +57,13 @@ fn provisionTable(allocator: Allocator, db: *Db, table_name: []const u8, tbl: *c
             .on_update = mapFkAction(c_spec.on_update),
         } else null;
 
+        const def_val: ?ddl.DefaultSpec = if (c_spec.default_raw) |raw|
+            .{ .raw_expr = raw }
+        else if (c_spec.default_expr) |expr|
+            .{ .raw_expr = expr }
+        else
+            null;
+
         cols[idx] = .{
             .name = col_entry.key,
             .storage_type = mapColType(c_spec.col_type),
@@ -64,6 +71,7 @@ fn provisionTable(allocator: Allocator, db: *Db, table_name: []const u8, tbl: *c
             .autoincrement = c_spec.autoincrement,
             .not_null = !c_spec.nullable,
             .unique = c_spec.unique and !c_spec.pk,
+            .default_val = def_val,
             .references = fk_spec,
         };
     }

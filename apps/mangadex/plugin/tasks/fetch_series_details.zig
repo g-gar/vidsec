@@ -12,6 +12,7 @@ pub const MangaJob = struct {
 
 pub const SeriesDetails = struct {
     series_id: []const u8,
+    source_id: []const u8 = "mangadex",
     title: []const u8,
     author: ?[]const u8 = null,
     artist: ?[]const u8 = null,
@@ -20,6 +21,7 @@ pub const SeriesDetails = struct {
     cover_url: ?[]const u8 = null,
     available_languages: []const u8 = "",
     summary: ?[]const u8 = null,
+    target_chapters: []const u8 = "all",
 };
 
 pub const FetchSeriesDetailsService = struct {
@@ -42,6 +44,7 @@ pub const FetchSeriesDetailsService = struct {
 
         return SeriesDetails{
             .series_id = job.series_id,
+            .source_id = self.source.getSourceId(),
             .title = details.title,
             .author = details.author,
             .artist = details.artist,
@@ -50,6 +53,7 @@ pub const FetchSeriesDetailsService = struct {
             .cover_url = details.cover_url,
             .available_languages = langs_buf.items,
             .summary = details.summary,
+            .target_chapters = job.chapters,
         };
     }
 };

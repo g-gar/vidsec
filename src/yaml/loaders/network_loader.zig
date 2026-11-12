@@ -89,7 +89,7 @@ fn parsePolicy(alloc: Allocator, net_node: yaml_lib.Node) !ast.NetworkPolicySpec
     var policy = ast.NetworkPolicySpec{};
     var rules_list: std.ArrayListUnmanaged(ast.AllowRuleSpec) = .empty;
 
-    // Shorthand `allow_hosts: ["api.mangadex.org:443", ...]`
+    // Shorthand `allow_hosts: ["api.example.com:443", ...]`
     if (net_node.get("allow_hosts")) |ah_node| {
         if (ah_node.asSeq()) |seq| {
             for (seq) |item| {

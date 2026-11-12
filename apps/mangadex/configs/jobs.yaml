@@ -3,9 +3,31 @@
 # Externalized work item definitions separated from pipeline orchestration.
 # =============================================================================
 
-- title: "Target Manga"
+- title: "Low Orbit Human"
   datasource: mangadex
   series_id: "9d45ff11-2385-4179-8663-e0dbb0ebd792"
   languages: ["en"]
-  chapters: "all"
-  enabled: true
+  chapters: "1"
+  enabled: false # all good
+
+- title: "takopii-no-genzai"
+  datasource: mangadex
+  series_id: "162146eb-672a-4a05-b3b2-0c6303f9614e"
+  languages: ["en"]
+  chapters: "1.."
+  enabled: false # chapters are available on an external source (mangaplus)
+
+- title: "Plastic Neesan"
+  datasource: mangadex
+  series_id: "e5f26bd4-c91f-4a2f-a9bc-3791c03caf0e"
+  languages: ["en"]
+  chapters: "1..4"
+  enabled: false # all good
+
+- title: "God of Bath"
+  datasource: mangadex
+  series_id: "ce1bd461-bfbc-4dc3-9423-3ffd693b5148"
+  languages: ["en"]
+  chapters: "1..10"
+  enabled: false # chapters are not available to the public
+

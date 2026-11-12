@@ -6,7 +6,7 @@ const HostError_ABI = @import("host_error_abi.zig").HostError_ABI;
 /// Normalized around RFC 3986 URIs (`url`), `operation` (e.g. "GET", "POST", "PLAY", "CONNECT"),
 /// and optional metadata headers/body.
 pub const NetRequest_ABI = extern struct {
-    /// Target URI (e.g. "https://api.mangadex.org/manga" or "rtmps://ingest.example.com/live/ch1").
+    /// Target URI (e.g. "https://api.example.com/v1/resource" or "rtmps://ingest.example.com/live/ch1").
     url: Slice_ABI,
     /// Normalized operation/verb (e.g. "GET", "POST", "HANDSHAKE", "PLAY", "PUBLISH", "CONNECT").
     operation: Slice_ABI = Slice_ABI.fromSlice("GET"),

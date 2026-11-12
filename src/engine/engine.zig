@@ -474,7 +474,15 @@ pub const PipelineEngine = struct {
 
                         // Write to repository
                         if (self.repos.get(out_ch.datasource)) |repo| {
-                            try repo.writePayload(out_ch.name, channel_payload);
+                            repo.writePayload(out_ch.name, channel_payload) catch |err| {
+                                std.log.err("[Step '{s}'] Failed to write channel '{s}' to datasource '{s}': {s}", .{
+                                    task_spec.id,
+                                    out_ch.name,
+                                    out_ch.datasource,
+                                    @errorName(err),
+                                });
+                                return err;
+                            };
                         }
 
                         // Save channel output under channel name and scoped step_id.channel_name

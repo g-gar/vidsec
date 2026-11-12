@@ -333,6 +333,10 @@ pub const JsonlTraceExtension = struct {
 
     pub fn extension(self: *JsonlTraceExtension) Extension {
         const Trampoline = struct {
+            fn getName(_: *const anyopaque) []const u8 {
+                return "flowdata.trace_jsonl.instance";
+            }
+
             fn register(ctx_ptr: *anyopaque, k: *KernelContext) anyerror!void {
                 const s: *JsonlTraceExtension = @ptrCast(@alignCast(ctx_ptr));
                 try k.telemetry.subscribe(s.subscriber());
@@ -341,28 +345,40 @@ pub const JsonlTraceExtension = struct {
             fn deinitExt(ctx_ptr: *anyopaque, _: Allocator) void {
                 const s: *JsonlTraceExtension = @ptrCast(@alignCast(ctx_ptr));
                 s.deinit();
+                default_inst = null;
             }
 
             const vtable = Extension.VTable{
+                .name = &getName,
                 .register = &register,
                 .deinit = &deinitExt,
             };
         };
         return .{
-            .name = "flowdata.trace_jsonl",
             .ptr = self,
             .vtable = &Trampoline.vtable,
         };
     }
 };
 
-pub const extension = Extension.fromStateless("flowdata.trace_jsonl", struct {
-    var default_inst: ?JsonlTraceExtension = null;
+var default_inst: ?JsonlTraceExtension = null;
 
+fn getEnv(name: [*:0]const u8) ?[]const u8 {
+    const ptr = std.c.getenv(name) orelse return null;
+    return std.mem.span(ptr);
+}
+
+pub fn getGlobalTrace(allocator: Allocator) *JsonlTraceExtension {
+    if (default_inst == null) {
+        const out_path = getEnv("FLOWDATA_TRACE_OUT");
+        default_inst = JsonlTraceExtension.init(allocator, out_path);
+    }
+    return &default_inst.?;
+}
+
+pub const extension = Extension.fromStateless("flowdata.trace_jsonl", struct {
     fn reg(k: *KernelContext) anyerror!void {
-        if (default_inst == null) {
-            default_inst = JsonlTraceExtension.init(k.allocator, null);
-        }
-        try k.telemetry.subscribe(default_inst.?.subscriber());
+        const ext = getGlobalTrace(k.allocator);
+        try k.use(ext.extension());
     }
 }.reg);

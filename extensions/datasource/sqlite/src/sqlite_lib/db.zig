@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 
 pub const c = @cImport({
     @cInclude("sqlite3.h");
+    @cInclude("sys/stat.h");
 });
 
 pub const SqliteError = error{
@@ -90,8 +91,41 @@ pub const Db = struct {
         return openZ(":memory:", options);
     }
 
+    fn ensureParentDirs(allocator: Allocator, path: []const u8) void {
+        const slash_idx = std.mem.lastIndexOfScalar(u8, path, '/') orelse return;
+        if (slash_idx == 0) return;
+        const parent = path[0..slash_idx];
+
+        var it = std.mem.splitScalar(u8, parent, '/');
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(allocator);
+
+        if (parent[0] == '/') {
+            buf.append(allocator, '/') catch return;
+        }
+
+        while (it.next()) |seg| {
+            if (seg.len == 0 or std.mem.eql(u8, seg, ".")) {
+                if (seg.len > 0) {
+                    buf.appendSlice(allocator, seg) catch return;
+                    buf.append(allocator, '/') catch return;
+                }
+                continue;
+            }
+            buf.appendSlice(allocator, seg) catch return;
+            if (allocator.dupeZ(u8, buf.items)) |dir_z| {
+                defer allocator.free(dir_z);
+                _ = c.mkdir(dir_z.ptr, 0o755);
+            } else |_| return;
+            buf.append(allocator, '/') catch return;
+        }
+    }
+
     /// Opens a file-backed SQLite3 database (accepts a non-sentinel slice by copying to stack/temp buffer).
     pub fn openFile(allocator: Allocator, path: []const u8, options: OpenOptions) SqliteError!Db {
+        if (options.create) {
+            ensureParentDirs(allocator, path);
+        }
         const path_z = try allocator.dupeZ(u8, path);
         defer allocator.free(path_z);
         return openZ(path_z, options);

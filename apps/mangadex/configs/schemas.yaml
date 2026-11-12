@@ -23,6 +23,7 @@ schemas:
         alt_titles_json:     { type: text, nullable: true }
         genres_json:         { type: text, nullable: true }
         last_synced_at:      { type: int64, nullable: true }
+        target_chapters:     { type: text, nullable: true, default: "'all'" }
 
     # 2. Manga Chapters with Foreign Key referencing Series
     discovered_chapters:

@@ -312,7 +312,12 @@ fn parseTaskStep(alloc: Allocator, step_node: yaml_lib.Node) !TaskStepSpec {
     else
         null;
 
-    const concurrency: ?usize = if (step_node.get("concurrency")) |c|
+    const concurrency_node = step_node.get("concurrency") orelse
+        step_node.get("threads") orelse
+        step_node.get("workers") orelse
+        step_node.get("parallelism");
+
+    const concurrency: ?usize = if (concurrency_node) |c|
         if (c.asScalar()) |s|
             if (std.mem.eql(u8, s, "max") or std.mem.eql(u8, s, "auto"))
                 std.Thread.getCpuCount() catch 1

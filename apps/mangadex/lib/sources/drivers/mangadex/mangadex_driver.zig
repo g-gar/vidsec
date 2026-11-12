@@ -207,16 +207,9 @@ pub const MangaDexSource = struct {
 
     fn getChaptersBridge(ctx: *anyopaque, allocator: Allocator, source_series_id: []const u8, lang: []const u8) anyerror![]SourceChapter {
         const self: *MangaDexSource = @ptrCast(@alignCast(ctx));
-        var res = try self.client.getMangaFeed(source_series_id, .{
-            .limit = 100,
-            .translatedLanguage = &.{lang},
-            .includes = &.{"scanlation_group"},
-        });
-        defer res.deinit();
-
-        var list = try allocator.alloc(SourceChapter, res.items.len);
+        var all_chapters: std.ArrayListUnmanaged(SourceChapter) = .empty;
         errdefer {
-            for (list) |*ch| {
+            for (all_chapters.items) |*ch| {
                 if (ch.source_chapter_id.len > 0) allocator.free(ch.source_chapter_id);
                 if (ch.chapter_number.len > 0) allocator.free(ch.chapter_number);
                 if (ch.volume_number) |v| allocator.free(v);
@@ -224,41 +217,67 @@ pub const MangaDexSource = struct {
                 if (ch.language_iso.len > 0) allocator.free(ch.language_iso);
                 if (ch.scanlation_group) |g| allocator.free(g);
             }
-            allocator.free(list);
+            all_chapters.deinit(allocator);
         }
 
-        for (res.items, 0..) |item, idx| {
-            const ch_id = try allocator.dupe(u8, item.id);
-            const ch_num = try allocator.dupe(u8, item.attributes.chapter orelse "");
-            const vol = if (item.attributes.volume) |v| try allocator.dupe(u8, v) else null;
-            const title = if (item.attributes.title) |t| try allocator.dupe(u8, t) else null;
-            const lang_iso = try allocator.dupe(u8, item.attributes.translatedLanguage);
+        var offset: u32 = 0;
+        const page_limit: u32 = 100;
 
-            var group: ?[]const u8 = null;
-            for (item.relationships) |rel| {
-                if (std.mem.eql(u8, rel.type, "scanlation_group")) {
-                    if (rel.attributes) |attrs| {
-                        if (attrs == .object and attrs.object.get("name") != null) {
-                            if (attrs.object.get("name").? == .string) {
-                                group = try allocator.dupe(u8, attrs.object.get("name").?.string);
+        while (true) {
+            var res = try self.client.getMangaFeed(source_series_id, .{
+                .limit = page_limit,
+                .offset = offset,
+                .translatedLanguage = &.{lang},
+                .includes = &.{"scanlation_group"},
+                .order_chapter = "asc",
+            });
+            defer res.deinit();
+
+            if (res.items.len == 0) break;
+
+            for (res.items) |item| {
+                const ch_id = try allocator.dupe(u8, item.id);
+                errdefer allocator.free(ch_id);
+                const ch_num = try allocator.dupe(u8, item.attributes.chapter orelse "");
+                errdefer allocator.free(ch_num);
+                const vol = if (item.attributes.volume) |v| try allocator.dupe(u8, v) else null;
+                errdefer if (vol) |v| allocator.free(v);
+                const title = if (item.attributes.title) |t| try allocator.dupe(u8, t) else null;
+                errdefer if (title) |t| allocator.free(t);
+                const lang_iso = try allocator.dupe(u8, item.attributes.translatedLanguage);
+                errdefer allocator.free(lang_iso);
+
+                var group: ?[]const u8 = null;
+                for (item.relationships) |rel| {
+                    if (std.mem.eql(u8, rel.type, "scanlation_group")) {
+                        if (rel.attributes) |attrs| {
+                            if (attrs == .object and attrs.object.get("name") != null) {
+                                if (attrs.object.get("name").? == .string) {
+                                    group = try allocator.dupe(u8, attrs.object.get("name").?.string);
+                                }
                             }
                         }
+                        break;
                     }
-                    break;
                 }
+
+                try all_chapters.append(allocator, .{
+                    .source_chapter_id = ch_id,
+                    .chapter_number = ch_num,
+                    .volume_number = vol,
+                    .title = title,
+                    .language_iso = lang_iso,
+                    .scanlation_group = group,
+                });
             }
 
-            list[idx] = .{
-                .source_chapter_id = ch_id,
-                .chapter_number = ch_num,
-                .volume_number = vol,
-                .title = title,
-                .language_iso = lang_iso,
-                .scanlation_group = group,
-            };
+            offset += @intCast(res.items.len);
+            if (res.items.len < page_limit or (res.total > 0 and offset >= res.total)) {
+                break;
+            }
         }
 
-        return list;
+        return all_chapters.toOwnedSlice(allocator);
     }
 
     fn getPageUrlsBridge(ctx: *anyopaque, allocator: Allocator, source_chapter_id: []const u8) anyerror![]SourcePageUrl {

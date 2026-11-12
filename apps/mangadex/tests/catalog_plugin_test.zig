@@ -11,7 +11,7 @@ test "Catalog plugin manifest conforms to Flowdata ABI" {
     try std.testing.expectEqual(abi.FLOWDATA_ABI_VERSION, manifest.abi_version);
     try std.testing.expectEqualStrings("manga_catalog", manifest.nameSlice());
     try std.testing.expectEqual(@as(u32, 1), manifest.module_version.major);
-    try std.testing.expectEqual(@as(usize, 3), manifest.tasks_len);
+    try std.testing.expectEqual(@as(usize, 8), manifest.tasks_len);
 
     // Verify task discovery
     const t_details = manifest.findTask("fetch_series_details");
@@ -35,6 +35,12 @@ test "Catalog plugin manifest conforms to Flowdata ABI" {
     try std.testing.expect(t_pages.?.declaresOutputField("source_chapter_id"));
     try std.testing.expect(t_pages.?.declaresOutputField("page_number"));
     try std.testing.expect(t_pages.?.declaresOutputField("url"));
+
+    try std.testing.expect(manifest.findTask("download_chapter_page") != null);
+    try std.testing.expect(manifest.findTask("detect_content_type") != null);
+    try std.testing.expect(manifest.findTask("analyze_image") != null);
+    try std.testing.expect(manifest.findTask("generate_comicinfo") != null);
+    try std.testing.expect(manifest.findTask("build_cbz_archive") != null);
 }
 
 // Mock TaskContext for execution testing
@@ -359,4 +365,498 @@ test "FetchSeriesDetailsService: DI injection via TestContainer" {
     const details = try service.execute(test_alloc, job);
     try std.testing.expectEqualStrings("test-di-series", details.series_id);
     try std.testing.expectEqualStrings("Mock Chainsaw Man", details.title);
+}
+
+// ---------------------------------------------------------------------------
+// Tests for DownloadChapterPageService
+// ---------------------------------------------------------------------------
+
+const MockPageHttpTransport = struct {
+    status_code: u16 = 200,
+    response_body: []const u8 = "\x89PNG\r\n\x1a\nfake-png-binary-stream",
+
+    pub fn httpTransport(self: *MockPageHttpTransport) sdk.HttpTransport {
+        return .{
+            .ptr = self,
+            .vtable = &.{ .execute = executeMock },
+        };
+    }
+
+    fn executeMock(
+        ctx: *anyopaque,
+        _: std.mem.Allocator,
+        _: sdk.HttpMethod,
+        _: []const u8,
+        _: []const sdk.HttpHeader,
+        _: []const u8,
+    ) sdk.HttpTransportError!sdk.HttpResponse {
+        const self: *MockPageHttpTransport = @ptrCast(@alignCast(ctx));
+        if (self.status_code == 0) return error.NetworkFailure;
+        return .{
+            .status_code = self.status_code,
+            .body = self.response_body,
+        };
+    }
+};
+
+test "DownloadChapterPageService: direct execution downloads raw bytes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const test_alloc = arena.allocator();
+
+    var mock_http = MockPageHttpTransport{
+        .response_body = "\x89PNG\r\n\x1a\nraw-png-bytes",
+    };
+
+    var service = catalog.DownloadChapterPageService{
+        .http = mock_http.httpTransport(),
+        .logger = abi.Logger.noop(),
+    };
+
+    const item = catalog.ChapterPageItem{
+        .source_chapter_id = "chap-123",
+        .page_number = 1,
+        .url = "https://cdn.mangadex.org/data/hash/1-png.png",
+    };
+
+    const downloaded = try service.execute(test_alloc, item);
+    try std.testing.expectEqualStrings("chap-123", downloaded.source_chapter_id);
+    try std.testing.expectEqual(@as(u32, 1), downloaded.page_number);
+    try std.testing.expectEqualStrings("https://cdn.mangadex.org/data/hash/1-png.png", downloaded.url);
+    try std.testing.expectEqualStrings("\x89PNG\r\n\x1a\nraw-png-bytes", downloaded.image_data);
+}
+
+test "DownloadChapterPageService: error on HTTP 404 or empty URL" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const test_alloc = arena.allocator();
+
+    var mock_http = MockPageHttpTransport{
+        .status_code = 404,
+    };
+
+    var service = catalog.DownloadChapterPageService{
+        .http = mock_http.httpTransport(),
+        .logger = abi.Logger.noop(),
+    };
+
+    const item = catalog.ChapterPageItem{
+        .source_chapter_id = "chap-123",
+        .page_number = 1,
+        .url = "https://cdn.mangadex.org/data/missing.jpg",
+    };
+
+    try std.testing.expectError(error.HttpDownloadFailed, service.execute(test_alloc, item));
+
+    // Empty URL error
+    const empty_item = catalog.ChapterPageItem{
+        .source_chapter_id = "chap-123",
+        .page_number = 1,
+        .url = "",
+    };
+    try std.testing.expectError(error.EmptyPageUrl, service.execute(test_alloc, empty_item));
+}
+
+test "DownloadChapterPageService: DI injection via TestContainer" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const test_alloc = arena.allocator();
+
+    const TestContext = struct {
+        mock_http: MockPageHttpTransport = .{},
+        logger: abi.Logger = abi.Logger.noop(),
+
+        pub fn provideHttpTransport(self: *@This()) sdk.HttpTransport {
+            return self.mock_http.httpTransport();
+        }
+    };
+    const TestContainer = abi.DiContainer(TestContext);
+
+    var test_ctx = TestContext{};
+    const item = catalog.ChapterPageItem{
+        .source_chapter_id = "chap-di",
+        .page_number = 5,
+        .url = "https://example.com/page5.png",
+    };
+
+    var service = try TestContainer.inject(
+        catalog.DownloadChapterPageService,
+        &test_ctx,
+        test_alloc,
+        item,
+    );
+
+    const downloaded = try service.execute(test_alloc, item);
+    try std.testing.expectEqualStrings("chap-di", downloaded.source_chapter_id);
+    try std.testing.expectEqual(@as(u32, 5), downloaded.page_number);
+    try std.testing.expectEqualStrings("https://example.com/page5.png", downloaded.url);
+}
+
+// ---------------------------------------------------------------------------
+// Tests for DetectContentTypeService
+// ---------------------------------------------------------------------------
+
+test "DetectContentTypeService: detect magic bytes for PNG, JPEG, WebP, GIF" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const test_alloc = arena.allocator();
+
+    var service = catalog.DetectContentTypeService{
+        .logger = abi.Logger.noop(),
+    };
+
+    // PNG
+    const png_item = catalog.DownloadedPageItem{
+        .source_chapter_id = "chap-1",
+        .page_number = 1,
+        .url = "https://example.com/1",
+        .image_data = "\x89PNG\r\n\x1a\nraw-png-data",
+    };
+    const png_res = try service.execute(test_alloc, png_item);
+    try std.testing.expectEqualStrings("image/png", png_res.content_type);
+
+    // JPEG
+    const jpeg_item = catalog.DownloadedPageItem{
+        .source_chapter_id = "chap-1",
+        .page_number = 2,
+        .url = "https://example.com/2",
+        .image_data = "\xff\xd8\xff\xe0raw-jpeg-data",
+    };
+    const jpeg_res = try service.execute(test_alloc, jpeg_item);
+    try std.testing.expectEqualStrings("image/jpeg", jpeg_res.content_type);
+
+    // WebP
+    const webp_item = catalog.DownloadedPageItem{
+        .source_chapter_id = "chap-1",
+        .page_number = 3,
+        .url = "https://example.com/3",
+        .image_data = "RIFF\x00\x00\x00\x00WEBPVP8Xraw-webp",
+    };
+    const webp_res = try service.execute(test_alloc, webp_item);
+    try std.testing.expectEqualStrings("image/webp", webp_res.content_type);
+
+    // Unknown fallback
+    const unknown_item = catalog.DownloadedPageItem{
+        .source_chapter_id = "chap-1",
+        .page_number = 4,
+        .url = "https://example.com/4",
+        .image_data = "random-binary-noise-data",
+    };
+    const unknown_res = try service.execute(test_alloc, unknown_item);
+    try std.testing.expectEqualStrings("application/octet-stream", unknown_res.content_type);
+
+    // Static helper direct invocation
+    try std.testing.expectEqualStrings("image/gif", catalog.DetectContentTypeService.detect("GIF89a..."));
+}
+
+test "DetectContentTypeService: DI injection via TestContainer" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const test_alloc = arena.allocator();
+
+    const TestContext = struct {
+        logger: abi.Logger = abi.Logger.noop(),
+    };
+    const TestContainer = abi.DiContainer(TestContext);
+
+    var test_ctx = TestContext{};
+    const item = catalog.DownloadedPageItem{
+        .source_chapter_id = "chap-di",
+        .page_number = 1,
+        .url = "https://example.com/1",
+        .image_data = "\x89PNG\r\n\x1a\npng-bytes",
+    };
+
+    var service = try TestContainer.inject(
+        catalog.DetectContentTypeService,
+        &test_ctx,
+        test_alloc,
+        item,
+    );
+
+    const res = try service.execute(test_alloc, item);
+    try std.testing.expectEqualStrings("image/png", res.content_type);
+}
+
+// ---------------------------------------------------------------------------
+// Tests for AnalyzeImageService (Simulated Static Image Analysis)
+// ---------------------------------------------------------------------------
+
+test "AnalyzeImageService: direct execution uses configurable parameters without hardcoding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const test_alloc = arena.allocator();
+
+    var service = catalog.AnalyzeImageService{
+        .logger = abi.Logger.noop(),
+    };
+
+    const input_page = catalog.PageWithContentType{
+        .source_chapter_id = "chap-sim-1",
+        .page_number = 3,
+        .url = "https://cdn.example.org/p3.png",
+        .image_data = "\x89PNG\r\n\x1a\nsample-image-bytes",
+        .content_type = "image/png",
+    };
+
+    // 1. With explicit dimensions from pipeline params
+    const analyzed = try service.execute(test_alloc, .{
+        .item = input_page,
+        .default_width = 1600,
+        .default_height = 2400,
+    });
+    try std.testing.expectEqualStrings("chap-sim-1", analyzed.source_chapter_id);
+    try std.testing.expectEqual(@as(u32, 3), analyzed.page_number);
+    try std.testing.expectEqualStrings("https://cdn.example.org/p3.png", analyzed.url);
+    try std.testing.expectEqualStrings("image/png", analyzed.content_type);
+    try std.testing.expectEqual(@as(u32, 1600), analyzed.width);
+    try std.testing.expectEqual(@as(u32, 2400), analyzed.height);
+    try std.testing.expect(!analyzed.is_double_page);
+
+    // 2. Without params: dimensions remain 0, no hardcoded magic numbers
+    const unconfigured = try service.execute(test_alloc, .{
+        .item = input_page,
+    });
+    try std.testing.expectEqual(@as(u32, 0), unconfigured.width);
+    try std.testing.expectEqual(@as(u32, 0), unconfigured.height);
+
+    // Empty payload error
+    const empty_page = catalog.PageWithContentType{
+        .source_chapter_id = "chap-sim-1",
+        .page_number = 4,
+        .url = "https://cdn.example.org/p4.png",
+        .image_data = "",
+        .content_type = "image/png",
+    };
+    try std.testing.expectError(error.EmptyImagePayload, service.execute(test_alloc, .{ .item = empty_page }));
+}
+
+test "AnalyzeImageService: DI injection via TestContainer" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const test_alloc = arena.allocator();
+
+    const TestContext = struct {
+        logger: abi.Logger = abi.Logger.noop(),
+    };
+    const TestContainer = abi.DiContainer(TestContext);
+
+    var test_ctx = TestContext{};
+    const item = catalog.PageWithContentType{
+        .source_chapter_id = "chap-analyze-di",
+        .page_number = 7,
+        .url = "https://example.com/p7.webp",
+        .image_data = "RIFF....WEBP...",
+        .content_type = "image/webp",
+    };
+    const inputs = catalog.AnalyzeImageInputs{
+        .item = item,
+        .default_width = 1400,
+        .default_height = 2100,
+    };
+
+    var service = try TestContainer.inject(
+        catalog.AnalyzeImageService,
+        &test_ctx,
+        test_alloc,
+        inputs,
+    );
+
+    const analyzed = try service.execute(test_alloc, inputs);
+    try std.testing.expectEqualStrings("chap-analyze-di", analyzed.source_chapter_id);
+    try std.testing.expectEqual(@as(u32, 7), analyzed.page_number);
+    try std.testing.expectEqual(@as(u32, 1400), analyzed.width);
+    try std.testing.expectEqual(@as(u32, 2100), analyzed.height);
+}
+
+// ---------------------------------------------------------------------------
+// Tests for GenerateComicInfoService
+// ---------------------------------------------------------------------------
+
+test "GenerateComicInfoService: generates valid ComicInfo.xml" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const test_alloc = arena.allocator();
+
+    var service = catalog.GenerateComicInfoService{
+        .logger = abi.Logger.noop(),
+    };
+
+    const inputs = catalog.GenerateComicInfoInputs{
+        .series_title = "Chainsaw Man",
+        .chapter_number = "101",
+        .chapter_title = "Early Bird",
+        .volume_number = "12",
+        .writer = "Tatsuki Fujimoto",
+        .genre = "Action, Horror",
+        .page_count = 19,
+        .language = "es",
+        .manga_type = "YesAndRightToLeft",
+    };
+
+    const out = try service.execute(test_alloc, inputs);
+    try std.testing.expect(out.xml_data.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, out.xml_data, "<Series>Chainsaw Man</Series>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.xml_data, "<Number>101</Number>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.xml_data, "<Writer>Tatsuki Fujimoto</Writer>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.xml_data, "<PageCount>19</PageCount>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.xml_data, "<LanguageISO>es</LanguageISO>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.xml_data, "<Manga>YesAndRightToLeft</Manga>") != null);
+}
+
+// ---------------------------------------------------------------------------
+// Tests for BuildCbzArchiveService
+// ---------------------------------------------------------------------------
+
+test "BuildCbzArchiveService: builds readable CBZ archive with ComicInfo.xml and pages" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const test_alloc = arena.allocator();
+
+    const cbz_path = "/tmp/test_build_cbz_service.cbz";
+    _ = std.c.unlink(cbz_path);
+    defer _ = std.c.unlink(cbz_path);
+
+    var service = catalog.BuildCbzArchiveService{
+        .logger = abi.Logger.noop(),
+    };
+
+    const pages = [_]catalog.PageWithContentType{
+        .{
+            .source_chapter_id = "ch-cbz-1",
+            .page_number = 1,
+            .url = "https://cdn.example.com/1.png",
+            .image_data = "\x89PNG\r\n\x1a\npage-1-bytes",
+            .content_type = "image/png",
+        },
+        .{
+            .source_chapter_id = "ch-cbz-1",
+            .page_number = 2,
+            .url = "https://cdn.example.com/2.jpg",
+            .image_data = "\xff\xd8\xff\xe0page-2-bytes",
+            .content_type = "image/jpeg",
+        },
+    };
+
+    const comic_xml = "<ComicInfo><Series>Test</Series><Number>1</Number></ComicInfo>";
+
+    const out = try service.execute(test_alloc, .{
+        .pages = &pages,
+        .comic_info_xml = comic_xml,
+        .output_path = cbz_path,
+    });
+
+    try std.testing.expectEqualStrings(cbz_path, out.archive_path);
+    try std.testing.expectEqual(@as(u32, 2), out.total_pages);
+    try std.testing.expect(out.file_size_bytes > 0);
+
+    // Verify reading archive back with ZipArchiveReader
+    const zip_archive = @import("zip_archive");
+    var reader = try zip_archive.ZipArchiveReader.openFile(test_alloc, cbz_path);
+    defer reader.deinit();
+
+    // 1 XML + 2 image pages = 3 entries
+    try std.testing.expectEqual(@as(usize, 3), reader.getNumFiles());
+
+    var name_buf: [128]u8 = undefined;
+    const name0 = (try reader.getFileName(0, &name_buf)).?;
+    try std.testing.expectEqualStrings("ComicInfo.xml", name0);
+
+    const name1 = (try reader.getFileName(1, &name_buf)).?;
+    try std.testing.expectEqualStrings("001.png", name1);
+
+    const name2 = (try reader.getFileName(2, &name_buf)).?;
+    try std.testing.expectEqualStrings("002.jpg", name2);
+}
+
+test "BuildCbzArchiveService: resolves {chapter} placeholder in output_dir" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const test_alloc = arena.allocator();
+
+    const expected_cbz = "/tmp/test_dir_templating/42/chapter_42.cbz";
+    _ = std.c.unlink(expected_cbz);
+    defer _ = std.c.unlink(expected_cbz);
+
+    var service = catalog.BuildCbzArchiveService{
+        .logger = abi.Logger.noop(),
+    };
+
+    const pages = [_]catalog.PageWithContentType{
+        .{
+            .source_chapter_id = "ch-cbz-42",
+            .chapter_number = "42",
+            .page_number = 1,
+            .url = "https://cdn.example.com/1.png",
+            .image_data = "\x89PNG\r\n\x1a\npage-1-bytes",
+            .content_type = "image/png",
+        },
+    };
+
+    const out = try service.execute(test_alloc, .{
+        .pages = &pages,
+        .output_dir = "/tmp/test_dir_templating/{chapter}",
+    });
+
+    try std.testing.expectEqualStrings(expected_cbz, out.archive_path);
+    try std.testing.expectEqual(@as(u32, 1), out.total_pages);
+}
+
+test "matchesChapterFilter handles ranges, slices, and exact matches" {
+    const matches = catalog.task_chapters.matchesChapterFilter;
+
+    // All / wildcard
+    try std.testing.expect(matches("1", "all"));
+    try std.testing.expect(matches("99", "*"));
+    try std.testing.expect(matches("3.5", ""));
+
+    // Exact matches and comma-separated
+    try std.testing.expect(matches("1", "1"));
+    try std.testing.expect(matches("2", "1, 2, 3"));
+    try std.testing.expect(!matches("4", "1, 2, 3"));
+
+    // Slice / open-ended range from N to end ("2:", "2..", "2-")
+    try std.testing.expect(!matches("1", "2:"));
+    try std.testing.expect(matches("2", "2:"));
+    try std.testing.expect(matches("2.5", "2:"));
+    try std.testing.expect(matches("100", "2:"));
+
+    try std.testing.expect(!matches("1", "2.."));
+    try std.testing.expect(matches("2", "2.."));
+    try std.testing.expect(matches("100", "2.."));
+
+    try std.testing.expect(!matches("1", "2-"));
+    try std.testing.expect(matches("2", "2-"));
+    try std.testing.expect(matches("100", "2-"));
+
+    // Bounded inclusive ranges ("2:5", "2..5", "2...5", "2-5") - both bounds included
+    try std.testing.expect(!matches("1", "2:5"));
+    try std.testing.expect(matches("2", "2:5"));
+    try std.testing.expect(matches("3.5", "2..5"));
+    try std.testing.expect(matches("5", "2..5"));
+    try std.testing.expect(matches("2", "2...5"));
+    try std.testing.expect(matches("5", "2...5"));
+    try std.testing.expect(matches("2", "2-5"));
+    try std.testing.expect(matches("5", "2-5"));
+    try std.testing.expect(!matches("6", "2-5"));
+
+    // Open-ended range from start to N (":5", "..5", "-5")
+    try std.testing.expect(matches("1", ":5"));
+    try std.testing.expect(matches("5", "..5"));
+    try std.testing.expect(!matches("5.1", "-5"));
+
+    // User-friendly "+" suffix and comparison operators
+    try std.testing.expect(!matches("1", "2+"));
+    try std.testing.expect(matches("2", "2+"));
+    try std.testing.expect(matches("100", "2+"));
+
+    try std.testing.expect(matches("2", ">=2"));
+    try std.testing.expect(!matches("1.9", ">=2"));
+    try std.testing.expect(!matches("2", ">2"));
+    try std.testing.expect(matches("2.1", ">2"));
+
+    try std.testing.expect(matches("5", "<=5"));
+    try std.testing.expect(!matches("5.1", "<=5"));
+    try std.testing.expect(!matches("5", "<5"));
+    try std.testing.expect(matches("4.9", "<5"));
 }

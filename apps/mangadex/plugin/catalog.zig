@@ -11,6 +11,11 @@ pub const MangaPluginContainer = container.MangaPluginContainer;
 pub const task_details = @import("tasks/fetch_series_details.zig");
 pub const task_chapters = @import("tasks/fetch_chapters.zig");
 pub const task_pages = @import("tasks/fetch_chapter_pages.zig");
+pub const task_download = @import("tasks/download_chapter_page.zig");
+pub const task_detect = @import("tasks/detect_content_type.zig");
+pub const task_analyze = @import("tasks/analyze_image.zig");
+pub const task_comicinfo = @import("tasks/generate_comicinfo.zig");
+pub const task_cbz = @import("tasks/build_cbz_archive.zig");
 
 // DTOs & Services
 pub const MangaJob = task_details.MangaJob;
@@ -24,6 +29,24 @@ pub const FetchChaptersService = task_chapters.FetchChaptersService;
 pub const FetchChapterPagesInputs = task_pages.FetchChapterPagesInputs;
 pub const ChapterPageItem = task_pages.ChapterPageItem;
 pub const FetchChapterPagesService = task_pages.FetchChapterPagesService;
+
+pub const DownloadedPageItem = task_download.DownloadedPageItem;
+pub const DownloadChapterPageService = task_download.DownloadChapterPageService;
+
+pub const PageWithContentType = task_detect.PageWithContentType;
+pub const DetectContentTypeService = task_detect.DetectContentTypeService;
+
+pub const AnalyzeImageInputs = task_analyze.AnalyzeImageInputs;
+pub const AnalyzedPageItem = task_analyze.AnalyzedPageItem;
+pub const AnalyzeImageService = task_analyze.AnalyzeImageService;
+
+pub const GenerateComicInfoInputs = task_comicinfo.GenerateComicInfoInputs;
+pub const ComicInfoOutput = task_comicinfo.ComicInfoOutput;
+pub const GenerateComicInfoService = task_comicinfo.GenerateComicInfoService;
+
+pub const BuildCbzArchiveInputs = task_cbz.BuildCbzArchiveInputs;
+pub const CbzArchiveOutput = task_cbz.CbzArchiveOutput;
+pub const BuildCbzArchiveService = task_cbz.BuildCbzArchiveService;
 
 // Backward-compatible runner functions
 pub fn runFetchSeriesDetails(alloc: Allocator, ctx: TaskContext, job: MangaJob) !SeriesDetails {
@@ -51,6 +74,30 @@ pub const tasks = [_]abi.TaskDescriptor_ABI{
     MangaPluginContainer.defineTaskService(FetchChapterPagesService, .{
         .name = "fetch_chapter_pages",
         .description = "Retrieves page URLs and metadata for a specific chapter from configured MangaSource",
+        .lift = .elemental,
+    }),
+    MangaPluginContainer.defineTaskService(DownloadChapterPageService, .{
+        .name = "download_chapter_page",
+        .description = "Downloads a comic page image over HTTP with error recovery",
+        .lift = .elemental,
+    }),
+    MangaPluginContainer.defineTaskService(DetectContentTypeService, .{
+        .name = "detect_content_type",
+        .description = "Inspects magic bytes to detect standard image formats (PNG, JPEG, WebP, GIF)",
+        .lift = .elemental,
+    }),
+    MangaPluginContainer.defineTaskService(AnalyzeImageService, .{
+        .name = "analyze_image",
+        .description = "Simulates static image analysis and spread detection using configurable parameters",
+        .lift = .elemental,
+    }),
+    MangaPluginContainer.defineTaskService(GenerateComicInfoService, .{
+        .name = "generate_comicinfo",
+        .description = "Generates standard Anansi ComicInfo XML metadata buffer for a chapter",
+    }),
+    MangaPluginContainer.defineTaskService(BuildCbzArchiveService, .{
+        .name = "build_cbz_archive",
+        .description = "Bundles page images and ComicInfo.xml into a standard .cbz archive using STORE compression",
     }),
 };
 

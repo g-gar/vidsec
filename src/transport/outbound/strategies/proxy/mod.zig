@@ -76,9 +76,9 @@ test "ProxySelectorStrategy: polymorphic strategies and CircuitBreaker" {
     // 1. Round Robin
     const rr = try reg.instantiate("round_robin");
     defer rr.deinit(testing.allocator);
-    try testing.expectEqual(@as(?usize, 0), rr.select(&endpoints, cb, "api.mangadex.org", 1000));
-    try testing.expectEqual(@as(?usize, 1), rr.select(&endpoints, cb, "api.mangadex.org", 1000));
-    try testing.expectEqual(@as(?usize, 0), rr.select(&endpoints, cb, "api.mangadex.org", 1000));
+    try testing.expectEqual(@as(?usize, 0), rr.select(&endpoints, cb, "api.example.com", 1000));
+    try testing.expectEqual(@as(?usize, 1), rr.select(&endpoints, cb, "api.example.com", 1000));
+    try testing.expectEqual(@as(?usize, 0), rr.select(&endpoints, cb, "api.example.com", 1000));
 
     // 2. Smooth Weighted (3:1 over 4 calls)
     const sw = try reg.instantiate("weighted");
@@ -86,7 +86,7 @@ test "ProxySelectorStrategy: polymorphic strategies and CircuitBreaker" {
     var count0: usize = 0;
     var count1: usize = 0;
     for (0..4) |_| {
-        const idx = sw.select(&endpoints, cb, "api.mangadex.org", 1000).?;
+        const idx = sw.select(&endpoints, cb, "api.example.com", 1000).?;
         if (idx == 0) count0 += 1 else count1 += 1;
     }
     try testing.expectEqual(@as(usize, 3), count0);
@@ -95,7 +95,7 @@ test "ProxySelectorStrategy: polymorphic strategies and CircuitBreaker" {
     // 3. Sticky Host
     const sh = try reg.instantiate("sticky_host");
     defer sh.deinit(testing.allocator);
-    const h1 = sh.select(&endpoints, cb, "uploads.mangadex.org", 1000).?;
-    const h2 = sh.select(&endpoints, cb, "uploads.mangadex.org", 1000).?;
+    const h1 = sh.select(&endpoints, cb, "cdn.example.com", 1000).?;
+    const h2 = sh.select(&endpoints, cb, "cdn.example.com", 1000).?;
     try testing.expectEqual(h1, h2);
 }
