@@ -50,6 +50,8 @@ pub const RoutingContext = struct {
     modules: *const modules_mod.ModuleRegistry,
     ambient: *const AmbientContext,
     repos: ?*const repository.RepositoryRegistry = null,
+    active_mask: ?[]const bool = null,
+    external_outputs: ?*const std.StringHashMapUnmanaged(PayloadHandle) = null,
 };
 
 /// Type-erased RoutingStrategy interface following the Flowdata ptr + vtable contract.

@@ -16,6 +16,9 @@ pub const RecordEmitter = reactor.RecordEmitter;
 pub const PushReactor = reactor.PushReactor;
 pub const router = @import("router.zig");
 pub const ReactiveRouter = router.ReactiveRouter;
+pub const routing = @import("routing/mod.zig");
+pub const RoutingStrategy = routing.RoutingStrategy;
+pub const RouterRegistry = routing.RouterRegistry;
 
 pub const PipelineAST = ast_mod.PipelineAST;
 pub const ModuleRegistry = modules_mod.ModuleRegistry;
@@ -138,6 +141,7 @@ pub const PipelineEngine = struct {
     workers: usize = 1,
     outputs_arena: std.heap.ArenaAllocator,
     ambient: AmbientContext,
+    routers: RouterRegistry,
 
     pub fn init(
         allocator: Allocator,
@@ -157,11 +161,42 @@ pub const PipelineEngine = struct {
             .workers = w,
             .outputs_arena = std.heap.ArenaAllocator.init(allocator),
             .ambient = AmbientContext.init(allocator),
+            .routers = RouterRegistry.init(allocator),
         };
     }
 
     pub fn deinit(self: *PipelineEngine) void {
+        self.routers.deinit();
         self.outputs_arena.deinit();
+    }
+
+    pub fn withRouter(self: *PipelineEngine, name: []const u8, factory: routing.RouterFactoryFn) !void {
+        try self.routers.register(name, factory);
+    }
+
+    pub fn createRoutingStrategyForPipeline(
+        self: *PipelineEngine,
+        pipe: ast_mod.PipelineDecl,
+        active_mask: ?[]const bool,
+        external_outputs: ?*const std.StringHashMapUnmanaged(PayloadHandle),
+    ) anyerror!RoutingStrategy {
+        if (!self.routers.has("directed")) {
+            try self.routers.register("directed", routing.DirectedRouter.factory);
+        }
+        if (!self.routers.has("type_driven")) {
+            try self.routers.register("type_driven", routing.TypeDrivenRouter.factory);
+        }
+        const mode = pipe.routing orelse self.ast.runtime.routing;
+        return self.routers.createForMode(mode, .{
+            .allocator = self.allocator,
+            .ast = self.ast,
+            .pipeline = pipe,
+            .modules = self.modules,
+            .ambient = &self.ambient,
+            .repos = self.repos,
+            .active_mask = active_mask,
+            .external_outputs = external_outputs,
+        });
     }
 
     pub fn withAmbient(self: *PipelineEngine, amb: AmbientContext) void {
@@ -372,281 +407,27 @@ pub const PipelineEngine = struct {
         var exec_plan = try compilePlan(self.allocator, pipe, self.ast);
         defer exec_plan.deinit();
 
-        if (self.ast.runtime.scheduler == .dag and pool != null and exec_plan.nodes.len > 1) {
-            try Coordinator.runSelective(self, &exec_plan, active_mask, active_input, outputs, outputs_alloc, net_ctrl, summary, trace_id, parent_span_id, pool.?);
-            return;
-        }
+        var strategy = try self.createRoutingStrategyForPipeline(pipe, active_mask, outputs);
+        defer strategy.deinit();
 
-        var current_input = active_input;
+        const exec_pool: ?*WorkerPool = if (self.ast.runtime.scheduler == .dag and pool != null and exec_plan.nodes.len > 1)
+            pool.?
+        else
+            null;
 
-        for (exec_plan.topological_order) |node_idx| {
-            if (active_mask) |mask| {
-                if (!mask[node_idx]) continue;
-            }
-            if (summary.halted_early) break;
-            const step = exec_plan.nodes[node_idx].step;
-
-            switch (step) {
-                .task => |task_spec| {
-                    var step_span_id: [8]u8 = undefined;
-                    fillRandomBytes(&step_span_id);
-                    const step_start_ns: u64 = nowNs();
-
-                    // Resolve input stream expressions via Dataflow algebra (ARCH-016 multi-input support)
-                    var step_input = current_input;
-                    var bound_inputs_list: std.ArrayListUnmanaged(modules_mod.BoundInput) = .empty;
-                    var short_circuited = false;
-                    if (task_spec.inputs.len > 0) {
-                        for (task_spec.inputs) |in_binding| {
-                            var resolved_payload = try self.resolveStreamExpr(in_binding.expr, current_input, outputs);
-                            if (in_binding.where_filter) |wf| {
-                                resolved_payload = try dataflow.predicate.filterPayload(self.allocator, resolved_payload, wf);
-                                if (resolved_payload.len == 0) {
-                                    // ARCH-018: Short-circuit rejection: unary where: condition not met.
-                                    short_circuited = true;
-                                    break;
-                                }
-                            }
-                            try bound_inputs_list.append(outputs_alloc, .{
-                                .name = in_binding.param_name,
-                                .payload = resolved_payload,
-                            });
-                            if (std.mem.eql(u8, in_binding.param_name, "primary") or std.mem.eql(u8, in_binding.param_name, "stream")) {
-                                step_input = resolved_payload;
-                            }
-                        }
-                    }
-                    if (short_circuited) continue;
-
-                    try bound_inputs_list.append(outputs_alloc, .{
-                        .name = "stream",
-                        .payload = current_input,
-                    });
-                    try bound_inputs_list.append(outputs_alloc, .{
-                        .name = "input",
-                        .payload = current_input,
-                    });
-
-                    // Innate ambient merge (ARCH-018 §3.2)
-                    if (try self.ambient.asPayload(outputs_alloc, "system.timestamp")) |ts_p| {
-                        try bound_inputs_list.append(outputs_alloc, .{ .name = "system.timestamp", .payload = ts_p });
-                        try bound_inputs_list.append(outputs_alloc, .{ .name = "timestamp", .payload = ts_p });
-                    }
-                    if (try self.ambient.asPayload(outputs_alloc, "system.hour")) |hr_p| {
-                        try bound_inputs_list.append(outputs_alloc, .{ .name = "system.hour", .payload = hr_p });
-                        try bound_inputs_list.append(outputs_alloc, .{ .name = "hour", .payload = hr_p });
-                    }
-                    if (try self.ambient.asPayload(outputs_alloc, "system.cpu_load")) |cpu_p| {
-                        try bound_inputs_list.append(outputs_alloc, .{ .name = "system.cpu_load", .payload = cpu_p });
-                        try bound_inputs_list.append(outputs_alloc, .{ .name = "cpu_load", .payload = cpu_p });
-                    }
-
-                    if (self.kernel) |k| {
-                        k.telemetry.emit(.{
-                            .step_start = .{
-                                .trace_id = trace_id,
-                                .span_id = step_span_id,
-                                .parent_span_id = parent_span_id,
-                                .timestamp_ns = step_start_ns,
-                                .pipeline_name = name,
-                                .step_id = task_spec.id,
-                                .module_name = task_spec.module,
-                                .task_name = task_spec.task,
-                                .input_count = step_input.len,
-                            },
-                        });
-                    }
-
-                    // Apply step-level declarative predicate filter if configured
-                    if (task_spec.where_filter) |filter_expr| {
-                        step_input = try dataflow.predicate.filterPayload(self.allocator, step_input, filter_expr);
-                    }
-
-                    // Resolve task-scoped primary virtual network adapter via EngineNetworkController
-                    const step_adapter = try net_ctrl.resolveStepAdapter(task_spec);
-                    const records_before = step_adapter.capturedRecordsSlice().len;
-
-                    // Resolve task descriptor from module registry
-                    const desc = try self.modules.resolveTask(task_spec.module, task_spec.task);
-
-                    const byte_count = step_input.len * step_input.element_size;
-                    const input_bytes: []const u8 = if (byte_count > 0)
-                        @as([*]const u8, @ptrCast(step_input.ptr))[0..byte_count]
-                    else
-                        &.{};
-
-                    var step_net_ctx = StepNetworkContext{
-                        .step_id = task_spec.id,
-                        .task_name = task_spec.task,
-                        .primary_adapter = step_adapter,
-                        .net_ctrl = net_ctrl,
-                    };
-
-                    const workers: u32 = if (task_spec.concurrency) |c| @intCast(c) else @intCast(self.workers);
-                    const outcome = modules_mod.executeTask(desc, .{
-                        .allocator = outputs_alloc,
-                        .input_payload = step_input,
-                        .input_bytes = input_bytes,
-                        .params = task_spec.static_params,
-                        .workers = workers,
-                        .net_bridge = step_net_ctx.bridge(),
-                        .bound_inputs = bound_inputs_list.items,
-                        .worker_pool = pool,
-                    });
-
-                    switch (outcome.status) {
-                        .ok, .recoverable_warning => {},
-                        .halt_pipeline => {
-                            summary.halted_early = true;
-                        },
-                        .fatal_error => return error.TaskExecutionFailed,
-                    }
-
-                    const task_output = outcome.output;
-
-                    if (self.kernel) |k| {
-                        const step_end_ns: u64 = nowNs();
-                        k.telemetry.emit(.{
-                            .step_end = .{
-                                .trace_id = trace_id,
-                                .span_id = step_span_id,
-                                .timestamp_ns = step_end_ns,
-                                .duration_ns = step_end_ns - step_start_ns,
-                                .pipeline_name = name,
-                                .step_id = task_spec.id,
-                                .status = if (outcome.status == .ok) "ok" else "warning",
-                                .output_count = task_output.len,
-                            },
-                        });
-                    }
-
-                    // Route to declared output channels and datasources, capturing processed payload
-                    var last_processed_output = task_output;
-
-                    for (task_spec.outputs) |out_ch| {
-                        var channel_payload = if (outcome.channel_outputs.get(out_ch.name)) |ch_pl|
-                            ch_pl
-                        else
-                            task_output;
-
-                        if (out_ch.from_field) |src_field| {
-                            if (outcome.channel_outputs.get(src_field)) |ch_pl| {
-                                channel_payload = ch_pl;
-                            } else if (std.mem.eql(u8, src_field, "network.captured_events")) {
-                                const new_events = try net_ctrl.collectStepEvents(task_spec.id, step_adapter, records_before);
-                                channel_payload = PayloadHandle.fromSlice(NetworkEvent, new_events);
-                            } else if (task_output.getReflected(src_field)) |rval| {
-                                const dyn_fields = try self.allocator.alloc(dataflow.DynamicField, 1);
-                                dyn_fields[0] = .{
-                                    .name = try self.allocator.dupe(u8, src_field),
-                                    .value = rval,
-                                };
-                                const dyn_record = try self.allocator.alloc(dataflow.DynamicRecord, 1);
-                                dyn_record[0] = dataflow.DynamicRecord.init(dyn_fields);
-                                channel_payload = PayloadHandle.fromSlice(dataflow.DynamicRecord, dyn_record);
-                            }
-                        }
-
-                        // Apply channel-specific filter if present
-                        if (out_ch.filter) |flt| {
-                            channel_payload = try dataflow.predicate.filterPayload(self.allocator, channel_payload, flt);
-                        }
-
-                        // Write to repository
-                        if (self.repos.get(out_ch.datasource)) |repo| {
-                            repo.writePayload(out_ch.name, channel_payload) catch |err| {
-                                std.log.err("[Step '{s}'] Failed to write channel '{s}' to datasource '{s}': {s}", .{
-                                    task_spec.id,
-                                    out_ch.name,
-                                    out_ch.datasource,
-                                    @errorName(err),
-                                });
-                                return err;
-                            };
-                        }
-
-                        // Save channel output under channel name and scoped step_id.channel_name
-                        try outputs.put(outputs_alloc, out_ch.name, channel_payload);
-                        const scoped_name = try std.fmt.allocPrint(outputs_alloc, "{s}.{s}", .{ task_spec.id, out_ch.name });
-                        try outputs.put(outputs_alloc, scoped_name, channel_payload);
-                        last_processed_output = channel_payload;
-                    }
-
-                    // Store final processed output by task ID and update current_input
-                    try outputs.put(outputs_alloc, task_spec.id, last_processed_output);
-                    current_input = last_processed_output;
-
-                    summary.steps_executed += 1;
-                },
-
-                .router => |router_spec| {
-                    summary.routers_evaluated += 1;
-                    var branched = false;
-                    var matched_expr: ?[]const u8 = null;
-                    var target_pipe: ?[]const u8 = null;
-
-                    for (router_spec.cases) |case| {
-                        var eval_handle = current_input;
-                        if (extractCountRef(case.when_predicate)) |ref_name| {
-                            if (outputs.get(ref_name)) |named_out| {
-                                eval_handle = named_out;
-                            }
-                        }
-                        const matched = dataflow.predicate.evaluatePredicateHandle(eval_handle, case.when_predicate);
-                        if (matched) {
-                            branched = true;
-                            matched_expr = case.when_predicate;
-                            target_pipe = case.goto_pipeline;
-                            if (self.kernel) |k| {
-                                var router_span_id: [8]u8 = undefined;
-                                fillRandomBytes(&router_span_id);
-                                k.telemetry.emit(.{
-                                    .router_decision = .{
-                                        .trace_id = trace_id,
-                                        .span_id = router_span_id,
-                                        .timestamp_ns = nowNs(),
-                                        .pipeline_name = name,
-                                        .router_id = router_spec.id,
-                                        .matched_expression = matched_expr,
-                                        .target_pipeline = target_pipe,
-                                    },
-                                });
-                            }
-                            if (std.mem.eql(u8, case.goto_pipeline, "continue")) {
-                                break;
-                            } else {
-                                try self.executeSubPipeline(case.goto_pipeline, current_input, outputs, outputs_alloc, net_ctrl, summary, trace_id, parent_span_id, pool);
-                                break;
-                            }
-                        }
-                    }
-
-                    if (!branched) {
-                        if (router_spec.default_pipeline) |def_pipe| {
-                            target_pipe = def_pipe;
-                            if (self.kernel) |k| {
-                                var router_span_id: [8]u8 = undefined;
-                                fillRandomBytes(&router_span_id);
-                                k.telemetry.emit(.{
-                                    .router_decision = .{
-                                        .trace_id = trace_id,
-                                        .span_id = router_span_id,
-                                        .timestamp_ns = nowNs(),
-                                        .pipeline_name = name,
-                                        .router_id = router_spec.id,
-                                        .matched_expression = null,
-                                        .target_pipeline = target_pipe,
-                                    },
-                                });
-                            }
-                            if (!std.mem.eql(u8, def_pipe, "continue")) {
-                                try self.executeSubPipeline(def_pipe, current_input, outputs, outputs_alloc, net_ctrl, summary, trace_id, parent_span_id, pool);
-                            }
-                        }
-                    }
-                },
-            }
-        }
+        try Coordinator.runWithStrategy(
+            self,
+            &exec_plan,
+            strategy,
+            active_input,
+            outputs,
+            outputs_alloc,
+            net_ctrl,
+            summary,
+            trace_id,
+            parent_span_id,
+            exec_pool,
+        );
     }
 };
 

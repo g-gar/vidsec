@@ -35,6 +35,7 @@ pub const TypeDrivenRouter = struct {
     modules: *const modules_mod.ModuleRegistry,
     ambient: *const AmbientContext,
     options: TypeDrivenOptions,
+    active_mask: ?[]const bool = null,
 
     visited_mask: []bool,
     pending_count: usize = 0,
@@ -57,6 +58,7 @@ pub const TypeDrivenRouter = struct {
             .modules = ctx.modules,
             .ambient = ctx.ambient,
             .options = options,
+            .active_mask = ctx.active_mask,
             .visited_mask = visited,
         };
         return self;
@@ -85,6 +87,9 @@ pub const TypeDrivenRouter = struct {
         const abi_payload = task_executor.toAbiPayload(payload);
 
         for (self.pipeline.steps, 0..) |step, node_id| {
+            if (self.active_mask) |mask| {
+                if (node_id < mask.len and !mask[node_id]) continue;
+            }
             if (step != .task) continue;
             const task_spec = step.task;
             const desc = self.modules.resolveTask(task_spec.module, task_spec.task) catch continue;

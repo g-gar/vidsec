@@ -500,3 +500,299 @@ test "ARCH-023 Phase 4: TypeDrivenRouter respects ambient unary where: filters" 
     const acts_low = try r_low.onPipelineStart(alloc, p_job);
     try testing.expectEqual(@as(usize, 1), acts_low.len);
 }
+
+test "ARCH-023 Phase 5: Coordinator with MockRouter verifies freeArena, backpressure, and cancellation" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const Item = struct { id: u32 };
+    const ProdSvc = struct {
+        pub const Context = struct {
+            pub const concurrency_safe = true;
+        };
+        pub fn execute(_: *@This(), a: std.mem.Allocator) ![]const Item {
+            const out = try a.alloc(Item, 4);
+            for (out, 0..) |*it, i| it.* = .{ .id = @intCast(i + 1) };
+            return out;
+        }
+    };
+    const ConsSvc = struct {
+        pub const Context = struct {
+            pub const concurrency_safe = true;
+        };
+        pub fn execute(_: *@This(), _: std.mem.Allocator, in: Item) !Item {
+            return .{ .id = in.id * 10 };
+        }
+    };
+    const FailSvc = struct {
+        pub fn execute(_: *@This(), _: std.mem.Allocator, _: Item) !Item {
+            return error.SimulatedFailure;
+        }
+    };
+
+    var tasks = [_]plugin.TaskDescriptor_ABI{
+        plugin.defineTaskService(ProdSvc, .{ .name = "prod" }),
+        plugin.defineTaskService(ConsSvc, .{ .name = "cons" }),
+        plugin.defineTaskService(FailSvc, .{ .name = "fail" }),
+    };
+    const manifest = plugin.ModuleManifest_ABI{
+        .module_name = "coord_mock",
+        .module_version = .{ .major = 1, .minor = 0, .patch = 0 },
+        .tasks_ptr = &tasks,
+        .tasks_len = tasks.len,
+    };
+
+    var mod_reg = flowdata.ModuleRegistry.init(alloc);
+    defer mod_reg.deinit();
+    try mod_reg.registerStaticModule("coord_mock", &manifest);
+
+    var repo_reg = flowdata.RepositoryRegistry.init(alloc);
+    defer repo_reg.deinit();
+
+    const yaml_text =
+        \\version: 2
+        \\runtime:
+        \\  scheduler: dag
+        \\  workers: 2
+        \\  max_inflight_bytes: 1B
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: s_prod1
+        \\        uses: coord_mock/prod
+        \\      - id: s_cons1
+        \\        uses: coord_mock/cons
+        \\        inputs:
+        \\          primary: s_prod1
+        \\      - id: s_prod2
+        \\        uses: coord_mock/prod
+        \\        inputs:
+        \\          primary: stream
+        \\        outputs:
+        \\          - name: ch2
+        \\            to: dummy_mem
+    ;
+
+    const parsed_ast = try flowdata.yaml.loadPipelineAstFromYaml(alloc, yaml_text, .{});
+    const pipe = parsed_ast.getPipeline("main").?;
+    var exec_plan = try flowdata.engine.compilePlan(alloc, pipe, parsed_ast);
+    defer exec_plan.deinit();
+
+    var eng = flowdata.PipelineEngine.init(alloc, parsed_ast, &mod_reg, &repo_reg);
+    defer eng.deinit();
+    for (parsed_ast.datasources) |ds| {
+        _ = try repo_reg.resolveOrCreate(ds);
+    }
+
+    var net_ctrl = try flowdata.engine.EngineNetworkController.init(alloc, parsed_ast, null);
+    defer net_ctrl.deinit();
+
+    var pool = try flowdata.concurrency.WorkerPool.init(alloc, 2);
+    defer pool.deinit();
+
+    const input_items = [_]Item{.{ .id = 1 }};
+    const input_payload = flowdata.dataflow.PayloadHandle.fromSlice(Item, &input_items);
+
+    const CoordMockRouter = struct {
+        plan: *const flowdata.engine.ExecutionPlan,
+        initial_payload: flowdata.dataflow.PayloadHandle,
+        step: usize = 0,
+        pending: usize = 0,
+
+        pub fn onPipelineStart(self: *@This(), a: std.mem.Allocator, initial_input: flowdata.dataflow.PayloadHandle) ![]routing.TaskActivation {
+            self.pending += 1;
+            const res = try a.alloc(routing.TaskActivation, 1);
+            res[0] = .{
+                .node_id = 0,
+                .step_input = initial_input,
+                .consumed_channels = self.plan.nodes[0].consumed_channels,
+            };
+            return res;
+        }
+
+        pub fn onStepComplete(self: *@This(), a: std.mem.Allocator, event: routing.StepOutcomeEvent) ![]routing.TaskActivation {
+            if (self.pending > 0) self.pending -= 1;
+            if (event.status == .fatal_error) return &.{};
+            if (event.node_id == 0 and self.step == 0) {
+                self.step = 1;
+                self.pending += 2;
+                const res = try a.alloc(routing.TaskActivation, 2);
+                res[0] = .{
+                    .node_id = 1,
+                    .step_input = event.output,
+                    .consumed_channels = self.plan.nodes[1].consumed_channels,
+                };
+                res[1] = .{
+                    .node_id = 2,
+                    .step_input = self.initial_payload,
+                    .consumed_channels = self.plan.nodes[2].consumed_channels,
+                };
+                return res;
+            }
+            return &.{};
+        }
+
+        pub fn hasPendingWork(self: *const @This()) bool {
+            return self.pending > 0;
+        }
+
+        pub fn deinit(_: *@This()) void {}
+    };
+
+    var mock = CoordMockRouter{
+        .plan = &exec_plan,
+        .initial_payload = input_payload,
+    };
+    const strategy = routing.RoutingStrategy.fromImpl(CoordMockRouter, &mock);
+
+    var outputs: std.StringHashMapUnmanaged(flowdata.dataflow.PayloadHandle) = .empty;
+    var summary = flowdata.engine.ExecutionSummary{};
+    const trace_id: [16]u8 = [_]u8{1} ** 16;
+    const span_id: [8]u8 = [_]u8{2} ** 8;
+
+    try flowdata.engine.Coordinator.runWithStrategy(
+        &eng,
+        &exec_plan,
+        strategy,
+        input_payload,
+        &outputs,
+        alloc,
+        &net_ctrl,
+        &summary,
+        trace_id,
+        span_id,
+        pool,
+    );
+
+    try testing.expectEqual(@as(usize, 3), summary.steps_executed);
+    try testing.expect(summary.arenas_created >= 3);
+    try testing.expect(summary.arenas_freed_early >= 1);
+    try testing.expect(summary.throttle_count >= 1);
+
+    // Cancellation sub-case: fatal_error aborts cleanly
+    const fail_yaml =
+        \\version: 2
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: s_fail
+        \\        uses: coord_mock/fail
+        \\      - id: s_after
+        \\        uses: coord_mock/cons
+    ;
+    const fail_ast = try flowdata.yaml.loadPipelineAstFromYaml(alloc, fail_yaml, .{});
+    const fail_pipe = fail_ast.getPipeline("main").?;
+    var fail_plan = try flowdata.engine.compilePlan(alloc, fail_pipe, fail_ast);
+    defer fail_plan.deinit();
+
+    var fail_eng = flowdata.PipelineEngine.init(alloc, fail_ast, &mod_reg, &repo_reg);
+    defer fail_eng.deinit();
+    var fail_net = try flowdata.engine.EngineNetworkController.init(alloc, fail_ast, null);
+    defer fail_net.deinit();
+
+    const FailMockRouter = struct {
+        pending: usize = 0,
+        pub fn onPipelineStart(self: *@This(), a: std.mem.Allocator, initial_input: flowdata.dataflow.PayloadHandle) ![]routing.TaskActivation {
+            self.pending = 1;
+            const res = try a.alloc(routing.TaskActivation, 1);
+            res[0] = .{ .node_id = 0, .step_input = initial_input };
+            return res;
+        }
+        pub fn onStepComplete(self: *@This(), _: std.mem.Allocator, _: routing.StepOutcomeEvent) ![]routing.TaskActivation {
+            if (self.pending > 0) self.pending -= 1;
+            return &.{};
+        }
+        pub fn hasPendingWork(self: *const @This()) bool {
+            return self.pending > 0;
+        }
+        pub fn deinit(_: *@This()) void {}
+    };
+
+    var fail_mock = FailMockRouter{};
+    var fail_outputs: std.StringHashMapUnmanaged(flowdata.dataflow.PayloadHandle) = .empty;
+    var fail_summary = flowdata.engine.ExecutionSummary{};
+    const err = flowdata.engine.Coordinator.runWithStrategy(
+        &fail_eng,
+        &fail_plan,
+        routing.RoutingStrategy.fromImpl(FailMockRouter, &fail_mock),
+        input_payload,
+        &fail_outputs,
+        alloc,
+        &fail_net,
+        &fail_summary,
+        trace_id,
+        span_id,
+        null,
+    );
+    try testing.expectError(error.TaskExecutionFailed, err);
+    try testing.expectEqual(@as(usize, 0), fail_summary.steps_executed);
+}
+
+test "ARCH-023 Phase 5: PipelineEngine executes type_driven pipeline end-to-end via RouterRegistry" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const RawTarget = struct { video_id: []const u8 };
+    const ProblemOut = struct { video_id: []const u8, is_problematic: bool };
+    const CleanOut = struct { video_id: []const u8, is_clean: bool };
+
+    const TriageSvc = struct {
+        pub fn execute(_: *@This(), _: std.mem.Allocator, in: RawTarget) !ProblemOut {
+            return .{ .video_id = in.video_id, .is_problematic = true };
+        }
+    };
+    const CdrSvc = struct {
+        pub fn canHandle(_: *@This(), payload: plugin.PayloadHandle_ABI) bool {
+            if (payload.getReflected("is_problematic")) |v| {
+                return v.asBool() orelse false;
+            }
+            return false;
+        }
+        pub fn execute(_: *@This(), _: std.mem.Allocator, in: ProblemOut) !CleanOut {
+            return .{ .video_id = in.video_id, .is_clean = true };
+        }
+    };
+
+    var tasks = [_]plugin.TaskDescriptor_ABI{
+        plugin.defineTaskService(TriageSvc, .{ .name = "triage" }),
+        plugin.defineTaskService(CdrSvc, .{ .name = "cdr" }),
+    };
+    const manifest = plugin.ModuleManifest_ABI{
+        .module_name = "e2e_td",
+        .module_version = .{ .major = 1, .minor = 0, .patch = 0 },
+        .tasks_ptr = &tasks,
+        .tasks_len = tasks.len,
+    };
+
+    var mod_reg = flowdata.ModuleRegistry.init(alloc);
+    defer mod_reg.deinit();
+    try mod_reg.registerStaticModule("e2e_td", &manifest);
+
+    var repo_reg = flowdata.RepositoryRegistry.init(alloc);
+    defer repo_reg.deinit();
+
+    const yaml_text =
+        \\version: 2
+        \\runtime:
+        \\  scheduler: dag
+        \\  workers: 2
+        \\  routing: type_driven
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: s_triage
+        \\        uses: e2e_td/triage
+        \\      - id: s_cdr
+        \\        uses: e2e_td/cdr
+    ;
+
+    const ast = try flowdata.yaml.loadPipelineAstFromYaml(alloc, yaml_text, .{});
+    var eng = flowdata.PipelineEngine.init(alloc, ast, &mod_reg, &repo_reg);
+    defer eng.deinit();
+
+    const raw = [_]RawTarget{.{ .video_id = "vid-e2e" }};
+    const summary = try eng.run(flowdata.dataflow.PayloadHandle.fromSlice(RawTarget, &raw));
+    try testing.expectEqual(@as(usize, 2), summary.steps_executed);
+}

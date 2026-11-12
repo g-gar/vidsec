@@ -23,6 +23,10 @@ const plan_mod = @import("plan.zig");
 const ExecutionPlan = plan_mod.ExecutionPlan;
 const NodeId = plan_mod.NodeId;
 const ChannelId = plan_mod.ChannelId;
+const routing_mod = @import("routing/mod.zig");
+const RoutingStrategy = routing_mod.RoutingStrategy;
+const TaskActivation = routing_mod.TaskActivation;
+const NamedPayload = routing_mod.NamedPayload;
 
 pub const StepArenaRecord = struct {
     arena: std.heap.ArenaAllocator,
@@ -45,6 +49,7 @@ pub const StepCompletion = struct {
     status: modules_mod.TaskOutcomeStatus,
     output: PayloadHandle,
     channel_outputs: std.StringHashMapUnmanaged(PayloadHandle),
+    consumed_channels: []const ChannelId = &.{},
     step_span_id: [8]u8,
     start_ns: u64,
     end_ns: u64,
@@ -96,7 +101,8 @@ const StepJobContext = struct {
     task_spec: ast.TaskStepSpec,
     step_input: PayloadHandle,
     input_bytes: []const u8,
-    bound_inputs: []modules_mod.BoundInput,
+    bound_inputs: []const modules_mod.BoundInput,
+    consumed_channels: []const ChannelId,
     step_adapter: ?NetworkAdapter,
     records_before: usize,
     step_span_id: [8]u8,
@@ -107,6 +113,7 @@ const StepJobContext = struct {
 pub const Coordinator = struct {
     engine: *PipelineEngine,
     plan: *const ExecutionPlan,
+    strategy: RoutingStrategy,
     active_input: PayloadHandle,
     outputs: *std.StringHashMapUnmanaged(PayloadHandle),
     outputs_alloc: Allocator,
@@ -114,20 +121,16 @@ pub const Coordinator = struct {
     summary: *ExecutionSummary,
     trace_id: [16]u8,
     parent_span_id: [8]u8,
-    pool: *WorkerPool,
+    pool: ?*WorkerPool,
     pipeline_name: []const u8,
 
-    indegrees: []usize,
-    ready_queue: std.ArrayListUnmanaged(NodeId) = .empty,
+    ready_queue: std.ArrayListUnmanaged(TaskActivation) = .empty,
     completion_queue: CompletionQueue = .{},
     cancel_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     min_fail_idx: std.atomic.Value(usize) = std.atomic.Value(usize).init(std.math.maxInt(usize)),
     has_fatal_error: bool = false,
     in_flight: usize = 0,
-    completed_nodes: usize = 0,
     current_input: PayloadHandle,
-    active_mask: ?[]const bool = null,
-    total_active: usize = 0,
 
     // ARCH-017 Phase 17.4: Memory Lifecycle & Channel Refcounting
     step_arenas: std.ArrayListUnmanaged(*StepArenaRecord) = .empty,
@@ -177,35 +180,33 @@ pub const Coordinator = struct {
         parent_span_id: [8]u8,
         pool: *WorkerPool,
     ) anyerror!void {
+        const pipe = engine.ast.getPipeline(plan.pipeline_name) orelse return error.UnknownSubPipeline;
+        var strategy = try engine.createRoutingStrategyForPipeline(pipe, active_mask, outputs);
+        defer strategy.deinit();
+
+        return runWithStrategy(engine, plan, strategy, active_input, outputs, outputs_alloc, net_ctrl, summary, trace_id, parent_span_id, pool);
+    }
+
+    pub fn runWithStrategy(
+        engine: *PipelineEngine,
+        plan: *const ExecutionPlan,
+        strategy: RoutingStrategy,
+        active_input: PayloadHandle,
+        outputs: *std.StringHashMapUnmanaged(PayloadHandle),
+        outputs_alloc: Allocator,
+        net_ctrl: *EngineNetworkController,
+        summary: *ExecutionSummary,
+        trace_id: [16]u8,
+        parent_span_id: [8]u8,
+        pool: ?*WorkerPool,
+    ) anyerror!void {
         const nodes_count = plan.nodes.len;
         if (nodes_count == 0) return;
-
-        var total_active: usize = 0;
-        const indegrees = try engine.allocator.alloc(usize, nodes_count);
-        defer engine.allocator.free(indegrees);
-
-        for (plan.nodes, 0..) |n, i| {
-            if (active_mask) |mask| {
-                if (!mask[i]) {
-                    indegrees[i] = std.math.maxInt(usize);
-                    continue;
-                }
-                total_active += 1;
-                var in_count: usize = 0;
-                for (n.predecessors) |p| {
-                    if (mask[p]) in_count += 1;
-                }
-                indegrees[i] = in_count;
-            } else {
-                indegrees[i] = n.indegree;
-                total_active += 1;
-            }
-        }
-        if (total_active == 0) return;
 
         var coord = Coordinator{
             .engine = engine,
             .plan = plan,
+            .strategy = strategy,
             .active_input = active_input,
             .outputs = outputs,
             .outputs_alloc = outputs_alloc,
@@ -215,10 +216,7 @@ pub const Coordinator = struct {
             .parent_span_id = parent_span_id,
             .pool = pool,
             .pipeline_name = plan.pipeline_name,
-            .indegrees = indegrees,
             .current_input = active_input,
-            .active_mask = active_mask,
-            .total_active = total_active,
             .max_inflight_bytes = engine.ast.runtime.max_inflight_bytes,
             .retain_all = engine.ast.runtime.retain_all,
         };
@@ -228,30 +226,24 @@ pub const Coordinator = struct {
             try coord.channel_name_to_id.put(engine.allocator, ch_slot.name, ch_slot.id);
         }
 
-        // Initialize ready queue with indegree == 0 nodes (in priority & declaration order)
-        for (0..nodes_count) |i| {
-            if (indegrees[i] == 0) {
-                try coord.enqueueReady(i);
-            }
+        const initial_acts = try coord.strategy.onPipelineStart(engine.allocator, active_input);
+        defer engine.allocator.free(initial_acts);
+        for (initial_acts) |act| {
+            try coord.enqueueReady(act);
         }
 
         // Coordinator Main Event Loop
-        while (coord.completed_nodes < total_active) {
+        while (coord.ready_queue.items.len > 0 or coord.in_flight > 0) {
             // 1. Dispatch ready nodes respecting memory backpressure
             while (coord.ready_queue.items.len > 0 and !coord.has_fatal_error and !coord.summary.halted_early) {
-                const next_node_id = coord.ready_queue.items[0];
-                if (coord.shouldThrottle(next_node_id)) {
+                const next_act = coord.ready_queue.items[0];
+                if (coord.shouldThrottle(next_act.node_id)) {
                     coord.summary.throttle_count += 1;
                     var found_consumer = false;
-                    for (coord.ready_queue.items, 0..) |cand_id, idx| {
-                        if (!coord.shouldThrottle(cand_id)) {
+                    for (coord.ready_queue.items, 0..) |cand_act, idx| {
+                        if (!coord.shouldThrottle(cand_act.node_id)) {
                             _ = coord.ready_queue.orderedRemove(idx);
-                            const node = plan.nodes[cand_id];
-                            if (node.isRouter()) {
-                                try coord.executeRouter(node);
-                            } else {
-                                try coord.dispatchTask(cand_id);
-                            }
+                            try coord.dispatchActivation(cand_act);
                             found_consumer = true;
                             break;
                         }
@@ -264,26 +256,26 @@ pub const Coordinator = struct {
                     continue;
                 }
 
-                const node_id = coord.ready_queue.orderedRemove(0);
-                const node = plan.nodes[node_id];
-                if (node.isRouter()) {
-                    try coord.executeRouter(node);
-                } else {
-                    try coord.dispatchTask(node_id);
-                }
+                const act = coord.ready_queue.orderedRemove(0);
+                try coord.dispatchActivation(act);
             }
 
             if (coord.in_flight == 0) {
-                // No tasks currently running in the worker pool
-                break;
+                if (coord.ready_queue.items.len == 0 or coord.has_fatal_error or coord.summary.halted_early) {
+                    break;
+                }
+                continue;
             }
 
             // 2. Wait for completion message from MPSC queue (with help-while-waiting)
             var maybe_comp = coord.completion_queue.pop();
             if (maybe_comp == null) {
-                // Actively help execute any pending jobs from the pool
-                if (coord.pool.popJob()) |job| {
-                    job.run();
+                if (coord.pool) |p| {
+                    if (p.popJob()) |job| {
+                        job.run();
+                    } else {
+                        maybe_comp = coord.completion_queue.waitAndPop();
+                    }
                 } else {
                     maybe_comp = coord.completion_queue.waitAndPop();
                 }
@@ -323,22 +315,32 @@ pub const Coordinator = struct {
         return score;
     }
 
-    fn enqueueReady(self: *Coordinator, node_id: NodeId) !void {
-        const priority = self.nodePriority(node_id);
+    fn enqueueReady(self: *Coordinator, act: TaskActivation) !void {
+        const priority = self.nodePriority(act.node_id);
         var insert_idx: usize = 0;
         while (insert_idx < self.ready_queue.items.len) : (insert_idx += 1) {
-            const cand_id = self.ready_queue.items[insert_idx];
+            const cand_id = self.ready_queue.items[insert_idx].node_id;
             const cand_priority = self.nodePriority(cand_id);
             if (priority > cand_priority) {
                 break;
-            } else if (priority == cand_priority and node_id < cand_id) {
+            } else if (priority == cand_priority and act.node_id < cand_id) {
                 break;
             }
         }
-        try self.ready_queue.insert(self.engine.allocator, insert_idx, node_id);
+        try self.ready_queue.insert(self.engine.allocator, insert_idx, act);
     }
 
-    fn dispatchTask(self: *Coordinator, node_id: NodeId) !void {
+    fn dispatchActivation(self: *Coordinator, act: TaskActivation) !void {
+        const node = self.plan.nodes[act.node_id];
+        if (node.isRouter()) {
+            try self.executeRouter(act);
+        } else {
+            try self.dispatchTask(act);
+        }
+    }
+
+    fn dispatchTask(self: *Coordinator, act: TaskActivation) !void {
+        const node_id = act.node_id;
         const node = self.plan.nodes[node_id];
         const task_spec = node.step.task;
 
@@ -346,64 +348,7 @@ pub const Coordinator = struct {
         engine_mod.fillRandomBytes(&step_span_id);
         const step_start_ns: u64 = engine_mod.nowNs();
 
-        var step_input = self.current_input;
-        var bound_inputs_list: std.ArrayListUnmanaged(modules_mod.BoundInput) = .empty;
-
-        if (task_spec.inputs.len > 0) {
-            for (task_spec.inputs) |in_binding| {
-                var resolved_payload = try self.engine.resolveStreamExpr(in_binding.expr, self.current_input, self.outputs);
-                if (in_binding.where_filter) |wf| {
-                    resolved_payload = try dataflow.predicate.filterPayload(self.engine.allocator, resolved_payload, wf);
-                    if (resolved_payload.len == 0) {
-                        // ARCH-018: Short-circuit rejection: unary where: condition not met.
-                        self.completion_queue.push(self.engine.allocator, .{
-                            .node_id = node_id,
-                            .status = .ok,
-                            .output = PayloadHandle.empty(),
-                            .channel_outputs = .empty,
-                            .step_span_id = step_span_id,
-                            .start_ns = step_start_ns,
-                            .end_ns = engine_mod.nowNs(),
-                            .step_adapter = null,
-                            .records_before = 0,
-                            .step_arena = null,
-                        }) catch {};
-                        return;
-                    }
-                }
-                try bound_inputs_list.append(self.engine.allocator, .{
-                    .name = in_binding.param_name,
-                    .payload = resolved_payload,
-                });
-                if (std.mem.eql(u8, in_binding.param_name, "primary") or std.mem.eql(u8, in_binding.param_name, "stream")) {
-                    step_input = resolved_payload;
-                }
-            }
-        }
-
-        try bound_inputs_list.append(self.engine.allocator, .{
-            .name = "stream",
-            .payload = self.current_input,
-        });
-        try bound_inputs_list.append(self.engine.allocator, .{
-            .name = "input",
-            .payload = self.current_input,
-        });
-
-        // Innate ambient merge (ARCH-018 §3.2)
-        if (try self.engine.ambient.asPayload(self.engine.allocator, "system.timestamp")) |ts_p| {
-            try bound_inputs_list.append(self.engine.allocator, .{ .name = "system.timestamp", .payload = ts_p });
-            try bound_inputs_list.append(self.engine.allocator, .{ .name = "timestamp", .payload = ts_p });
-        }
-        if (try self.engine.ambient.asPayload(self.engine.allocator, "system.hour")) |hr_p| {
-            try bound_inputs_list.append(self.engine.allocator, .{ .name = "system.hour", .payload = hr_p });
-            try bound_inputs_list.append(self.engine.allocator, .{ .name = "hour", .payload = hr_p });
-        }
-        if (try self.engine.ambient.asPayload(self.engine.allocator, "system.cpu_load")) |cpu_p| {
-            try bound_inputs_list.append(self.engine.allocator, .{ .name = "system.cpu_load", .payload = cpu_p });
-            try bound_inputs_list.append(self.engine.allocator, .{ .name = "cpu_load", .payload = cpu_p });
-            try bound_inputs_list.append(self.engine.allocator, .{ .name = "cpu_usage", .payload = cpu_p });
-        }
+        var step_input = act.step_input;
 
         if (self.engine.kernel) |k| {
             k.telemetry.emit(.{
@@ -436,38 +381,77 @@ pub const Coordinator = struct {
 
         const workers: u32 = if (task_spec.concurrency) |c| @intCast(c) else @intCast(self.engine.workers);
 
-        const owned_bound_inputs = try bound_inputs_list.toOwnedSlice(self.engine.allocator);
-        errdefer self.engine.allocator.free(owned_bound_inputs);
+        if (self.pool) |p| {
+            const job_ctx = try self.engine.allocator.create(StepJobContext);
+            job_ctx.* = .{
+                .coordinator = self,
+                .node_id = node_id,
+                .task_spec = task_spec,
+                .step_input = step_input,
+                .input_bytes = input_bytes,
+                .bound_inputs = act.bound_inputs,
+                .consumed_channels = act.consumed_channels,
+                .step_adapter = step_adapter,
+                .records_before = records_before,
+                .step_span_id = step_span_id,
+                .step_start_ns = step_start_ns,
+                .workers = workers,
+            };
 
-        const job_ctx = try self.engine.allocator.create(StepJobContext);
-        job_ctx.* = .{
-            .coordinator = self,
-            .node_id = node_id,
-            .task_spec = task_spec,
-            .step_input = step_input,
-            .input_bytes = input_bytes,
-            .bound_inputs = owned_bound_inputs,
-            .step_adapter = step_adapter,
-            .records_before = records_before,
-            .step_span_id = step_span_id,
-            .step_start_ns = step_start_ns,
-            .workers = workers,
-        };
+            self.in_flight += 1;
 
-        self.in_flight += 1;
+            try p.submit(.{
+                .run_fn = &workerRun,
+                .ctx = job_ctx,
+            });
+        } else {
+            // Sequential / single-worker execution on the coordinator thread
+            var step_arena = std.heap.ArenaAllocator.init(self.engine.allocator);
+            const step_alloc = step_arena.allocator();
 
-        try self.pool.submit(.{
-            .run_fn = &workerRun,
-            .ctx = job_ctx,
-        });
+            const desc = self.engine.modules.resolveTask(task_spec.module, task_spec.task) catch |err| {
+                step_arena.deinit();
+                return err;
+            };
+
+            var step_net_ctx = StepNetworkContext{
+                .step_id = task_spec.id,
+                .task_name = task_spec.task,
+                .primary_adapter = step_adapter,
+                .net_ctrl = self.net_ctrl,
+            };
+
+            const outcome = modules_mod.executeTask(desc, .{
+                .allocator = step_alloc,
+                .input_payload = step_input,
+                .input_bytes = input_bytes,
+                .params = task_spec.static_params,
+                .workers = workers,
+                .net_bridge = step_net_ctx.bridge(),
+                .bound_inputs = act.bound_inputs,
+                .worker_pool = null,
+            });
+
+            const end_ns = engine_mod.nowNs();
+            try self.processCompletion(.{
+                .node_id = node_id,
+                .status = outcome.status,
+                .output = outcome.output,
+                .channel_outputs = outcome.channel_outputs,
+                .consumed_channels = act.consumed_channels,
+                .step_span_id = step_span_id,
+                .start_ns = step_start_ns,
+                .end_ns = end_ns,
+                .step_adapter = step_adapter,
+                .records_before = records_before,
+                .step_arena = step_arena,
+            });
+        }
     }
 
     fn workerRun(raw_ctx: *anyopaque) void {
         const job_ctx: *StepJobContext = @ptrCast(@alignCast(raw_ctx));
         defer {
-            if (job_ctx.bound_inputs.len > 0) {
-                job_ctx.coordinator.engine.allocator.free(job_ctx.bound_inputs);
-            }
             job_ctx.coordinator.engine.allocator.destroy(job_ctx);
         }
 
@@ -478,6 +462,7 @@ pub const Coordinator = struct {
                 .status = .fatal_error,
                 .output = PayloadHandle.empty(),
                 .channel_outputs = .empty,
+                .consumed_channels = job_ctx.consumed_channels,
                 .step_span_id = job_ctx.step_span_id,
                 .start_ns = job_ctx.step_start_ns,
                 .end_ns = engine_mod.nowNs(),
@@ -498,6 +483,7 @@ pub const Coordinator = struct {
                 .status = .fatal_error,
                 .output = PayloadHandle.empty(),
                 .channel_outputs = .empty,
+                .consumed_channels = job_ctx.consumed_channels,
                 .step_span_id = job_ctx.step_span_id,
                 .start_ns = job_ctx.step_start_ns,
                 .end_ns = engine_mod.nowNs(),
@@ -535,6 +521,7 @@ pub const Coordinator = struct {
             .status = outcome.status,
             .output = outcome.output,
             .channel_outputs = outcome.channel_outputs,
+            .consumed_channels = job_ctx.consumed_channels,
             .step_span_id = job_ctx.step_span_id,
             .start_ns = job_ctx.step_start_ns,
             .end_ns = end_ns,
@@ -597,25 +584,34 @@ pub const Coordinator = struct {
             if (comp.step_arena) |*st_arena| {
                 st_arena.deinit();
             }
+            const next_acts = try self.strategy.onStepComplete(self.engine.allocator, .{
+                .node_id = comp.node_id,
+                .status = toAbiStatus(comp.status),
+                .output = PayloadHandle.empty(),
+                .channel_outputs = &.{},
+            });
+            self.engine.allocator.free(next_acts);
+            return;
         }
 
-        if (comp.status != .fatal_error) {
-            var maybe_arena_rec: ?*StepArenaRecord = null;
-            if (comp.step_arena) |st_arena| {
-                const ar = try self.engine.allocator.create(StepArenaRecord);
-                ar.* = .{
-                    .arena = st_arena,
-                    .live_channels_count = 0,
-                    .retained = self.retain_all,
-                };
-                try self.step_arenas.append(self.engine.allocator, ar);
-                maybe_arena_rec = ar;
-                self.summary.arenas_created += 1;
-            }
+        var maybe_arena_rec: ?*StepArenaRecord = null;
+        if (comp.step_arena) |st_arena| {
+            const ar = try self.engine.allocator.create(StepArenaRecord);
+            ar.* = .{
+                .arena = st_arena,
+                .live_channels_count = 0,
+                .retained = self.retain_all,
+            };
+            try self.step_arenas.append(self.engine.allocator, ar);
+            maybe_arena_rec = ar;
+            self.summary.arenas_created += 1;
+        }
 
-            var last_processed_output = comp.output;
+        var last_processed_output = comp.output;
+        var channel_outputs_list: std.ArrayListUnmanaged(NamedPayload) = .empty;
+        defer channel_outputs_list.deinit(self.engine.allocator);
 
-            for (task_spec.outputs) |out_ch| {
+        for (task_spec.outputs) |out_ch| {
                 var channel_payload = if (comp.channel_outputs.get(out_ch.name)) |ch_pl|
                     ch_pl
                 else
@@ -660,6 +656,10 @@ pub const Coordinator = struct {
                 try self.outputs.put(self.outputs_alloc, out_ch.name, channel_payload);
                 const scoped_name = try std.fmt.allocPrint(self.outputs_alloc, "{s}.{s}", .{ task_spec.id, out_ch.name });
                 try self.outputs.put(self.outputs_alloc, scoped_name, channel_payload);
+                try channel_outputs_list.append(self.engine.allocator, .{
+                    .name = out_ch.name,
+                    .payload = channel_payload,
+                });
                 last_processed_output = channel_payload;
 
                 // ARCH-017 §3.5: Channel Refcounting & Lifetime Tracking
@@ -760,50 +760,61 @@ pub const Coordinator = struct {
                 }
             }
 
-            try self.outputs.put(self.outputs_alloc, task_spec.id, last_processed_output);
-            self.current_input = last_processed_output;
-            self.summary.steps_executed += 1;
+        try self.outputs.put(self.outputs_alloc, task_spec.id, last_processed_output);
+        self.current_input = last_processed_output;
+        self.summary.steps_executed += 1;
 
-            // Decrement refcount of channels consumed by this node
-            for (node.consumed_channels) |ch_id| {
-                if (self.channel_states.getPtr(ch_id)) |ch_st| {
-                    if (ch_st.ref_count > 0) {
-                        ch_st.ref_count -= 1;
-                        if (ch_st.ref_count == 0 and !ch_st.retained) {
-                            if (self.live_inflight_bytes >= ch_st.byte_size) {
-                                self.live_inflight_bytes -= ch_st.byte_size;
-                            } else {
-                                self.live_inflight_bytes = 0;
-                            }
-                            if (ch_st.arena_rec) |ar| {
-                                if (ar.live_channels_count > 0) {
-                                    ar.live_channels_count -= 1;
-                                    if (ar.live_channels_count == 0 and !ar.retained) {
-                                        self.freeArena(ar);
-                                    }
+        self.releaseConsumedChannels(comp.consumed_channels);
+
+        const next_acts = try self.strategy.onStepComplete(self.engine.allocator, .{
+            .node_id = comp.node_id,
+            .status = toAbiStatus(comp.status),
+            .output = last_processed_output,
+            .channel_outputs = channel_outputs_list.items,
+        });
+        defer self.engine.allocator.free(next_acts);
+
+        for (next_acts) |next_act| {
+            try self.enqueueReady(next_act);
+        }
+    }
+
+    fn toAbiStatus(s: modules_mod.TaskOutcomeStatus) routing_mod.TaskStatus {
+        return switch (s) {
+            .ok => .ok,
+            .recoverable_warning => .recoverable_warning,
+            .halt_pipeline => .halt_pipeline,
+            .fatal_error => .fatal_error,
+        };
+    }
+
+    fn releaseConsumedChannels(self: *Coordinator, channels: []const ChannelId) void {
+        for (channels) |ch_id| {
+            if (self.channel_states.getPtr(ch_id)) |ch_st| {
+                if (ch_st.ref_count > 0) {
+                    ch_st.ref_count -= 1;
+                    if (ch_st.ref_count == 0 and !ch_st.retained) {
+                        if (self.live_inflight_bytes >= ch_st.byte_size) {
+                            self.live_inflight_bytes -= ch_st.byte_size;
+                        } else {
+                            self.live_inflight_bytes = 0;
+                        }
+                        if (ch_st.arena_rec) |ar| {
+                            if (ar.live_channels_count > 0) {
+                                ar.live_channels_count -= 1;
+                                if (ar.live_channels_count == 0 and !ar.retained) {
+                                    self.freeArena(ar);
                                 }
                             }
                         }
                     }
                 }
             }
-
-            // Decrement successors' indegree and unlock ready nodes
-            for (node.successors) |succ_id| {
-                if (self.active_mask) |mask| {
-                    if (!mask[succ_id]) continue;
-                }
-                self.indegrees[succ_id] -= 1;
-                if (self.indegrees[succ_id] == 0) {
-                    try self.enqueueReady(succ_id);
-                }
-            }
         }
-
-        self.completed_nodes += 1;
     }
 
-    fn executeRouter(self: *Coordinator, node: plan_mod.PlanNode) !void {
+    fn executeRouter(self: *Coordinator, act: TaskActivation) !void {
+        const node = self.plan.nodes[act.node_id];
         const router_spec = node.step.router;
         self.summary.routers_evaluated += 1;
         var branched = false;
@@ -870,38 +881,18 @@ pub const Coordinator = struct {
             }
         }
 
-        // Router completes: decrement refcount of any channels it consumed
-        for (node.consumed_channels) |ch_id| {
-            if (self.channel_states.getPtr(ch_id)) |ch_st| {
-                if (ch_st.ref_count > 0) {
-                    ch_st.ref_count -= 1;
-                    if (ch_st.ref_count == 0 and !ch_st.retained) {
-                        if (self.live_inflight_bytes >= ch_st.byte_size) {
-                            self.live_inflight_bytes -= ch_st.byte_size;
-                        } else {
-                            self.live_inflight_bytes = 0;
-                        }
-                        if (ch_st.arena_rec) |ar| {
-                            if (ar.live_channels_count > 0) {
-                                ar.live_channels_count -= 1;
-                                if (ar.live_channels_count == 0 and !ar.retained) {
-                                    self.freeArena(ar);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        self.releaseConsumedChannels(act.consumed_channels);
 
-        // Router complete: unlock successors
-        for (node.successors) |succ_id| {
-            self.indegrees[succ_id] -= 1;
-            if (self.indegrees[succ_id] == 0) {
-                try self.enqueueReady(succ_id);
-            }
-        }
+        const next_acts = try self.strategy.onStepComplete(self.engine.allocator, .{
+            .node_id = act.node_id,
+            .status = .ok,
+            .output = self.current_input,
+            .channel_outputs = &.{},
+        });
+        defer self.engine.allocator.free(next_acts);
 
-        self.completed_nodes += 1;
+        for (next_acts) |next_act| {
+            try self.enqueueReady(next_act);
+        }
     }
 };

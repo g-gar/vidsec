@@ -34,6 +34,7 @@ pub const DirectedRouter = struct {
     plan: ExecutionPlan,
     ambient: *const AmbientContext,
     repos: ?*const repository.RepositoryRegistry,
+    external_outputs: ?*const std.StringHashMapUnmanaged(PayloadHandle) = null,
 
     current_input: PayloadHandle = PayloadHandle.empty(),
     outputs: std.StringHashMapUnmanaged(PayloadHandle) = .empty,
@@ -56,8 +57,22 @@ pub const DirectedRouter = struct {
         errdefer ctx.allocator.free(activated);
 
         for (exec_plan.nodes, 0..) |node, i| {
-            indegrees[i] = node.indegree;
-            activated[i] = false;
+            if (ctx.active_mask) |mask| {
+                if (i < mask.len and !mask[i]) {
+                    indegrees[i] = std.math.maxInt(usize);
+                    activated[i] = true;
+                    continue;
+                }
+                var in_count: usize = 0;
+                for (node.predecessors) |p| {
+                    if (p < mask.len and mask[p]) in_count += 1;
+                }
+                indegrees[i] = in_count;
+                activated[i] = false;
+            } else {
+                indegrees[i] = node.indegree;
+                activated[i] = false;
+            }
         }
 
         const self = try ctx.allocator.create(DirectedRouter);
@@ -68,6 +83,7 @@ pub const DirectedRouter = struct {
             .plan = exec_plan,
             .ambient = ctx.ambient,
             .repos = ctx.repos,
+            .external_outputs = ctx.external_outputs,
             .remaining_indegree = indegrees,
             .activated = activated,
         };
@@ -158,6 +174,7 @@ pub const DirectedRouter = struct {
         if (task_spec.outputs.len == 0) {
             try self.outputs.put(arena_alloc, task_spec.id, output);
         }
+        self.current_input = output;
     }
 
     fn activateReadyQueue(self: *DirectedRouter, alloc: Allocator, ready: *std.ArrayListUnmanaged(NodeId)) ![]TaskActivation {
@@ -171,8 +188,12 @@ pub const DirectedRouter = struct {
 
             const node = self.plan.nodes[node_id];
             if (node.step != .task) {
-                // Skip non-task nodes cleanly in pure graph traversal
-                try self.unlockSuccessors(alloc, node_id, ready);
+                self.pending_count += 1;
+                try activations.append(alloc, .{
+                    .node_id = node_id,
+                    .step_input = self.current_input,
+                    .consumed_channels = node.consumed_channels,
+                });
                 continue;
             }
 
@@ -286,6 +307,11 @@ pub const DirectedRouter = struct {
                     if (self.outputs.get(ref)) |prev_out| {
                         return prev_out;
                     }
+                    if (self.external_outputs) |ext| {
+                        if (ext.get(ref)) |ext_out| {
+                            return ext_out;
+                        }
+                    }
                     if (self.repos) |repos| {
                         if (repos.get(ref)) |repo| {
                             if (repo.readPayload(ref)) |payload| {
@@ -300,6 +326,8 @@ pub const DirectedRouter = struct {
 
                         const base_payload: ?PayloadHandle = if (self.outputs.get(target_name)) |bo|
                             bo
+                        else if (self.external_outputs) |ext|
+                            ext.get(target_name)
                         else if (self.repos) |repos|
                             if (repos.get(target_name)) |repo| repo.readPayload(target_name) else null
                         else
