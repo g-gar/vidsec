@@ -5,7 +5,7 @@
 | **ID** | `ARCH-014` |
 | **Depends On** | [`ARCH-011`](./011-pipeline-yaml-specification-and-orchestration.md), [`ARCH-013`](./013-engine-jobs-spec-app-aliases-and-yaml-modularization.md) |
 | **Area** | `src/dataflow/`, `src/engine/`, `src/yaml/`, `src/ast/`, `src/plugin/` |
-| **Status** | `DESIGN & ARCHITECTURE SPECIFICATION` |
+| **Status** | `COMPLETED` |
 
 ---
 

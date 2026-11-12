@@ -11,6 +11,9 @@ pub const plan = @import("plan.zig");
 pub const ExecutionPlan = plan.ExecutionPlan;
 pub const compilePlan = plan.compilePlan;
 pub const Coordinator = @import("coordinator.zig").Coordinator;
+pub const reactor = @import("reactor.zig");
+pub const RecordEmitter = reactor.RecordEmitter;
+pub const PushReactor = reactor.PushReactor;
 
 pub const PipelineAST = ast_mod.PipelineAST;
 pub const ModuleRegistry = modules_mod.ModuleRegistry;
@@ -156,6 +159,10 @@ pub const PipelineEngine = struct {
 
     pub fn withKernel(self: *PipelineEngine, k: ?*@import("../kernel/mod.zig").KernelContext) void {
         self.kernel = k;
+    }
+
+    pub fn createReactor(self: *PipelineEngine, pipeline_name: []const u8) anyerror!*PushReactor {
+        return PushReactor.init(self.allocator, self, pipeline_name);
     }
 
     pub fn run(self: *PipelineEngine, input_payload: PayloadHandle) anyerror!ExecutionSummary {
@@ -314,6 +321,22 @@ pub const PipelineEngine = struct {
         parent_span_id: [8]u8,
         pool: ?*WorkerPool,
     ) anyerror!void {
+        return self.executeSubPipelineSelective(name, null, active_input, outputs, outputs_alloc, net_ctrl, summary, trace_id, parent_span_id, pool);
+    }
+
+    pub fn executeSubPipelineSelective(
+        self: *PipelineEngine,
+        name: []const u8,
+        active_mask: ?[]const bool,
+        active_input: PayloadHandle,
+        outputs: *std.StringHashMapUnmanaged(PayloadHandle),
+        outputs_alloc: Allocator,
+        net_ctrl: *EngineNetworkController,
+        summary: *ExecutionSummary,
+        trace_id: [16]u8,
+        parent_span_id: [8]u8,
+        pool: ?*WorkerPool,
+    ) anyerror!void {
         const pipe = self.ast.getPipeline(name) orelse return error.UnknownSubPipeline;
         summary.final_pipeline = name;
 
@@ -321,13 +344,16 @@ pub const PipelineEngine = struct {
         defer exec_plan.deinit();
 
         if (self.ast.runtime.scheduler == .dag and pool != null and exec_plan.nodes.len > 1) {
-            try Coordinator.run(self, &exec_plan, active_input, outputs, outputs_alloc, net_ctrl, summary, trace_id, parent_span_id, pool.?);
+            try Coordinator.runSelective(self, &exec_plan, active_mask, active_input, outputs, outputs_alloc, net_ctrl, summary, trace_id, parent_span_id, pool.?);
             return;
         }
 
         var current_input = active_input;
 
         for (exec_plan.topological_order) |node_idx| {
+            if (active_mask) |mask| {
+                if (!mask[node_idx]) continue;
+            }
             if (summary.halted_early) break;
             const step = exec_plan.nodes[node_idx].step;
 

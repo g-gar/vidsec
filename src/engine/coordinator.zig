@@ -108,6 +108,8 @@ pub const Coordinator = struct {
     in_flight: usize = 0,
     completed_nodes: usize = 0,
     current_input: PayloadHandle,
+    active_mask: ?[]const bool = null,
+    total_active: usize = 0,
 
     pub fn run(
         engine: *PipelineEngine,
@@ -121,14 +123,47 @@ pub const Coordinator = struct {
         parent_span_id: [8]u8,
         pool: *WorkerPool,
     ) anyerror!void {
+        return runSelective(engine, plan, null, active_input, outputs, outputs_alloc, net_ctrl, summary, trace_id, parent_span_id, pool);
+    }
+
+    pub fn runSelective(
+        engine: *PipelineEngine,
+        plan: *const ExecutionPlan,
+        active_mask: ?[]const bool,
+        active_input: PayloadHandle,
+        outputs: *std.StringHashMapUnmanaged(PayloadHandle),
+        outputs_alloc: Allocator,
+        net_ctrl: *EngineNetworkController,
+        summary: *ExecutionSummary,
+        trace_id: [16]u8,
+        parent_span_id: [8]u8,
+        pool: *WorkerPool,
+    ) anyerror!void {
         const nodes_count = plan.nodes.len;
         if (nodes_count == 0) return;
 
+        var total_active: usize = 0;
         const indegrees = try engine.allocator.alloc(usize, nodes_count);
         defer engine.allocator.free(indegrees);
+
         for (plan.nodes, 0..) |n, i| {
-            indegrees[i] = n.indegree;
+            if (active_mask) |mask| {
+                if (!mask[i]) {
+                    indegrees[i] = std.math.maxInt(usize);
+                    continue;
+                }
+                total_active += 1;
+                var in_count: usize = 0;
+                for (n.predecessors) |p| {
+                    if (mask[p]) in_count += 1;
+                }
+                indegrees[i] = in_count;
+            } else {
+                indegrees[i] = n.indegree;
+                total_active += 1;
+            }
         }
+        if (total_active == 0) return;
 
         var coord = Coordinator{
             .engine = engine,
@@ -144,6 +179,8 @@ pub const Coordinator = struct {
             .pipeline_name = plan.pipeline_name,
             .indegrees = indegrees,
             .current_input = active_input,
+            .active_mask = active_mask,
+            .total_active = total_active,
         };
         defer {
             coord.ready_queue.deinit(engine.allocator);
@@ -158,7 +195,7 @@ pub const Coordinator = struct {
         }
 
         // Coordinator Main Event Loop
-        while (coord.completed_nodes < nodes_count) {
+        while (coord.completed_nodes < total_active) {
             // 1. Dispatch all ready nodes while we have capacity and are not stopped
             while (coord.ready_queue.items.len > 0 and !coord.has_fatal_error and !coord.summary.halted_early) {
                 const node_id = coord.ready_queue.orderedRemove(0);
@@ -450,6 +487,9 @@ pub const Coordinator = struct {
 
             // Decrement successors' indegree and unlock ready nodes
             for (node.successors) |succ_id| {
+                if (self.active_mask) |mask| {
+                    if (!mask[succ_id]) continue;
+                }
                 self.indegrees[succ_id] -= 1;
                 if (self.indegrees[succ_id] == 0) {
                     try self.enqueueReady(succ_id);
