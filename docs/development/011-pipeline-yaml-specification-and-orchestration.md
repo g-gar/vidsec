@@ -3,9 +3,9 @@
 | Metadata | Value |
 | :--- | :--- |
 | **ID** | `ARCH-011` |
-| **Depends On** | [`ARCH-005`](./005-mangadex-client-library.md) through [`ARCH-010`](./010-multisource-architecture-and-scrapers.md) |
+| **Depends On** | [`ARCH-005`](./005-mangadex-client-library.md) through [`ARCH-010`](./010-multisource-architecture-and-scrapers.md), [`ARCH-013`](./013-engine-jobs-spec-app-aliases-and-yaml-modularization.md), [`ARCH-017`](./017-concurrent-dag-scheduler-and-host-concurrency-contract.md), [`ARCH-018`](./018-type-driven-inbound-router-and-service-catalog.md), [`ARCH-019`](./019-collectors-architecture-and-inbound-agents.md) |
 | **Area** | `apps/mangadex/configs/pipeline.yaml` & `apps/mangadex/src/config.zig` |
-| **Status** | `SPECIFICATION & DESIGN` |
+| **Status** | `COMPLETED & MODERNIZED (Integrated with Collectors, Dynamic Entrypoints, Explicit Least-Privilege Network Isolation, and Fork/Join DAG Backpressure)` |
 
 ---
 
@@ -13,26 +13,36 @@
 
 The `apps/mangadex` application operates as an autonomous, dataflow-driven content pipeline powered by **Flowdata v2**. Rather than hardcoding sync loops or CLI scripts, the entire synchronization, ingestion, transformation, and distribution process is defined declaratively in `pipeline.yaml`.
 
-### 1.1. End-to-End Orchestration Stages
+Workload items are decoupled from static pipeline configuration: they arrive dynamically via autonomous collectors (`flowdata-collector-filewatcher` or `flowdata-collector-webhook`), lightweight CLI job dispatchers (`send_mangadex_job.sh`), or static batch files as universal `JobEnvelope` records.
+
+### 1.1. End-to-End Orchestration Topology
 
 ```mermaid
 flowchart TD
-    subgraph S0["Stage 0: Catalog Discovery"]
-        Sub["subscriptions:<br/>(Series Targets)"] --> FetchCat["fetcher/sync_subscriptions<br/>(Query Datasource Providers)"]
-        FetchCat --> UpsertMeta["Upsert Series & Chapters<br/>status='discovered'"]
+    subgraph Ingress["Dynamic Ingress (collectors/ - ARCH-019 & CLI Dispatcher)"]
+        JobsFile["jobs.yaml / Webhooks<br/>(Series Targets)"] --> Collector["file_watcher / webhook<br/>(Emits JobEnvelope)"]
+        CLIDispatch["send_mangadex_job.sh<br/>(Direct JobEnvelope POST)"] --> DaemonIn["Flowdata HTTP Ingress<br/>(/v1/jobs)"]
+        Collector --> DaemonIn
     end
 
-    subgraph S1["Stage 1: Concurrent Ingestion"]
-        UpsertMeta --> ClaimQueue["Claim Pending Chapters<br/>(Queue Ingestion)"]
-        ClaimQueue --> ConcurFetch["fetcher/download_pages<br/>(Parallel Workers)"]
-        ConcurFetch --> StagingDB["Write Page Blobs to DB<br/>status='downloaded'"]
-    end
-
-    subgraph S2["Stage 2: CBZ Packaging & Direct Datasource Delivery"]
-        StagingDB --> PackCBZ["packager/build_cbz_archive<br/>(miniz Engine)"]
-        PackCBZ --> GenXML["Generate ComicInfo.xml<br/>(Anansi Schema v2.1)"]
-        GenXML --> EvictBlobs["Evict Page Blobs from DB<br/>status='packed'"]
-        EvictBlobs --> OutDS["Deliver CBZ to komga_library Datasource<br/>(Writes disk file + triggers HTTP scan)"]
+    subgraph Pipeline["Pipeline: manga_sync (workers: 4, max_inflight_bytes: 512MiB)"]
+        DaemonIn --> FetchMeta["1. fetch_details<br/>[network: mangadex_api]<br/><i>where: enabled == true</i>"]
+        
+        %% Fork / Fan-out from fetch_details
+        FetchMeta -->|series_details| FetchChap["2. fetch_chapters<br/>[network: mangadex_api]"]
+        FetchChap -->|discovered_chapters| FetchPages["3. fetch_pages<br/>[network: mangadex_api]"]
+        FetchPages -->|discovered_pages| DownloadPages["4. download_pages<br/>[concurrency: 4, network: mangadex_api]"]
+        DownloadPages -->|downloaded_pages| DetectFmt["5. detect_formats<br/>[concurrency: 4, CPU isolated]"]
+        
+        %% Fork / Fan-out from detect_formats
+        DetectFmt -->|pages_with_types (Fork)| AnalyzeImg["6. analyze_pages<br/>[concurrency: 4, QA, CPU isolated]"]
+        DetectFmt -->|pages_with_types (Join input)| BuildCBZ["8. build_cbz<br/>[Join / Fan-in, miniz, CPU isolated]"]
+        
+        %% Fork / Fan-out from fetch_details to ComicInfo
+        FetchMeta -->|series_details (Fork)| GenXML["7. generate_comicinfo<br/>[Anansi XML v2.1, CPU isolated]"]
+        GenXML -->|comic_info_xml (Join input)| BuildCBZ
+        
+        BuildCBZ --> CBZOut["Deliver to komga_library<br/>(retain: true, intermediate RAM deallocated)"]
     end
 ```
 
@@ -44,183 +54,259 @@ flowchart TD
 version: 2
 
 # =============================================================================
-# RUNTIME & THREAD POOL CONFIGURATION
+# MangaDex Catalog Ingestion & Synchronization Pipeline
+# Declarative, field-routed analytical pipeline with black-box tasks.
+# Memory is a first-class datasource; SQLite is an analytical sink.
+# Employs concurrent DAG orchestration, isolated CPU tasks, explicit egress
+# network bindings, and zero-copy refcounted memory reclamation (ARCH-017).
 # =============================================================================
+
 runtime:
-  workers: auto                     # Detects CPU cores; dedicated workers for download & packaging
-  memory_limit_mb: 2048             # Pipeline backpressure limit
+  workers: 4
+  scheduler: dag
+  max_inflight_bytes: 512MiB
+  retain_all: false
 
-# =============================================================================
-# VIRTUAL NETWORK ADAPTERS (Egress, Timeouts, Rate-Limiting, Proxies)
-# =============================================================================
-networks:
-  # Ingress/Egress adapter for MangaDex API and MangaDex@Home CDNs
-  mangadex_net:
-    type: egress
-    timeouts:
-      connect_ms: 5000
-      read_idle_ms: 15000
-      pool_acquire_ms: 2000
-    rate_limit:
-      requests_per_sec: 5           # Strictly enforces MangaDex API rate limit rules
-      burst: 10
-    headers:
-      User-Agent: "flowdata-mangadex-app/0.1.0"
-
-  # Ingress/Egress adapter for HTML scrapers (browser impersonation)
-  scraper_net:
-    type: egress
-    timeouts:
-      connect_ms: 8000
-      read_idle_ms: 20000
-    rate_limit:
-      requests_per_sec: 2
-    headers:
-      User-Agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-      Accept-Language: "en-US,en;q=0.9,es;q=0.8"
-
-  # Internal/Local network adapter for Komga REST API communication
-  komga_net:
-    type: egress
-    timeouts:
-      connect_ms: 3000
-      read_idle_ms: 30000
-
-# =============================================================================
-# DATASOURCES (Memory, SQLite, Providers & Sinks Unified)
-# =============================================================================
 datasources:
-  # Fast RAM buffer for inter-task communication and routing logic
+  # 1. External work items / jobs target datasource (fallback for offline batch CLI runs;
+  # in daemon / collector mode, items arrive dynamically via JobEnvelope from collectors)
+  tracked_targets:
+    driver: yaml_file
+    path: "${MANGADEX_JOBS_PATH:-./configs/jobs.yaml}"
+
+  # 2. Fast in-memory repository for zero-copy step chaining and RAM coordination
   pipeline_memory:
-    type: memory
+    driver: memory
 
-  # Unified relational SQLite database for tracking, queues, and metadata
-  library_db:
-    type: sqlite
-    path: "${MANGADEX_DB_PATH:-./data/manga_library.sqlite}"
-    options:
-      journal_mode: "WAL"
-      auto_vacuum: "INCREMENTAL"
-      busy_timeout_ms: 5000
+  # 3. Relational sink for long-term catalog caching and offline queries
+  catalog_db:
+    driver: sqlite
+    path: "${MANGADEX_DB_PATH:-./output/mangadex.db}"
+    schema: "${MANGADEX_SCHEMA_PATH:-./configs/schemas.yaml}"
 
-  # MangaDex Official API Provider Datasource
-  mangadex:
-    type: mangadex
-    network: mangadex_net
-    api_url: "${MANGADEX_API_URL:-https://api.mangadex.org}"
-    auth:
-      type: oidc_personal
-      client_id: "${MANGADEX_CLIENT_ID}"
-      client_secret: "${MANGADEX_CLIENT_SECRET}"
-      username: "${MANGADEX_USERNAME}"
-      password: "${MANGADEX_PASSWORD}"
-      token: "${MANGADEX_ACCESS_TOKEN:-}"
-
-  # Web Scraper Provider Datasource
-  tmo_scraper:
-    type: html_scraper
-    network: scraper_net
-    base_url: "https://visortmo.com"
-
-  # Komga Output Persistence Strategy (Library Disk Directory + HTTP Scan Trigger)
+  # 4. Storage destination for compiled .cbz comic archives
   komga_library:
-    type: komga
-    network: komga_net
-    directory: "${KOMGA_LIBRARY_DIR:-/data/comics/manga/}"
-    url: "${KOMGA_URL:-http://localhost:25600}"
-    auth:
-      api_key: "${KOMGA_API_KEY}"
-      username: "${KOMGA_USERNAME:-}"
-      password: "${KOMGA_PASSWORD:-}"
-    default_library_id: "${KOMGA_LIBRARY_ID}"
-    trigger_scan: true
+    driver: file_store
+    directory: "${KOMGA_LIBRARY_DIR:-./output/cbz/}"
 
-# =============================================================================
-# SUBSCRIPTIONS (Manga Tracking Targets)
-# =============================================================================
-subscriptions:
-  - title: "One Piece"
-    datasource: mangadex
-    series_id: "a1c7d817-0e59-4555-b52e-322e2365879e"
-    languages: ["es-la", "es", "en"]
-    chapters: "latest:5"            # Options: 'all', 'latest:N', or 'start..end'
+networks:
+  # Isolated egress virtual network adapter with ACL rules, token-bucket rate limiter,
+  # and declarative environment-driven headers (interpolated from .env / host environment).
+  # Principle of least privilege: bound ONLY to tasks performing external HTTP calls.
+  mangadex_api:
+    driver: egress
+    headers:
+      User-Agent: "${MANGADEX_USER_AGENT:-VidsecMangaDex/3.0.0}"
+      Authorization: "${MANGADEX_ACCESS_TOKEN:-}"
+    policy:
+      block_private_ranges: true
+      allow_rules:
+        - schemes: [https]
+          hosts:
+            - "api.mangadex.org"
+            - "auth.mangadex.org"
+            - "uploads.mangadex.org"
+            - "*.mangadex.org"
+            - "*.mangadex.network"
+          operations: [GET, POST]
+    rate_limit:
+      requests_per_second: 30
+      burst: 60
 
-  - title: "Kingdom"
-    datasource: tmo_scraper
-    series_id: "manga-kingdom-spanish"
-    languages: ["es"]
-    chapters: "all"
-    enabled: false                  # Paused: completely skipped by sync workers
-
-# =============================================================================
-# DATAFLOW PLUGINS (C-ABI .so / Static Tasks)
-# =============================================================================
 modules:
-  fetcher:
-    path: "./zig-out/lib/libmangadex_fetcher.so"
-  packager:
-    path: "./zig-out/lib/libcbz_packager.so"
+  manga_catalog:
+    path: "./zig-out/lib/libmanga_catalog.so"
 
-# =============================================================================
-# DATAFLOW PIPELINES (DAG Orchestration)
-# =============================================================================
 pipelines:
-  main:
+  # ===========================================================================
+  # MANGA CATALOG SYNCHRONIZATION PIPELINE
+  #
+  # DAG TOPOLOGY (Fork / Fan-Out & Join / Fan-In with Refcounted Arenas):
+  #
+  #                         [tracked_targets]
+  #                                |
+  #                       (1. fetch_details)
+  #                           /        \  (Fork / Fan-out asíncrono)
+  #                          /          \
+  #               (2. fetch_chapters)    (7. generate_comicinfo) [CPU-only]
+  #                        |                       |
+  #                (3. fetch_pages)                |
+  #                        |                       |
+  #             (4. download_pages) [elemental: 4] |
+  #                        |                       |
+  #              (5. detect_formats) [CPU-only]    |
+  #                     /      \                   |
+  #                    /        \                  |
+  #        (6. analyze_pages)    \                 |
+  #        [elemental: 4, CPU]    \                |
+  #                                \               /
+  #                                 (8. build_cbz) [Join / Fan-in, CPU-only]
+  # ===========================================================================
+  manga_sync:
     steps:
-      # Step 1: Query source providers & discover new un-downloaded chapters
-      - id: stage1_sync_catalogs
-        uses: fetcher/sync_subscriptions
-        params:
-          subscriptions_ref: subscriptions
+      # -----------------------------------------------------------------------
+      # STEP 1: Fetch Series Metadata from Inbound Job / tracked_targets
+      # Unary filter rejects disabled jobs with zero overhead.
+      # -----------------------------------------------------------------------
+      - id: fetch_details
+        uses: manga_catalog/fetch_series_details
+        where: "enabled == true"
+        networks:
+          - mangadex_api
+        inputs:
+          input: tracked_targets
+        outputs:
+          series_details:
+            datasource: pipeline_memory
+          catalog_series:
+            datasource: catalog_db
+
+      # -----------------------------------------------------------------------
+      # STEP 2: Fetch Chapters List
+      # Receives series_id from step 1's series_details
+      # -----------------------------------------------------------------------
+      - id: fetch_chapters
+        uses: manga_catalog/fetch_chapters
+        networks:
+          - mangadex_api
+        inputs:
+          input: series_details
         outputs:
           discovered_chapters:
-            datasource: library_db
+            datasource: catalog_db
 
-      # Step 2: Concurrently fetch page images for chapters marked 'discovered'
-      - id: stage2_download_pages
-        uses: fetcher/download_chapter_pages
+      # -----------------------------------------------------------------------
+      # STEP 3: Scrape Chapter Pages
+      # Elemental expansion over discovered chapters (filtered by tracking job)
+      # -----------------------------------------------------------------------
+      - id: fetch_pages
+        uses: manga_catalog/fetch_chapter_pages
         concurrency: 4
+        networks:
+          - mangadex_api
         inputs:
-          chapter_id: stage1_sync_catalogs.discovered_chapters.id
+          input: discovered_chapters
         outputs:
-          completed_chapter:
+          discovered_pages:
+            datasource: catalog_db
+
+      # -----------------------------------------------------------------------
+      # STEP 4: Download Chapter Pages over HTTP
+      # Elemental task processing pages concurrently with token-bucket rate limiter
+      # -----------------------------------------------------------------------
+      - id: download_pages
+        uses: manga_catalog/download_chapter_page
+        concurrency: 4
+        networks:
+          - mangadex_api
+        inputs:
+          input: fetch_pages.discovered_pages
+        outputs:
+          downloaded_pages:
             datasource: pipeline_memory
 
-      # Step 3: Compile CBZ archive with ComicInfo.xml, evict blobs, and deliver directly to Komga
-      - id: stage3_package_cbz
-        uses: packager/build_cbz_archive
+      # -----------------------------------------------------------------------
+      # STEP 5: Magic Bytes Content-Type Detection
+      # Elemental task inspecting raw bytes to identify MIME format.
+      # Network: isolated (CPU-only image parsing)
+      # -----------------------------------------------------------------------
+      - id: detect_formats
+        uses: manga_catalog/detect_content_type
+        concurrency: 4
         inputs:
-          chapter_id: stage2_download_pages.completed_chapter.id
+          input: download_pages.downloaded_pages
         outputs:
-          published_chapter:
-            datasource: komga_library
+          pages_with_types:
+            datasource: pipeline_memory
+
+      # -----------------------------------------------------------------------
+      # STEP 6: Simulated Static Image Analysis & Spread Detection
+      # Elemental task with broadcast parameters configured declaratively.
+      # Network: isolated (CPU-only quality validation)
+      # -----------------------------------------------------------------------
+      - id: analyze_pages
+        uses: manga_catalog/analyze_image
+        concurrency: 4
+        inputs:
+          input: detect_formats.pages_with_types
+        params:
+          default_width: 1200
+          default_height: 1800
+          spread_threshold: 1.3
+        outputs:
+          analyzed_pages:
+            datasource: pipeline_memory
+
+      # -----------------------------------------------------------------------
+      # STEP 7: Generate ComicInfo.xml Metadata
+      # Serializes chapter and series metadata into Anansi ComicInfo XML buffer.
+      # Network: isolated (CPU-only XML generation)
+      # -----------------------------------------------------------------------
+      - id: generate_comicinfo
+        uses: manga_catalog/generate_comicinfo
+        inputs:
+          input: series_details
+        params:
+          series_title: "${MANGADEX_SERIES_TITLE:-}"
+          language: "en"
+          manga_type: "YesAndRightToLeft"
+        outputs:
+          comic_info_xml:
+            datasource: pipeline_memory
+
+      # -----------------------------------------------------------------------
+      # STEP 8: Bundle into Standard .cbz (ZIP) Archive
+      # Packages image pages with STORE compression and ComicInfo.xml.
+      # Network: isolated (CPU-only ZIP compression)
+      # -----------------------------------------------------------------------
+      - id: build_cbz
+        uses: manga_catalog/build_cbz_archive
+        inputs:
+          pages: detect_formats.pages_with_types
+          comic_info_xml: generate_comicinfo.comic_info_xml
+        params:
+          output_dir: "${MANGADEX_CBZ_DIR:-./output/cbz/}/{series}/"
+        after:
+          - generate_comicinfo
+        outputs:
+          cbz_archive:
+            datasource: pipeline_memory
+            retain: true
 ```
 
 ---
 
-## 3. High-Level Schema Mapping & AST Alignment
+## 3. Key Architectural Alignments
 
-By unifying all providers, databases, and sinks under **`datasources:`**, Flowdata requires **zero custom top-level parser hacks** for providers or sinks.
+1. **Autonomous Collector Ingress & Job Dispatcher (`collectors/`, `send_mangadex_job.sh`)**:
+   - Work items can arrive via `flowdata-collector-filewatcher` or webhook receiver.
+   - Alternatively, developers can dispatch single jobs using `send_mangadex_job.sh` directly to a running Flowdata engine daemon without launching collector background daemons.
+   - `tracked_targets` is preserved purely as an optional batch fallback for offline CLI invocation (`./run_pipeline.sh`).
 
-1. **`datasources` AST Node (Existing Flowdata Standard)**:
-   * Drivers (`mangadex`, `komga`, `html_scraper`) are registered via `kernel.datasources.registerDriver("name", factory)`.
-   * The YAML parser naturally parses their parameters and automatically resolves the `network:` binding via `KernelContext.outbound`.
-2. **`subscriptions` AST Node (Single New Domain Node)**:
-   * Parsed into `[]SubscriptionTargetNode`:
-     * `title: []const u8`
-     * `datasource: []const u8` (Foreign key to a provider declared in `datasources:`)
-     * `series_id: []const u8` (Identifier or slug in the remote provider)
-     * `languages: []const []const u8`
-     * `chapters: []const u8` (Selector expression: `"all"`, `"latest:N"`, or `"start..end"`)
-     * `enabled: bool = true` (If `false`, skipped during synchronization)
+2. **Unary Predicate Job Filtering (`where: "enabled == true"`)**:
+   - Rather than routing through synthetic intermediate router tasks, the entrypoint step `fetch_details` declares `where: "enabled == true"`.
+   - Disabled jobs are discarded immediately before initiating network or database calls.
+
+3. **Dynamic Entrypoint Selection**:
+   - The engine automatically selects the declared pipeline `manga_sync` via `ast.getEntrypoint()`, eliminating the legacy requirement of naming pipelines literally `"main"`.
+
+4. **Principle of Least Privilege for Virtual Networks**:
+   - The runtime defaults to `"isolated"`.
+   - Outbound HTTP access is restricted strictly to the 4 I/O steps (`fetch_details`, `fetch_chapters`, `fetch_pages`, `download_pages`) that explicitly declare `networks: [mangadex_api]`.
+   - Analytical, formatting, XML generation, and archive compression steps remain strictly CPU-isolated.
+
+5. **Concurrent DAG & Zero-Copy Memory Lifecycle (ARCH-017)**:
+   - Configured with `scheduler: dag`, `workers: 4`, and `max_inflight_bytes: 512MiB`.
+   - Per-step arenas deallocate intermediate buffers (`downloaded_pages`, `pages_with_types`, `comic_info_xml`) as soon as downstream consumers finish.
+   - The final artifact declares `retain: true` on `cbz_archive`.
 
 ---
 
 ## 4. Verification and Acceptance Criteria
 
 1. **AST Parsing Test**:
-   * Validates that `apps/mangadex/configs/pipeline.yaml` parses completely via `flowdata.yaml.ast_loader` without unknown node warnings.
+   - Validates that `apps/mangadex/configs/pipeline.yaml` parses completely via `flowdata.yaml.ast_loader` into 8 DAG tasks with custom entrypoint `manga_sync` and default isolated runtime network.
 2. **Environment Variable Expansion**:
-   * Asserts that secrets (`${MANGADEX_CLIENT_SECRET}`, `${KOMGA_API_KEY}`) interpolate properly from process env and `.env` files via `EnvInterpolator`.
-3. **DAG Validation**:
-   * Verifies all step input/output bindings resolve cleanly across memory, SQLite, and file store repositories without broken references.
+   - Asserts that secrets (`${MANGADEX_ACCESS_TOKEN}`, `${KOMGA_LIBRARY_DIR}`) interpolate properly from process env and `.env` files via `EnvInterpolator`.
+3. **Automated Suite**:
+   - Fully verified with `cd apps/mangadex && zig build test --summary all` (44/44 tests green).

@@ -249,6 +249,14 @@ pub const PipelineAST = struct {
     datasources: []const DatasourceSpec = &.{},
     jobs: []const JobSpec = &.{},
     pipelines: []const PipelineDecl = &.{},
+    entrypoint: ?[]const u8 = null,
+
+    pub fn getEntrypoint(self: PipelineAST) ?[]const u8 {
+        if (self.entrypoint) |ep| return ep;
+        if (self.getPipeline("main")) |_| return "main";
+        if (self.pipelines.len > 0) return self.pipelines[0].name;
+        return null;
+    }
 
     pub fn getModule(self: PipelineAST, name: []const u8) ?ModuleSpec {
         for (self.modules) |m| {
@@ -404,21 +412,22 @@ pub const PipelineBuilder = struct {
 
     /// Performs holistic semantic validation and freezes the AST.
     /// Checks:
-    /// 1. Presence of "main" pipeline.
+    /// 1. At least one pipeline is defined (defaults to "main" if present, or first declared).
     /// 2. Router destinations and step network references exist.
     /// 3. Absence of recursive router cycles (DFS graph color marking).
     pub fn finish(self: *PipelineBuilder) ValidationError!PipelineAST {
         const alloc = self.allocator();
 
-        // 1. Verify "main" exists
-        var found_main = false;
+        // 1. Verify at least one pipeline exists
+        if (self.pipelines.items.len == 0) return error.MissingMainPipeline;
+
+        var entrypoint_name: []const u8 = self.pipelines.items[0].name;
         for (self.pipelines.items) |p| {
             if (std.mem.eql(u8, p.name, "main")) {
-                found_main = true;
+                entrypoint_name = "main";
                 break;
             }
         }
-        if (!found_main) return error.MissingMainPipeline;
 
         // 2. Verify router destination pipelines and step network bindings exist
         for (self.pipelines.items) |p| {
@@ -457,6 +466,7 @@ pub const PipelineBuilder = struct {
             .datasources = try self.datasources.toOwnedSlice(alloc),
             .jobs = try self.jobs.toOwnedSlice(alloc),
             .pipelines = try self.pipelines.toOwnedSlice(alloc),
+            .entrypoint = entrypoint_name,
         };
     }
 
@@ -636,16 +646,20 @@ test "ast: PipelineBuilder detects circular router cycle" {
     try testing.expectError(error.CircularRouterReference, res);
 }
 
-test "ast: PipelineBuilder detects missing main pipeline" {
+test "ast: PipelineBuilder adopts custom entrypoint or detects empty pipelines" {
     const testing = std.testing;
     var builder = PipelineBuilder.init(testing.allocator);
     defer builder.deinit();
 
+    // 1. Zero pipelines -> error.MissingMainPipeline
+    try testing.expectError(error.MissingMainPipeline, builder.finish());
+
+    // 2. Custom pipeline without "main" adopts custom pipeline as entrypoint
     try builder.addPipeline(.{
         .name = "custom_pipeline",
         .steps = &.{},
     });
 
-    const res = builder.finish();
-    try testing.expectError(error.MissingMainPipeline, res);
+    const ast = try builder.finish();
+    try testing.expectEqualStrings("custom_pipeline", ast.getEntrypoint().?);
 }

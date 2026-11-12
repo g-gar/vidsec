@@ -202,8 +202,9 @@ pub const PipelineRunner = struct {
     ) anyerror!void {
         _ = wal_db_path;
 
-        // 1. Validate main pipeline exists
-        if (self.ast.getPipeline("main") == null) {
+        // 1. Validate entrypoint pipeline exists
+        const entrypoint = self.ast.getEntrypoint() orelse return error.MissingMainPipeline;
+        if (self.ast.getPipeline(entrypoint) == null) {
             return error.MissingMainPipeline;
         }
 

@@ -226,8 +226,10 @@ pub const PipelineEngine = struct {
 
         var outputs: std.StringHashMapUnmanaged(PayloadHandle) = .empty;
 
-        // 3. Execute main pipeline
-        try self.executeSubPipeline("main", input_payload, &outputs, outputs_alloc, &net_ctrl, &summary, trace_id, root_span_id, pool);
+        // 3. Execute entrypoint pipeline
+        const entrypoint = self.ast.getEntrypoint() orelse "main";
+        summary.final_pipeline = entrypoint;
+        try self.executeSubPipeline(entrypoint, input_payload, &outputs, outputs_alloc, &net_ctrl, &summary, trace_id, root_span_id, pool);
 
         if (self.kernel) |k| {
             const end_ns: u64 = nowNs();
