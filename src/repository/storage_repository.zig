@@ -3,9 +3,9 @@ const Allocator = std.mem.Allocator;
 const dataflow = @import("flowdata_dataflow");
 const PayloadHandle = dataflow.PayloadHandle;
 
-/// Polymorphic abstract interface for storage repositories (Memory, SQLite, FileStore, Elasticsearch, etc.).
-/// Completely decoupled from SQL and underlying storage engines.
-pub const StorageRepository = struct {
+/// Polymorphic abstract interface for repositories (Memory, SQLite, FileStore, S3, etc.).
+/// Completely decoupled from SQL and underlying storage engines (Spring Data / DDD pattern).
+pub const Repository = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
@@ -16,30 +16,33 @@ pub const StorageRepository = struct {
         deinit: *const fn (ctx: *anyopaque) void,
     };
 
+    pub const RepositoryVTable = VTable;
     pub const StorageRepositoryVTable = VTable;
 
-    pub fn writePayload(self: StorageRepository, channel_or_table: []const u8, payload: PayloadHandle) !void {
+    pub fn writePayload(self: Repository, channel_or_table: []const u8, payload: PayloadHandle) !void {
         try self.vtable.writePayload(self.ptr, channel_or_table, payload);
     }
 
-    pub fn readPayload(self: StorageRepository, channel_or_table: []const u8) ?PayloadHandle {
+    pub fn readPayload(self: Repository, channel_or_table: []const u8) ?PayloadHandle {
         return self.vtable.readPayload(self.ptr, channel_or_table);
     }
 
-    pub fn recordCount(self: StorageRepository, channel_or_table: []const u8) usize {
+    pub fn recordCount(self: Repository, channel_or_table: []const u8) usize {
         return self.vtable.recordCount(self.ptr, channel_or_table);
     }
 
-    pub fn deinit(self: StorageRepository) void {
+    pub fn deinit(self: Repository) void {
         self.vtable.deinit(self.ptr);
     }
 
-    /// Statically asserts at compile-time that type `T` strictly implements the `StorageRepository` interface.
+    /// Statically asserts at compile-time that type `T` strictly implements the `Repository` interface.
     pub fn assertImplements(comptime T: type) void {
         comptime {
-            if (!@hasDecl(T, "storageRepository")) {
-                @compileError("Type '" ++ @typeName(T) ++ "' must declare 'pub fn storageRepository(*" ++ @typeName(T) ++ ") StorageRepository'");
+            if (!@hasDecl(T, "repository") and !@hasDecl(T, "storageRepository")) {
+                @compileError("Type '" ++ @typeName(T) ++ "' must declare 'pub fn repository(*" ++ @typeName(T) ++ ") Repository' or 'pub fn storageRepository(*" ++ @typeName(T) ++ ") StorageRepository'");
             }
         }
     }
 };
+
+pub const StorageRepository = Repository;

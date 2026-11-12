@@ -42,7 +42,7 @@ flowchart TB
         AST["src/ast/ + src/yaml/<br/>PipelineAST, SchemaCatalog, EnvInterpolator"]
         Dataflow["src/dataflow/ (flowdata_dataflow)<br/>PayloadHandle, Algebra, Predicates, Concurrency"]
         Plugin["src/plugin/ (flowdata_plugin)<br/>Guest C-ABI/SDK + Host ModuleRegistry & Executor"]
-        Repo["src/repository/<br/>StorageRepository & RepositoryRegistry"]
+        Repo["src/repository/<br/>Repository & RepositoryRegistry"]
         subgraph Transport["src/transport/ (flowdata_transport)"]
             TCommon["common/<br/>POSIX Sockets, URI, Timeouts, Framing"]
             TInbound["inbound/<br/>InboundTransport, InboundRegistry (CLI, HTTP, gRPC)"]
@@ -85,10 +85,12 @@ flowchart LR
 | **11** | [`011-pipeline-yaml-specification-and-orchestration.md`](./011-pipeline-yaml-specification-and-orchestration.md) | High-level `pipeline.yaml` specification for `apps/mangadex`: network adapters, datasources (SQLite WAL), `sources`, `destinations` (Komga), `subscriptions`, and 4-stage DAG orchestration. | `READY` |
 | **12** | [`012-manga-framework-plugins-and-tasks.md`](./012-manga-framework-plugins-and-tasks.md) | Plugin and task catalog for the manga framework: cataloging and synchronization, concurrent downloading, image processing, CBZ packager, and Komga/SFTP/webhook egress. | `READY` |
 | **13** | [`013-engine-jobs-spec-app-aliases-and-yaml-modularization.md`](./013-engine-jobs-spec-app-aliases-and-yaml-modularization.md) | Flowdata engine refactoring: top-level `jobs:` node in the AST, domain alias registration in Kernel (`subscriptions` -> `jobs`), multi-file `include:` directive, and native `${file:path.yaml}` interpolation. | `READY` |
-| **14** | [`014-inbound-emitter-datasources-and-reactive-dispatch.md`](./014-inbound-emitter-datasources-and-reactive-dispatch.md) | Unified datasources with reactive event emission (`emitRecord`), push reactor, and task-level `inputs:` dispatch with hot-reloading. | `READY` |
+| **14** | [`014-inbound-emitter-datasources-and-reactive-dispatch.md`](./014-inbound-emitter-datasources-and-reactive-dispatch.md) | Unified datasources with reactive event emission (`RecordEmitter`), push reactor, and task-level `inputs:` dynamic dispatch. | `READY` |
 | **15** | [`015-declarative-task-services-and-comptime-di.md`](./015-declarative-task-services-and-comptime-di.md) | Declarative task services (`defineTaskService`), comptime dependency injection (`DiContainer`), Logger decoupling, and modular packaging. | `COMPLETED` |
 | **16** | [`016-reactive-bifurcation-parallel-expansion-and-join.md`](./016-reactive-bifurcation-parallel-expansion-and-join.md) | Typed payload contract (`Lowered(T)` + `schema_id`, hybrid with `DynamicRecord`), multi-channel I/O binding, and opt-in elemental auto-lifting (map/filter/expansion) with per-item error policy. | `COMPLETED` |
 | **17** | [`017-concurrent-dag-scheduler-and-host-concurrency-contract.md`](./017-concurrent-dag-scheduler-and-host-concurrency-contract.md) | Concurrent DAG scheduler (plan compiler, single-thread coordinator, shared worker pool with help-while-waiting), channel lifecycle with refcounting and backpressure, and host services concurrency contract. | `COMPLETED (Phases 1-3 Verified)` |
+| **18** | [`018-type-driven-inbound-router-and-service-catalog.md`](./018-type-driven-inbound-router-and-service-catalog.md) | Type-driven reactive inbound/outbound router, service catalog with `canHandle`, innate context merge, and unary input transformations. | `READY` |
+| **19** | [`019-collectors-architecture-and-inbound-agents.md`](./019-collectors-architecture-and-inbound-agents.md) | Standalone collectors architecture (`/collectors/`), file system inotify watchers, and inbound collection agents. | `READY` |
 
 ---
 

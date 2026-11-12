@@ -26,28 +26,40 @@ In previous iterations (`ARCH-011` and `ARCH-013`), work items were represented 
 
 To address these challenges, we eliminate artificial distinctions between "storage" and "emitter" datasources and elevate event emission (`emitRecord`) as a first-class, optional capability of any `Datasource`.
 
+> [!NOTE]
+> **Architectural Boundary Note**:
+> `ARCH-014` delivers the unified datasource contract (`RecordEmitter`), optional datasource tagging on work items, and core Push Reactor fan-out across worker threads.
+> Advanced content/type-driven routing and the `IService.canHandle` service catalog are formally specified in [`ARCH-018`](./018-type-driven-inbound-router-and-service-catalog.md).
+> Standalone OS-level collectors (including file watchers using `inotify` or web pollers) live in `/collectors/` and are specified in [`ARCH-019`](./019-collectors-architecture-and-inbound-agents.md).
+
 ---
 
-## 2. Conceptual Model: A Unified `Datasource` Abstraction
+## 2. Conceptual Model: Push Reactor & Decoupled Ingress
 
-Rather than creating separate types for "storage" vs. "emitter" datasources, Flowdata treats all datasources under **one single unified interface**.
+Rather than forcing storage repositories to run background listener threads, Flowdata cleanly separates **Repositories** (`Repository` for persistence and sinks, aliased as `StorageRepository`) from **Reactive Ingestion** (`PushReactor` and `RecordEmitter`):
 
-A datasource is simply a data provider and/or sink. It can:
-1. Provide persistence methods (`readPayload`, `writePayload`, `query`).
-2. **Optionally override/implement event emission (`listen` / `emitRecord`)**:
+1. **`Repository` (Pure Persistence)**: Unchanged and decoupled (`readPayload`, `writePayload`, `recordCount`, `deinit`). No background threads or listener stubs.
+2. **`PushReactor` (Core Engine Ingress)**: Manages subscriptions and dynamic task dispatch when events are pushed via `RecordEmitter`.
+3. **Producers / Collectors (`ARCH-019`)**: Autonomous agents, collectors, or test harnesses push items into the engine via `engine.emitRecord(source_id, record)`.
 
 ```mermaid
 flowchart LR
-    subgraph Datasources ["Unified Datasources (Storage + Emission)"]
-        YAML["driver: yaml_store / seed<br/>• Read/Write<br/>• Watch jobs.yaml (inotify)"]
-        SQL["driver: sqlite<br/>• Relational Query/Insert<br/>• Table CDC Trigger"]
-        Live["driver: http_stream<br/>• Webhook / Poller"]
+    subgraph Emitters ["Reactive Emitters / Collectors (ARCH-019)"]
+        Collector["collectors/*<br/>• Inotify file watcher<br/>• Web/API Ingest<br/>• Stream Generators"]
     end
 
     subgraph Core ["Flowdata Core Engine"]
         Reactor["Reactive Push Reactor & Dispatcher"]
         Registry["Task-Level Subscription Map"]
+        WorkerPool["Shared WorkerPool"]
         Reactor --> Registry
+        Registry --> WorkerPool
+    end
+
+    subgraph Storage ["Pure Storage Repositories (extensions/datasource)"]
+        YAML["driver: yaml_file<br/>• Read payload / jobs"]
+        SQL["driver: sqlite<br/>• Relational sink"]
+        MEM["driver: memory<br/>• Transient RAM channel"]
     end
 
     subgraph Tasks ["Pipeline Tasks (Consumers)"]
@@ -56,26 +68,19 @@ flowchart LR
         T3["Task: fetch_chapters<br/>(inputs: input: series_details)"]
     end
 
-    YAML -- "emitRecord(new_target)" --> Reactor
-    SQL -- "emitRecord(inserted_row)" --> Reactor
-    Live -- "emitRecord(event)" --> Reactor
-
-    Registry -- "Dispatch (Worker 1)" --> T1
-    Registry -- "Fan-Out (Worker 2)" --> T2
+    Collector -- "emitRecord(item)" --> Reactor
+    WorkerPool -- "Dispatch (Worker 1)" --> T1
+    WorkerPool -- "Fan-Out (Worker 2)" --> T2
     T1 -- "series_details" --> T3
     T3 --> SQL
     T2 --> SQL
 ```
 
-### The Killer Feature: Live File Watching (`jobs.yaml` Hot-Reloading)
-Because a file-based datasource can implement `listen()`, it can watch `jobs.yaml` using OS filesystem notifications (`inotify` on Linux):
-* The user edits `jobs.yaml` to add a new manga:
-  ```yaml
-  - title: "Dandadan"
-    series_id: "e4d41334-..."
-  ```
-* The running datasource detects the append, parses the new item, and immediately calls `engine.emitRecord("tracked_targets", new_item)`.
-* The running engine dispatches the new item to the active pipeline **without restarting the engine or stopping running workloads**.
+### Reactive Ingestion via `PushReactor.emitRecord`
+Any external producer, collector, or script pushes items directly into the engine:
+* The caller invokes `engine.emitRecord("tracked_targets", new_item)`.
+* The running engine dispatches the new item to active pipeline tasks **without restarting the engine or stopping running workloads**.
+* Standalone OS-level watchers (such as Linux `inotify` watching `jobs.yaml`) live in `/collectors/file_watcher` ([`ARCH-019`](./019-collectors-architecture-and-inbound-agents.md)), ensuring the core engine remains 100% debloated and storage repositories remain pure.
 
 ---
 
@@ -214,39 +219,49 @@ sequenceDiagram
 
 ---
 
-## 4. Formalization of the Unified Datasource Contract
+## 4. Formalization of the Push Reactor & Ingress Contract
 
-In the Flowdata kernel / dataflow layer, the unified datasource contract incorporates optional listening/emission into the main VTable:
+In the Flowdata engine, event emission is exposed via `RecordEmitter`, while `Repository` remains a pure, untouched persistence abstraction:
 
 ```zig
 pub const RecordEmitter = struct {
     opaque_ctx: *anyopaque,
-    emit_fn: *const fn (ctx: *anyopaque, source_id: []const u8, record: dataflow.DynamicRecord) void,
+    emit_fn: *const fn (ctx: *anyopaque, source_id: []const u8, record: dataflow.PayloadHandle) void,
 
-    pub fn emit(self: RecordEmitter, source_id: []const u8, record: dataflow.DynamicRecord) void {
+    pub fn emit(self: RecordEmitter, source_id: []const u8, record: dataflow.PayloadHandle) void {
         self.emit_fn(self.opaque_ctx, source_id, record);
+    }
+
+    pub fn emitRecord(self: RecordEmitter, source_id: []const u8, record: anytype) void {
+        const T = @TypeOf(record);
+        if (T == dataflow.PayloadHandle) {
+            self.emit(source_id, record);
+        } else if (@typeInfo(T) == .pointer and @typeInfo(T).pointer.size == .slice) {
+            self.emit(source_id, dataflow.PayloadHandle.fromSlice(@typeInfo(T).pointer.child, record));
+        } else {
+            self.emit(source_id, dataflow.PayloadHandle.fromScalar(T, &record));
+        }
     }
 };
 
-pub const DatasourceVTable = struct {
-    // 1. Persistence & Query (optional overrides)
-    read_payload: ?*const fn (ctx: *anyopaque, key: []const u8) ?dataflow.PayloadHandle = null,
-    write_payload: ?*const fn (ctx: *anyopaque, key: []const u8, payload: dataflow.PayloadHandle) anyerror!void = null,
-    
-    // 2. Reactive Emission / File Watching (optional overrides)
-    start_listening: ?*const fn (ctx: *anyopaque, emitter: RecordEmitter) anyerror!void = null,
-    stop_listening: ?*const fn (ctx: *anyopaque) void = null,
+/// Pure Repository (Spring Data / DDD pattern, aliased as StorageRepository)
+pub const Repository = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        writePayload: *const fn (ctx: *anyopaque, channel_or_table: []const u8, payload: PayloadHandle) anyerror!void,
+        readPayload: *const fn (ctx: *anyopaque, channel_or_table: []const u8) ?PayloadHandle,
+        recordCount: *const fn (ctx: *anyopaque, channel_or_table: []const u8) usize,
+        deinit: *const fn (ctx: *anyopaque) void,
+    };
 };
 
-pub const IDatasource = struct {
-    ptr: *anyopaque,
-    vtable: *const DatasourceVTable,
-};
+pub const StorageRepository = Repository;
 ```
 
-* **Default / Pure Sink**: `start_listening = null`.
-* **Static File / Seed**: `start_listening` emits all configured records once and returns.
-* **Live Watched File (`jobs.yaml`)**: `start_listening` emits initial records, then keeps an `inotify` watcher running in the background to emit delta additions on file save.
+* **Core Engine Ingress**: `engine.emitRecord(source_id, record)` or `engine.reactor.emit(source_id, payload)`.
+* **Producers & Collectors (`ARCH-019`)**: External agents simply call `emitRecord()` without requiring background loops inside repositories.
 
 ---
 
@@ -254,8 +269,9 @@ pub const IDatasource = struct {
 
 | Component | Responsibility |
 | :--- | :--- |
-| **Unified `IDatasource`** | Single interface supporting persistence and/or reactive emission (`start_listening`). |
-| **`tracked_targets` (Datasource)** | Generates work items as `DynamicRecord`s without knowing who processes them. |
-| **Engine Push Reactor** | Manages the task subscription graph and fans out records to worker threads. |
+| **`Repository`** | Pure persistence interface (`readPayload`, `writePayload`, `recordCount`, `deinit`), aliased as `StorageRepository`. Untouched by reactive logic. |
+| **`RecordEmitter`** | Agnostic callback mechanism (`emit` / `emitRecord`) for pushing items into the engine. |
+| **Engine Push Reactor** | Manages the task subscription graph and fans out records to worker threads concurrently. |
 | **Task-Level `inputs:`** | Declaratively binds named parameters to streams (`inputs: input: <stream>`). |
-| **Plugin Tasks (`defineTask`)** | Strongly typed consumers (`job: MangaJob`) returning native Zig structs. |
+| **Evolution to `ARCH-018`** | Type-driven routing, `canHandle` service catalog, and unary input transformations are delegated to `ARCH-018`. |
+| **Evolution to `ARCH-019`** | Standalone collectors and OS filesystem watchers (`inotify`) are delegated to `ARCH-019`. |

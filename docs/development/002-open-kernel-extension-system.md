@@ -13,7 +13,7 @@
 
 Currently, Flowdata's "extension" mechanism is extremely limited:
 1. In `src/engine/runner.zig` (`RunnerOptions`) and `src/transport/inbound/app.zig` (`AppConfig`), there is only a function pointer `driver_initializer: ?*const fn (registry: *RepositoryRegistry) anyerror!void`.
-2. This means an extension today **can only register storage drivers (`StorageRepository`)**.
+2. This means an extension today **can only register storage drivers (`Repository`)**.
 3. There is no formal `Extension` interface, nor a `KernelContext` object granting controlled access to the rest of the engine's subsystems:
    * An extension **cannot** inspect or transform the `PipelineAST` after YAML loading (necessary for generating DAG graphs, linters, or step injectors).
    * An extension **cannot** subscribe to the execution lifecycle or network traffic (necessary for OpenTelemetry, decoupled PCAPNG capture, or live debuggers).

@@ -49,6 +49,7 @@ pub const Mutex = concurrency.Mutex;
 pub const Condition = concurrency.Condition;
 pub const RwLock = concurrency.RwLock;
 pub const WaitGroup = concurrency.WaitGroup;
+pub const Repository = repository.Repository;
 pub const StorageRepository = repository.StorageRepository;
 pub const RepositoryRegistry = repository.RepositoryRegistry;
 pub const OutboundAdapter = transport.outbound.OutboundAdapter;

@@ -82,7 +82,7 @@ Responsible for compiling immutable, metadata-rich `.cbz` archives and reclaimin
 ### Architectural Note: Egress Handled Directly via Datasources (`KomgaRepository`)
 Following the architectural decision in [`ARCH-011`](./011-pipeline-yaml-specification-and-orchestration.md), **no custom egress plugin (`libegress.so`) is required**.
 
-Destination delivery is modeled as a native Flowdata **`StorageRepository` (Datasource Sink)**:
+Destination delivery is modeled as a native Flowdata **`Repository` (Datasource Sink)**:
 * `packager/build_cbz_archive` outputs directly to `datasource: komga_library`.
 * `KomgaRepository` atomically writes the `.cbz` to the library directory in disk, and sequentially executes the HTTP re-scan call via `komga_sdk` over its injected `komga_net` adapter.
 * Eliminates pipeline task boilerplate, prevents file-write concurrency race conditions, and decouples distribution from the processing DAG.
