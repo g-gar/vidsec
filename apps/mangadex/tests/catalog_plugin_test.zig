@@ -795,6 +795,7 @@ test "BuildCbzArchiveService: resolves {chapter} placeholder in output_dir" {
 
     const out = try service.execute(test_alloc, .{
         .pages = &pages,
+        .comic_info_xml = "",
         .output_dir = "/tmp/test_dir_templating/{chapter}",
     });
 

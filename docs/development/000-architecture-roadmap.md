@@ -98,6 +98,7 @@ flowchart LR
 | **24** | [`024-type-driven-multi-input-accumulation.md`](./024-type-driven-multi-input-accumulation.md) | Multi-input Join accumulation in `TypeDrivenRouter` using `inputFields()` / `requiredParams()` and accumulated `BoundInput` resolution across parallel branches. | `COMPLETED` |
 | **25** | [`025-datasource-roles-and-batch-emission-decoupling.md`](./025-datasource-roles-and-batch-emission-decoupling.md) | Explicit `role:` (`source`/`sink`/`duplex`) on `DatasourceSpec`, decoupled `BatchSource` vtable for offline `jobItem` emission, and multi-datasource pseudo-emission tasks. | `PHASES 1-3 DONE / PHASE 4 VIA ARCH-026` |
 | **26** | [`026-builtin-and-serviceless-tasks.md`](./026-builtin-and-serviceless-tasks.md) | Architectural analysis of engine `core/*` builtins (`ARCH-016 §9`) and service-less glue tasks (`sql_query`, multi-datasource assembly) via `HostApiVTable_ABI` `DatasourceBridge`. | `SPECIFICATION` |
+| **27** | [`027-generic-html-scraper-and-flaresolverr.md`](./027-generic-html-scraper-and-flaresolverr.md) | Generic declarative HTML scraper driver (`HtmlGenericSource`), FlareSolverr anti-bot sidecar client, and `olemanga.com` integration into `manga_sync` `type_driven` pipeline. | `SPECIFICATION` |
 
 ---
 

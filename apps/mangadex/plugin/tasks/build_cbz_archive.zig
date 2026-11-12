@@ -41,7 +41,7 @@ fn ensureParentDirs(alloc: Allocator, path: []const u8) void {
 
 pub const BuildCbzArchiveInputs = struct {
     pages: []const PageWithContentType,
-    comic_info_xml: ?[]const u8 = null,
+    comic_info_xml: []const u8,
     output_dir: []const u8 = "./output/cbz",
     output_path: ?[]const u8 = null,
 };
@@ -207,14 +207,12 @@ pub const BuildCbzArchiveService = struct {
             var writer = try ZipArchiveWriter.create(alloc, archive_path);
             defer writer.deinit();
 
-            // 1. Add ComicInfo.xml if present (deflated compression)
-            if (inputs.comic_info_xml) |base_xml| {
-                if (base_xml.len > 0) {
-                    const tailored = try customizeComicInfo(alloc, base_xml, group.chapter_number, @intCast(group.pages.items.len));
-                    defer alloc.free(tailored);
-                    self.logger.info("Adding ComicInfo.xml to CBZ archive (chapter: {s}, {d} bytes)", .{ group.chapter_number, tailored.len });
-                    try writer.addFileFromMemory("ComicInfo.xml", tailored, .default);
-                }
+            // 1. Add ComicInfo.xml (deflated compression)
+            if (inputs.comic_info_xml.len > 0) {
+                const tailored = try customizeComicInfo(alloc, inputs.comic_info_xml, group.chapter_number, @intCast(group.pages.items.len));
+                defer alloc.free(tailored);
+                self.logger.info("Adding ComicInfo.xml to CBZ archive (chapter: {s}, {d} bytes)", .{ group.chapter_number, tailored.len });
+                try writer.addFileFromMemory("ComicInfo.xml", tailored, .default);
             }
 
             // 2. Add each page image in STORE mode

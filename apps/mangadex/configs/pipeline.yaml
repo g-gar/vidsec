@@ -11,29 +11,34 @@ version: 2
 runtime:
   workers: 4
   scheduler: dag
+  routing: type_driven
   max_inflight_bytes: 512MiB
   retain_all: false
 
 datasources:
-  # 1. External work items / jobs target datasource (fallback for offline batch CLI runs;
+  # 1. External work items / jobs target datasource (emits jobItems in offline batch CLI runs;
   # in daemon / collector mode, items arrive dynamically via JobEnvelope from collectors)
   tracked_targets:
     driver: yaml_file
+    role: source
     path: "${MANGADEX_JOBS_PATH:-./configs/jobs.yaml}"
 
   # 2. Fast in-memory repository for zero-copy step chaining and RAM coordination
   pipeline_memory:
     driver: memory
+    role: duplex
 
   # 3. Relational sink for long-term catalog caching and offline queries
   catalog_db:
     driver: sqlite
+    role: duplex
     path: "${MANGADEX_DB_PATH:-./output/mangadex.db}"
     schema: "${MANGADEX_SCHEMA_PATH:-./configs/schemas.yaml}"
 
   # 4. Storage destination for compiled .cbz comic archives
   komga_library:
     driver: file_store
+    role: sink
     directory: "${KOMGA_LIBRARY_DIR:-./output/cbz/}"
 
 networks:
@@ -66,25 +71,25 @@ modules:
 
 pipelines:
   # ===========================================================================
-  # MANGA CATALOG SYNCHRONIZATION PIPELINE
+  # MANGA CATALOG SYNCHRONIZATION PIPELINE (Type-Driven Routing)
   #
-  # DAG TOPOLOGY (Fork / Fan-Out & Join / Fan-In with Refcounted Arenas):
+  # DAG TOPOLOGY (Fork / Fan-Out & Join / Fan-In via Type Signatures):
   #
-  #                         [tracked_targets]
+  #                         [tracked_targets (source)]
   #                                |
   #                       (1. fetch_details)
-  #                           /        \  (Fork / Fan-out asíncrono)
+  #                                |
+  #                       (2. fetch_chapters)
+  #                           /        \  (Fork / Fan-out)
   #                          /          \
-  #               (2. fetch_chapters)    (7. generate_comicinfo) [CPU-only]
+  #                (3. fetch_pages)    (4. generate_comicinfo) [CPU-only]
   #                        |                       |
-  #                (3. fetch_pages)                |
+  #             (5. download_pages) [elemental: 4] |
   #                        |                       |
-  #             (4. download_pages) [elemental: 4] |
-  #                        |                       |
-  #              (5. detect_formats) [CPU-only]    |
+  #              (6. detect_formats) [CPU-only]    |
   #                     /      \                   |
   #                    /        \                  |
-  #        (6. analyze_pages)    \                 |
+  #        (7. analyze_pages)    \                 |
   #        [elemental: 4, CPU]    \                |
   #                                \               /
   #                                 (8. build_cbz) [Join / Fan-in, CPU-only]
@@ -100,8 +105,6 @@ pipelines:
         where: "enabled == true"
         networks:
           - mangadex_api
-        inputs:
-          input: tracked_targets
         outputs:
           series_details:
             datasource: pipeline_memory
@@ -110,86 +113,35 @@ pipelines:
 
       # -----------------------------------------------------------------------
       # STEP 2: Fetch Chapters List
-      # Receives series_id from step 1's series_details
+      # Matches SeriesDetails via canHandle()
       # -----------------------------------------------------------------------
       - id: fetch_chapters
         uses: manga_catalog/fetch_chapters
         networks:
           - mangadex_api
-        inputs:
-          input: series_details
         outputs:
           discovered_chapters:
             datasource: catalog_db
 
       # -----------------------------------------------------------------------
       # STEP 3: Scrape Chapter Pages
-      # Elemental expansion over discovered chapters (filtered by tracking job)
+      # Elemental expansion over discovered chapters
       # -----------------------------------------------------------------------
       - id: fetch_pages
         uses: manga_catalog/fetch_chapter_pages
         concurrency: 4
         networks:
           - mangadex_api
-        inputs:
-          input: discovered_chapters
         outputs:
           discovered_pages:
             datasource: catalog_db
 
       # -----------------------------------------------------------------------
-      # STEP 4: Download Chapter Pages over HTTP
-      # Elemental task processing pages concurrently with token-bucket rate limiter
-      # -----------------------------------------------------------------------
-      - id: download_pages
-        uses: manga_catalog/download_chapter_page
-        concurrency: 4
-        networks:
-          - mangadex_api
-        inputs:
-          input: fetch_pages.discovered_pages
-        outputs:
-          downloaded_pages:
-            datasource: pipeline_memory
-
-      # -----------------------------------------------------------------------
-      # STEP 5: Magic Bytes Content-Type Detection (CPU-Only, Isolated Network)
-      # Elemental task inspecting raw bytes to identify MIME format
-      # -----------------------------------------------------------------------
-      - id: detect_formats
-        uses: manga_catalog/detect_content_type
-        concurrency: 4
-        inputs:
-          input: download_pages.downloaded_pages
-        outputs:
-          pages_with_types:
-            datasource: pipeline_memory
-
-      # -----------------------------------------------------------------------
-      # STEP 6: Simulated Static Image Analysis & Spread Detection (CPU-Only)
-      # Elemental task with broadcast parameters configured declaratively
-      # -----------------------------------------------------------------------
-      - id: analyze_pages
-        uses: manga_catalog/analyze_image
-        concurrency: 4
-        inputs:
-          input: detect_formats.pages_with_types
-        params:
-          default_width: 1200
-          default_height: 1800
-          spread_threshold: 1.3
-        outputs:
-          analyzed_pages:
-            datasource: pipeline_memory
-
-      # -----------------------------------------------------------------------
-      # STEP 7: Generate ComicInfo.xml Metadata (CPU-Only, Runs Parallel to Pages)
-      # Serializes chapter and series metadata into Anansi ComicInfo XML buffer
+      # STEP 4: Generate ComicInfo.xml Metadata (CPU-Only, Runs After Chapters)
+      # Requires chapter_number from fetch_chapters; runs parallel to page download
       # -----------------------------------------------------------------------
       - id: generate_comicinfo
         uses: manga_catalog/generate_comicinfo
-        inputs:
-          input: series_details
         params:
           series_title: "${MANGADEX_SERIES_TITLE:-}"
           language: "en"
@@ -199,18 +151,52 @@ pipelines:
             datasource: pipeline_memory
 
       # -----------------------------------------------------------------------
+      # STEP 5: Download Chapter Pages over HTTP
+      # Elemental task processing pages concurrently with token-bucket rate limiter
+      # -----------------------------------------------------------------------
+      - id: download_pages
+        uses: manga_catalog/download_chapter_page
+        concurrency: 4
+        networks:
+          - mangadex_api
+        outputs:
+          downloaded_pages:
+            datasource: pipeline_memory
+
+      # -----------------------------------------------------------------------
+      # STEP 6: Magic Bytes Content-Type Detection (CPU-Only, Isolated Network)
+      # Elemental task inspecting raw bytes to identify MIME format
+      # -----------------------------------------------------------------------
+      - id: detect_formats
+        uses: manga_catalog/detect_content_type
+        concurrency: 4
+        outputs:
+          pages:
+            datasource: pipeline_memory
+
+      # -----------------------------------------------------------------------
+      # STEP 7: Simulated Static Image Analysis & Spread Detection (CPU-Only)
+      # Elemental task with broadcast parameters configured declaratively
+      # -----------------------------------------------------------------------
+      - id: analyze_pages
+        uses: manga_catalog/analyze_image
+        concurrency: 4
+        params:
+          default_width: 1200
+          default_height: 1800
+          spread_threshold: 1.3
+        outputs:
+          analyzed_pages:
+            datasource: pipeline_memory
+
+      # -----------------------------------------------------------------------
       # STEP 8: Bundle into Standard .cbz (ZIP) Archive (Packager Join Node)
-      # Packages image pages with STORE compression and ComicInfo.xml
+      # Automatically waits for both `pages` and `comic_info_xml` (ARCH-024)
       # -----------------------------------------------------------------------
       - id: build_cbz
         uses: manga_catalog/build_cbz_archive
-        inputs:
-          pages: detect_formats.pages_with_types
-          comic_info_xml: generate_comicinfo.comic_info_xml
         params:
           output_dir: "${MANGADEX_CBZ_DIR:-./output/cbz/}/{series}/"
-        after:
-          - generate_comicinfo
         outputs:
           cbz_archive:
             datasource: pipeline_memory

@@ -10,8 +10,10 @@
 
 The application is orchestrated entirely via a declarative specification ([`configs/pipeline.yaml`](file:///home/ubuntu/.gemini/antigravity/scratch/vidsec/apps/mangadex/configs/pipeline.yaml)) executing on the native Flowdata v2 runtime. It features:
 
+- **Type-Driven Routing & Multi-Input Joins (ARCH-023 / ARCH-024)**: Uses `routing: type_driven` so steps bind dynamically via `canHandle()` and `inputFields()` without explicit `inputs:` or `after:` wiring, including automatic Join synchronization on `build_cbz` (`pages` + `comic_info_xml`).
+- **Explicit Datasource Roles & Batch Emission (ARCH-025)**: `tracked_targets` (`role: source`) emits individual `jobItem`s in offline CLI mode through the same reactive path as collectors, while `komga_library` is enforced as `role: sink`.
 - **Least-Privilege Network Isolation**: Tasks default to `"isolated"`. Only external I/O tasks (`fetch_details`, `fetch_chapters`, `fetch_pages`, `download_pages`) bind explicitly to the `mangadex_api` egress adapter with token-bucket rate limiting (30 req/s, 60 burst).
-- **Zero-Copy Memory Management (ARCH-017)**: Intermediate image buffers and metadata structures run inside refcounted per-step arenas that are reclaimed immediately when consumer tasks complete.
+- **Zero-Copy Memory Management (ARCH-017)**: Intermediate image buffers and metadata structures run inside per-step arenas.
 - **Bounded Backpressure**: Concurrent DAG execution bounded by `max_inflight_bytes: 512MiB`.
 - **Dynamic Semantic Entrypoint**: The pipeline declares `manga_sync` rather than requiring a hardcoded `"main"`.
 - **Unary Predicate Filtering**: Inbound job targets are checked with `where: "enabled == true"` to filter disabled series at zero cost.
@@ -24,51 +26,52 @@ The synchronization pipeline executes a directed acyclic graph (DAG) with **Fork
 
 ```mermaid
 flowchart TD
-    subgraph Inbound["Job Ingress / Datasource"]
-        Jobs["JobEnvelope (Collector / Dispatcher / jobs.yaml)"]
+    subgraph Inbound["Job Ingress / BatchSource (role: source)"]
+        Jobs["JobEnvelope / tracked_targets (jobs.yaml)"]
     end
 
-    subgraph Pipeline["Pipeline: manga_sync (workers: 4, backpressure: 512MiB)"]
+    subgraph Pipeline["Pipeline: manga_sync (routing: type_driven, scheduler: dag, workers: 4)"]
         FetchDetails["1. fetch_details<br/>[network: mangadex_api]<br/><i>where: enabled == true</i>"]
-        
-        %% Fork 1: series_details (refcount = 2)
         FetchChapters["2. fetch_chapters<br/>[network: mangadex_api]"]
+        
+        %% Fork after fetch_chapters
         FetchPages["3. fetch_pages<br/>[network: mangadex_api]"]
-        DownloadPages["4. download_pages<br/>[concurrency: 4, network: mangadex_api]"]
-        DetectFormats["5. detect_formats<br/>[concurrency: 4, CPU isolated]"]
+        GenComicInfo["4. generate_comicinfo<br/>[Anansi ComicInfo.xml v2.1, CPU isolated]"]
+        DownloadPages["5. download_pages<br/>[concurrency: 4, network: mangadex_api]"]
+        DetectFormats["6. detect_formats<br/>[concurrency: 4, CPU isolated]"]
         
-        %% Fork 2: pages_with_types (refcount = 2)
-        AnalyzePages["6. analyze_pages<br/>[concurrency: 4, QA spread analysis, CPU isolated]"]
-        GenComicInfo["7. generate_comicinfo<br/>[Anansi ComicInfo.xml v2.1, CPU isolated]"]
+        %% Fork on pages
+        AnalyzePages["7. analyze_pages<br/>[concurrency: 4, QA spread analysis, CPU isolated]"]
         
-        %% Join: build_cbz merges pages_with_types + comic_info_xml
-        BuildCBZ["8. build_cbz<br/>[Archive Engine, Join / Fan-in, CPU isolated]"]
+        %% Join: build_cbz merges pages + comic_info_xml (ARCH-024)
+        BuildCBZ["8. build_cbz<br/>[Archive Engine, Multi-Input Join, CPU isolated]"]
         CBZArchive["CBZ Package<br/>(retain: true -> komga_library)"]
     end
 
     Jobs --> FetchDetails
-    
-    %% Branch A: Chapter Retrieval & Page Processing
     FetchDetails -->|series_details| FetchChapters
+    
+    %% Branch A: Page Retrieval & Processing
     FetchChapters -->|discovered_chapters| FetchPages
     FetchPages -->|discovered_pages| DownloadPages
     DownloadPages -->|downloaded_pages| DetectFormats
     
-    %% Branch B: Metadata Serialization
-    FetchDetails -->|series_details (Fork / Fan-out)| GenComicInfo
+    %% Branch B: Chapter-Level Metadata Serialization
+    FetchChapters -->|discovered_chapters (Fork / Fan-out)| GenComicInfo
 
-    %% Fork on pages_with_types
-    DetectFormats -->|pages_with_types (Fork)| AnalyzePages
-    DetectFormats -->|pages_with_types (Join input)| BuildCBZ
+    %% Fork on pages
+    DetectFormats -->|pages (Fork)| AnalyzePages
+    DetectFormats -->|pages (Join input)| BuildCBZ
     
     GenComicInfo -->|comic_info_xml (Join input)| BuildCBZ
     BuildCBZ --> CBZArchive
 ```
 
-### Memory Lifecycle & Refcounting
-1. **`series_details`** has an initial refcount of 2. It feeds `fetch_chapters` and `generate_comicinfo`. As soon as both consume it, its arena memory is immediately released.
-2. **`pages_with_types`** has an initial refcount of 2. It feeds image analysis (`analyze_pages`) and archive packaging (`build_cbz`).
-3. **`cbz_archive`** is the only step output flagged with `retain: true`, which delivers the compiled archive into `komga_library` (`./output/cbz/`) while all intermediate step arenas are freed.
+### Routing & Memory Lifecycle
+1. **Batch Emission (`tracked_targets`):** In offline CLI mode, `tracked_targets` (`role: source`) emits each enabled `JobSpec` item into `TypeDrivenRouter` via `BatchSource`.
+2. **Chapter-Level Metadata (`generate_comicinfo`):** Requires `series_title`, `chapter_number`, `language`, and `page_count`, so it activates after `fetch_chapters` in parallel with page downloads.
+3. **Multi-Input Join (`build_cbz`):** Automatically waits for both `pages` (from `detect_formats`) and `comic_info_xml` (from `generate_comicinfo`) via `ARCH-024` accumulation before packaging the `.cbz`.
+4. **`cbz_archive`** is flagged with `retain: true`, delivering the compiled archive into `komga_library` (`role: sink`, `./output/cbz/`).
 
 ---
 
