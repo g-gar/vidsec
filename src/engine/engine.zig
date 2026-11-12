@@ -19,6 +19,8 @@ pub const ReactiveRouter = router.ReactiveRouter;
 pub const routing = @import("routing/mod.zig");
 pub const RoutingStrategy = routing.RoutingStrategy;
 pub const RouterRegistry = routing.RouterRegistry;
+pub const sources = @import("sources/mod.zig");
+pub const BatchSource = sources.BatchSource;
 
 pub const PipelineAST = ast_mod.PipelineAST;
 pub const ModuleRegistry = modules_mod.ModuleRegistry;
@@ -220,6 +222,18 @@ pub const PipelineEngine = struct {
     }
 
     pub fn run(self: *PipelineEngine, input_payload: PayloadHandle) anyerror!ExecutionSummary {
+        return self.runInternal(input_payload, &.{});
+    }
+
+    pub fn runWithSource(self: *PipelineEngine, source: BatchSource) anyerror!ExecutionSummary {
+        return self.runInternal(null, &.{source});
+    }
+
+    fn runInternal(
+        self: *PipelineEngine,
+        maybe_input_payload: ?PayloadHandle,
+        explicit_sources: []const BatchSource,
+    ) anyerror!ExecutionSummary {
         var summary = ExecutionSummary{};
         const start_ns: u64 = nowNs();
         var trace_id: [16]u8 = undefined;
@@ -227,6 +241,7 @@ pub const PipelineEngine = struct {
         fillRandomBytes(&trace_id);
         fillRandomBytes(&root_span_id);
 
+        const input_bytes_len: usize = if (maybe_input_payload) |p| p.len * p.element_size else 0;
         if (self.kernel) |k| {
             k.telemetry.emit(.{
                 .pipeline_start = .{
@@ -234,7 +249,7 @@ pub const PipelineEngine = struct {
                     .span_id = root_span_id,
                     .timestamp_ns = start_ns,
                     .ast = &self.ast,
-                    .input_bytes_len = input_payload.len * input_payload.element_size,
+                    .input_bytes_len = input_bytes_len,
                 },
             });
         }
@@ -258,13 +273,49 @@ pub const PipelineEngine = struct {
 
         // 2. Track intermediate step outputs by step ID
         const outputs_alloc = self.outputs_arena.allocator();
-
-        var outputs: std.StringHashMapUnmanaged(PayloadHandle) = .empty;
-
-        // 3. Execute entrypoint pipeline
         const entrypoint = self.ast.getEntrypoint() orelse "main";
         summary.final_pipeline = entrypoint;
-        try self.executeSubPipeline(entrypoint, input_payload, &outputs, outputs_alloc, &net_ctrl, &summary, trace_id, root_span_id, pool);
+
+        // 3. Execute via explicit BatchSources, or auto-emit from `role: source` datasources
+        // in `type_driven` mode when CLI/offline input is empty (ARCH-025).
+        if (explicit_sources.len > 0) {
+            try self.emitSources(explicit_sources, entrypoint, outputs_alloc, &net_ctrl, &summary, trace_id, root_span_id, pool);
+        } else {
+            const input_payload = maybe_input_payload.?;
+            const is_empty_cli = (input_payload.repr == .bytes and input_payload.len == 0);
+            const pipe_decl = self.ast.getPipeline(entrypoint);
+            const effective_routing = if (pipe_decl) |p| (p.routing orelse self.ast.runtime.routing) else self.ast.runtime.routing;
+
+            var auto_sources: std.ArrayListUnmanaged(sources.DatasourceSliceSource) = .empty;
+            defer auto_sources.deinit(self.allocator);
+
+            if (is_empty_cli and effective_routing == .type_driven) {
+                for (self.ast.datasources) |ds_spec| {
+                    if (ds_spec.role == .source) {
+                        if (self.repos.get(ds_spec.id)) |repo| {
+                            try auto_sources.append(self.allocator, sources.DatasourceSliceSource.init(
+                                self.allocator,
+                                ds_spec.id,
+                                repo,
+                                ds_spec.id,
+                            ));
+                        }
+                    }
+                }
+            }
+
+            if (auto_sources.items.len > 0) {
+                var batch_handles = try self.allocator.alloc(BatchSource, auto_sources.items.len);
+                defer self.allocator.free(batch_handles);
+                for (auto_sources.items, 0..) |*src, idx| {
+                    batch_handles[idx] = src.batchSource();
+                }
+                try self.emitSources(batch_handles, entrypoint, outputs_alloc, &net_ctrl, &summary, trace_id, root_span_id, pool);
+            } else {
+                var outputs: std.StringHashMapUnmanaged(PayloadHandle) = .empty;
+                try self.executeSubPipeline(entrypoint, input_payload, &outputs, outputs_alloc, &net_ctrl, &summary, trace_id, root_span_id, pool);
+            }
+        }
 
         if (self.kernel) |k| {
             const end_ns: u64 = nowNs();
@@ -284,6 +335,63 @@ pub const PipelineEngine = struct {
         }
 
         return summary;
+    }
+
+    fn emitSources(
+        self: *PipelineEngine,
+        batch_sources: []const BatchSource,
+        entrypoint: []const u8,
+        outputs_alloc: Allocator,
+        net_ctrl: *EngineNetworkController,
+        summary: *ExecutionSummary,
+        trace_id: [16]u8,
+        root_span_id: [8]u8,
+        pool: ?*WorkerPool,
+    ) anyerror!void {
+        const EmitCtx = struct {
+            engine: *PipelineEngine,
+            entrypoint: []const u8,
+            outputs_alloc: Allocator,
+            net_ctrl: *EngineNetworkController,
+            summary: *ExecutionSummary,
+            trace_id: [16]u8,
+            root_span_id: [8]u8,
+            pool: ?*WorkerPool,
+
+            fn onEmit(raw: *anyopaque, _: []const u8, record: PayloadHandle) anyerror!void {
+                const ctx: *@This() = @ptrCast(@alignCast(raw));
+                var item_outputs: std.StringHashMapUnmanaged(PayloadHandle) = .empty;
+                try ctx.engine.executeSubPipeline(
+                    ctx.entrypoint,
+                    record,
+                    &item_outputs,
+                    ctx.outputs_alloc,
+                    ctx.net_ctrl,
+                    ctx.summary,
+                    ctx.trace_id,
+                    ctx.root_span_id,
+                    ctx.pool,
+                );
+            }
+        };
+
+        var emit_ctx = EmitCtx{
+            .engine = self,
+            .entrypoint = entrypoint,
+            .outputs_alloc = outputs_alloc,
+            .net_ctrl = net_ctrl,
+            .summary = summary,
+            .trace_id = trace_id,
+            .root_span_id = root_span_id,
+            .pool = pool,
+        };
+        const emitter = sources.RecordEmitter{
+            .ptr = &emit_ctx,
+            .emit_fn = &EmitCtx.onEmit,
+        };
+        for (batch_sources) |src| {
+            _ = try src.emitAll(self.allocator, emitter);
+        }
     }
 
     pub fn resolveStreamExpr(

@@ -20,28 +20,7 @@ const compilePlan = plan_mod.compilePlan;
 const WorkerPool = @import("../concurrency/mod.zig").WorkerPool;
 const EngineNetworkController = @import("network.zig").EngineNetworkController;
 
-/// Agnostic event emission interface for pushing items into the Flowdata engine.
-/// Allows external collectors (ARCH-019), webhooks, test harnesses, or datasources
-/// to inject payloads without coupling to the pipeline topology.
-pub const RecordEmitter = struct {
-    ptr: *anyopaque,
-    emit_fn: *const fn (ctx: *anyopaque, source_id: []const u8, record: PayloadHandle) anyerror!void,
-
-    pub fn emit(self: RecordEmitter, source_id: []const u8, record: PayloadHandle) !void {
-        return self.emit_fn(self.ptr, source_id, record);
-    }
-
-    pub fn emitRecord(self: RecordEmitter, source_id: []const u8, record: anytype) !void {
-        const T = @TypeOf(record);
-        if (T == PayloadHandle) {
-            return self.emit(source_id, record);
-        } else if (@typeInfo(T) == .pointer and @typeInfo(T).pointer.size == .slice) {
-            return self.emit(source_id, PayloadHandle.fromSlice(@typeInfo(T).pointer.child, record));
-        } else {
-            return self.emit(source_id, PayloadHandle.fromScalar(T, &record));
-        }
-    }
-};
+pub const RecordEmitter = @import("sources/strategy.zig").RecordEmitter;
 
 /// Core Reactive Push Reactor.
 /// Owns the pipeline subscription index and coordinates reactive execution of sub-DAGs

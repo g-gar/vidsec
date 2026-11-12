@@ -940,3 +940,332 @@ test "ARCH-024 Phase 2: TypeDrivenRouter accumulates multi-input Join across par
     const summary = try eng.run(start_payload);
     try testing.expectEqual(@as(usize, 3), summary.steps_executed);
 }
+
+test "ARCH-025 Phase 1: Datasource role parsing and pre-flight validation" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const valid_yaml =
+        \\version: 2
+        \\datasources:
+        \\  src_jobs:
+        \\    driver: memory
+        \\    role: source
+        \\  out_sink:
+        \\    driver: memory
+        \\    role: sink
+        \\  mem_bus:
+        \\    driver: memory
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: step1
+        \\        uses: mod/task
+        \\        inputs:
+        \\          input: src_jobs
+        \\        outputs:
+        \\          out:
+        \\            datasource: out_sink
+    ;
+    const ast_valid = try flowdata.yaml.loadPipelineAstFromYaml(alloc, valid_yaml, .{});
+
+    try testing.expectEqual(flowdata.ast.DatasourceRole.source, ast_valid.getDatasource("src_jobs").?.role);
+    try testing.expectEqual(flowdata.ast.DatasourceRole.sink, ast_valid.getDatasource("out_sink").?.role);
+    try testing.expectEqual(flowdata.ast.DatasourceRole.duplex, ast_valid.getDatasource("mem_bus").?.role);
+
+    // Pre-flight must reject writing to a `role: source` datasource
+    const bad_write_yaml =
+        \\version: 2
+        \\datasources:
+        \\  src_only:
+        \\    driver: memory
+        \\    role: source
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: s1
+        \\        uses: mod/task
+        \\        outputs:
+        \\          out:
+        \\            datasource: src_only
+    ;
+    const bad_ast = try flowdata.yaml.loadPipelineAstFromYaml(alloc, bad_write_yaml, .{});
+
+    var runner = flowdata.PipelineRunner{
+        .allocator = alloc,
+        .config_arena = std.heap.ArenaAllocator.init(alloc),
+        .ast = bad_ast,
+        .registry = flowdata.ModuleRegistry.init(alloc),
+        .repos = flowdata.RepositoryRegistry.init(alloc),
+        .env_interp = flowdata.yaml.EnvInterpolator.init(false),
+        .options = .{ .pipeline_yaml_path = "", .load_shared_modules = false },
+    };
+    defer runner.deinit();
+
+    try testing.expectError(error.CannotWriteToSourceDatasource, runner.validatePreFlight(null, false));
+
+    // Pre-flight must reject reading from a `role: sink` datasource
+    const bad_read_yaml =
+        \\version: 2
+        \\datasources:
+        \\  sink_only:
+        \\    driver: memory
+        \\    role: sink
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: s1
+        \\        uses: mod/task
+        \\        inputs:
+        \\          input: sink_only
+    ;
+    const bad_read_ast = try flowdata.yaml.loadPipelineAstFromYaml(alloc, bad_read_yaml, .{});
+
+    var runner2 = flowdata.PipelineRunner{
+        .allocator = alloc,
+        .config_arena = std.heap.ArenaAllocator.init(alloc),
+        .ast = bad_read_ast,
+        .registry = flowdata.ModuleRegistry.init(alloc),
+        .repos = flowdata.RepositoryRegistry.init(alloc),
+        .env_interp = flowdata.yaml.EnvInterpolator.init(false),
+        .options = .{ .pipeline_yaml_path = "", .load_shared_modules = false },
+    };
+    defer runner2.deinit();
+
+    try testing.expectError(error.CannotReadFromSinkDatasource, runner2.validatePreFlight(null, false));
+}
+
+test "ARCH-025 Phase 2: DatasourceSliceSource emits typed slice items individually" {
+    const alloc = testing.allocator;
+
+    const TargetItem = struct {
+        series_id: []const u8,
+        enabled: bool = true,
+    };
+    const items = [_]TargetItem{
+        .{ .series_id = "manga-1", .enabled = true },
+        .{ .series_id = "manga-2", .enabled = false },
+    };
+
+    const MockRepo = struct {
+        payload: flowdata.dataflow.PayloadHandle,
+        pub fn readPayload(self: *const @This(), _: []const u8) ?flowdata.dataflow.PayloadHandle {
+            return self.payload;
+        }
+        pub fn writePayload(_: *@This(), _: []const u8, _: flowdata.dataflow.PayloadHandle) anyerror!void {}
+        pub fn recordCount(self: *const @This(), _: []const u8) usize {
+            return self.payload.len;
+        }
+        pub fn deinit(_: *@This()) void {}
+        pub fn storageRepository(self: *@This()) flowdata.repository.StorageRepository {
+            const RepoT = @This();
+            const V = struct {
+                fn wp(p: *anyopaque, c: []const u8, pl: flowdata.dataflow.PayloadHandle) anyerror!void {
+                    return @as(*RepoT, @ptrCast(@alignCast(p))).writePayload(c, pl);
+                }
+                fn rp(p: *anyopaque, c: []const u8) ?flowdata.dataflow.PayloadHandle {
+                    return @as(*const RepoT, @ptrCast(@alignCast(p))).readPayload(c);
+                }
+                fn rc(p: *anyopaque, c: []const u8) usize {
+                    return @as(*const RepoT, @ptrCast(@alignCast(p))).recordCount(c);
+                }
+                fn dn(p: *anyopaque) void {
+                    @as(*RepoT, @ptrCast(@alignCast(p))).deinit();
+                }
+                const vt = flowdata.repository.StorageRepository.VTable{
+                    .writePayload = &wp,
+                    .readPayload = &rp,
+                    .recordCount = &rc,
+                    .deinit = &dn,
+                };
+            };
+            return .{ .ptr = self, .vtable = &V.vt };
+        }
+    };
+
+    var mock_repo = MockRepo{
+        .payload = flowdata.dataflow.PayloadHandle.fromSlice(TargetItem, &items),
+    };
+
+    var src = flowdata.engine.sources.DatasourceSliceSource.init(
+        alloc,
+        "tracked_targets",
+        mock_repo.storageRepository(),
+        "tracked_targets",
+    );
+    defer src.deinit();
+
+    var collected: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer collected.deinit(alloc);
+
+    const Collector = struct {
+        list: *std.ArrayListUnmanaged([]const u8),
+        alloc: std.mem.Allocator,
+        fn onEmit(raw: *anyopaque, _: []const u8, record: flowdata.dataflow.PayloadHandle) anyerror!void {
+            const c: *@This() = @ptrCast(@alignCast(raw));
+            try testing.expectEqual(@as(usize, 1), record.len);
+            try testing.expect(!record.is_stream);
+            const sid = record.getReflected("series_id").?.string;
+            try c.list.append(c.alloc, sid);
+        }
+    };
+    var col = Collector{ .list = &collected, .alloc = alloc };
+    const emitter = flowdata.engine.sources.RecordEmitter{
+        .ptr = &col,
+        .emit_fn = &Collector.onEmit,
+    };
+
+    const count = try src.batchSource().emitAll(alloc, emitter);
+    try testing.expectEqual(@as(usize, 2), count);
+    try testing.expectEqual(@as(usize, 2), collected.items.len);
+    try testing.expectEqualStrings("manga-1", collected.items[0]);
+    try testing.expectEqualStrings("manga-2", collected.items[1]);
+}
+
+test "ARCH-025 Phase 3: PipelineEngine runWithSource & auto-emit role: source in type_driven mode" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const JobItem = struct {
+        series_id: []const u8,
+        enabled: bool = true,
+    };
+    const ProcessedOut = struct {
+        done_id: []const u8,
+    };
+
+    const ProcessJobService = struct {
+        pub fn execute(_: *@This(), _: std.mem.Allocator, input: JobItem) !ProcessedOut {
+            return .{ .done_id = input.series_id };
+        }
+    };
+
+    var mod_reg = flowdata.ModuleRegistry.init(alloc);
+    defer mod_reg.deinit();
+    const empty_di = flowdata.plugin.sdk.define_task_service.DiContainer(struct {});
+    const Descs = struct {
+        const list = [_]flowdata.plugin.TaskDescriptor_ABI{
+            empty_di.defineTaskService(ProcessJobService, .{ .name = "process_job" }),
+        };
+        const manifest = flowdata.plugin.sdk.defineManifest(
+            "batch_mod",
+            .{ .major = 0, .minor = 1, .patch = 0 },
+            &list,
+        );
+    };
+    try mod_reg.registerStaticModule("batch_mod", &Descs.manifest);
+
+    const items = [_]JobItem{
+        .{ .series_id = "s-1", .enabled = true },
+        .{ .series_id = "s-2", .enabled = true },
+    };
+
+    const MockSource = struct {
+        items: []const JobItem,
+        pub fn emitAll(self: *@This(), _: std.mem.Allocator, emitter: flowdata.engine.sources.RecordEmitter) anyerror!usize {
+            for (self.items) |it| {
+                try emitter.emit("mock", flowdata.dataflow.PayloadHandle.fromScalar(JobItem, &it));
+            }
+            return self.items.len;
+        }
+        pub fn deinit(_: *@This()) void {}
+        pub fn batchSource(self: *@This()) flowdata.engine.sources.BatchSource {
+            return flowdata.engine.sources.BatchSource.fromImpl(@This(), self);
+        }
+    };
+
+    const yaml_src =
+        \\version: 2
+        \\runtime:
+        \\  scheduler: dag
+        \\  workers: 2
+        \\  routing: type_driven
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: process
+        \\        uses: batch_mod/process_job
+        \\        where: "enabled == true"
+    ;
+    const ast_spec = try flowdata.yaml.loadPipelineAstFromYaml(alloc, yaml_src, .{});
+    var repo_reg = flowdata.RepositoryRegistry.init(alloc);
+    defer repo_reg.deinit();
+
+    var eng = flowdata.PipelineEngine.init(alloc, ast_spec, &mod_reg, &repo_reg);
+    defer eng.deinit();
+
+    var mock_src = MockSource{ .items = &items };
+    const summary_mock = try eng.runWithSource(mock_src.batchSource());
+    try testing.expectEqual(@as(usize, 2), summary_mock.steps_executed);
+
+    // Also verify auto-emission from `role: source` datasource when CLI input is empty
+    const SliceRepo = struct {
+        payload: flowdata.dataflow.PayloadHandle,
+        pub fn readPayload(self: *const @This(), _: []const u8) ?flowdata.dataflow.PayloadHandle {
+            return self.payload;
+        }
+        pub fn writePayload(_: *@This(), _: []const u8, _: flowdata.dataflow.PayloadHandle) anyerror!void {}
+        pub fn recordCount(self: *const @This(), _: []const u8) usize {
+            return self.payload.len;
+        }
+        pub fn deinit(_: *@This()) void {}
+        pub fn storageRepository(self: *@This()) flowdata.repository.StorageRepository {
+            const RepoT = @This();
+            const V = struct {
+                fn wp(p: *anyopaque, c: []const u8, pl: flowdata.dataflow.PayloadHandle) anyerror!void {
+                    return @as(*RepoT, @ptrCast(@alignCast(p))).writePayload(c, pl);
+                }
+                fn rp(p: *anyopaque, c: []const u8) ?flowdata.dataflow.PayloadHandle {
+                    return @as(*const RepoT, @ptrCast(@alignCast(p))).readPayload(c);
+                }
+                fn rc(p: *anyopaque, c: []const u8) usize {
+                    return @as(*const RepoT, @ptrCast(@alignCast(p))).recordCount(c);
+                }
+                fn dn(p: *anyopaque) void {
+                    @as(*RepoT, @ptrCast(@alignCast(p))).deinit();
+                }
+                const vt = flowdata.repository.StorageRepository.VTable{
+                    .writePayload = &wp,
+                    .readPayload = &rp,
+                    .recordCount = &rc,
+                    .deinit = &dn,
+                };
+            };
+            return .{ .ptr = self, .vtable = &V.vt };
+        }
+    };
+
+    var slice_repo = SliceRepo{
+        .payload = flowdata.dataflow.PayloadHandle.fromSlice(JobItem, &items),
+    };
+    var repo_reg2 = flowdata.RepositoryRegistry.init(alloc);
+    defer repo_reg2.deinit();
+    try repo_reg2.register("tracked_targets", slice_repo.storageRepository());
+
+    const yaml_auto =
+        \\version: 2
+        \\runtime:
+        \\  scheduler: dag
+        \\  workers: 2
+        \\  routing: type_driven
+        \\datasources:
+        \\  tracked_targets:
+        \\    driver: memory
+        \\    role: source
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: process
+        \\        uses: batch_mod/process_job
+        \\        where: "enabled == true"
+    ;
+    const ast_auto = try flowdata.yaml.loadPipelineAstFromYaml(alloc, yaml_auto, .{});
+    var eng2 = flowdata.PipelineEngine.init(alloc, ast_auto, &mod_reg, &repo_reg2);
+    defer eng2.deinit();
+
+    const empty_cli = flowdata.dataflow.PayloadHandle.fromSlice(u8, &.{});
+    const summary_auto = try eng2.run(empty_cli);
+    try testing.expectEqual(@as(usize, 2), summary_auto.steps_executed);
+}

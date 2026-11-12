@@ -234,6 +234,19 @@ pub const PipelineRunner = struct {
                         if (load_shared and self.options.load_shared_modules) {
                             _ = try self.registry.resolveTask(t.module, t.task);
                         }
+                        for (t.inputs) |in_b| {
+                            if (in_b.expr.stream_ref) |sref| {
+                                const ds_id = if (std.mem.indexOfScalar(u8, sref, '.')) |dot| sref[0..dot] else sref;
+                                if (self.ast.getDatasource(ds_id)) |ds| {
+                                    if (ds.role == .sink) return error.CannotReadFromSinkDatasource;
+                                }
+                            }
+                        }
+                        for (t.outputs) |out_ch| {
+                            if (self.ast.getDatasource(out_ch.datasource)) |ds| {
+                                if (ds.role == .source) return error.CannotWriteToSourceDatasource;
+                            }
+                        }
                     },
                     .router => |r| {
                         for (r.cases) |c| {

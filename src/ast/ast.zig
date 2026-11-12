@@ -85,10 +85,17 @@ pub const JobSpec = struct {
 
 /// Specification for an open-ended storage datasource (memory, sqlite, elasticsearch, kafka, s3, etc.).
 /// Driver resolution is handled dynamically via registry without requiring core recompilation.
+pub const DatasourceRole = enum {
+    source,
+    sink,
+    duplex,
+};
+
 pub const DatasourceSpec = struct {
     id: []const u8,
     /// Open-ended driver / storage backend identifier (e.g. "memory", "sqlite", "file_store", "elasticsearch", "s3", etc.)
     driver: []const u8,
+    role: DatasourceRole = .duplex,
     params: []const KeyValueParam = &.{},
 
     pub fn getParam(self: DatasourceSpec, key: []const u8) ?[]const u8 {

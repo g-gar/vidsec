@@ -551,13 +551,19 @@ pub fn loadPipelineAstFromYaml(
                 else
                     "memory";
 
+                const role: ast.DatasourceRole = if (ds_val.get("role")) |r_node| blk: {
+                    const r_str = r_node.asScalar() orelse return error.InvalidDatasourceRole;
+                    break :blk std.meta.stringToEnum(ast.DatasourceRole, r_str) orelse return error.InvalidDatasourceRole;
+                } else .duplex;
+
                 // Collect extra parameters (e.g. path, endpoint, index, directory)
                 var params_list: std.ArrayListUnmanaged(KeyValueParam) = .empty;
                 if (ds_val.asMap()) |param_entries| {
                     for (param_entries) |pe| {
                         if (!std.mem.eql(u8, pe.key, "driver") and
                             !std.mem.eql(u8, pe.key, "type") and
-                            !std.mem.eql(u8, pe.key, "kind"))
+                            !std.mem.eql(u8, pe.key, "kind") and
+                            !std.mem.eql(u8, pe.key, "role"))
                         {
                             const val_str = pe.value.asScalar() orelse "";
                             try params_list.append(allocator, .{
@@ -571,6 +577,7 @@ pub fn loadPipelineAstFromYaml(
                 try builder.addDatasource(.{
                     .id = entry.key,
                     .driver = driver,
+                    .role = role,
                     .params = try params_list.toOwnedSlice(allocator),
                 });
             }

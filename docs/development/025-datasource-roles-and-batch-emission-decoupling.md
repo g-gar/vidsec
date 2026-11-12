@@ -5,7 +5,7 @@
 | **ID** | `ARCH-025` |
 | **Depends On** | [`ARCH-014`](./014-inbound-emitter-datasources-and-reactive-dispatch.md), [`ARCH-023`](./023-pluggable-routing-strategy-decoupling.md), [`ARCH-024`](./024-type-driven-multi-input-accumulation.md) |
 | **Area** | `src/ast/`, `src/yaml/`, `src/repository/`, `src/engine/` |
-| **Status** | `SPECIFICATION` |
+| **Status** | `PHASES 1-3 DONE / PHASE 4 VIA ARCH-026` |
 
 ---
 

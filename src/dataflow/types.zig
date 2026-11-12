@@ -420,6 +420,29 @@ pub const PayloadHandle = struct {
     pub fn asScalar(self: PayloadHandle, comptime T: type) *const T {
         return @ptrCast(@alignCast(self.ptr));
     }
+
+    pub fn elementAt(self: PayloadHandle, index: usize) ?PayloadHandle {
+        if (!self.is_stream or self.repr == .bytes or self.element_size == 0) {
+            return if (index == 0 and self.len > 0) self else null;
+        }
+        if (index >= self.len) return null;
+        const base: [*]const u8 = @ptrCast(self.ptr);
+        const elem_ptr: *const anyopaque = @ptrCast(base + index * self.element_size);
+        return .{
+            .ptr = elem_ptr,
+            .len = 1,
+            .is_stream = false,
+            .type_name = self.type_name,
+            .element_size = self.element_size,
+            .element_align = self.element_align,
+            .reflect_fn = self.reflect_fn,
+            .reflect_ctx = self.reflect_ctx,
+            .reflect_ctx_fn = self.reflect_ctx_fn,
+            .abi_reflect_fn = self.abi_reflect_fn,
+            .repr = self.repr,
+            .schema_id = self.schema_id,
+        };
+    }
 };
 
 // =============================================================================
