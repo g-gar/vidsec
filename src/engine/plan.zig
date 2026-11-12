@@ -185,6 +185,21 @@ pub fn compilePlan(
                 try channel_map.put(allocator, ch_name, ch_id);
                 try node_produced_channels[idx].append(allocator, ch_id);
             }
+
+            if (step.task.outputs.len == 0) {
+                const ch_name = step.task.id;
+                if (!channel_map.contains(ch_name)) {
+                    const ch_id = channels_list.items.len;
+                    try channels_list.append(allocator, ChannelSlot{
+                        .id = ch_id,
+                        .name = ch_name,
+                        .producer_node = idx,
+                        .consumers_count = 0,
+                    });
+                    try channel_map.put(allocator, ch_name, ch_id);
+                    try node_produced_channels[idx].append(allocator, ch_id);
+                }
+            }
         }
     }
 
@@ -469,6 +484,10 @@ fn resolveDataEdges(
                     .to = consumer_idx,
                     .kind = .data,
                 });
+                if (channel_map.get(sref)) |ch_id| {
+                    channels[ch_id].consumers_count += 1;
+                    try consumed_channels.append(allocator, ch_id);
+                }
                 matched_any = true;
             } else if (isKnownExternalInput(sref)) {
                 // Known pipeline external input

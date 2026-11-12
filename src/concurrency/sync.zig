@@ -141,3 +141,51 @@ pub const WaitGroup = struct {
         }
     }
 };
+
+/// Counting Semaphore for resource concurrency caps (ARCH-017 §3.6).
+pub const Semaphore = struct {
+    mutex: Mutex = .{},
+    cond: Condition = .{},
+    count: usize,
+    max_count: usize,
+
+    pub fn init(max_count: usize) Semaphore {
+        return .{
+            .count = max_count,
+            .max_count = max_count,
+        };
+    }
+
+    pub fn acquire(self: *Semaphore) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        while (self.count == 0) {
+            self.cond.wait(&self.mutex);
+        }
+        self.count -= 1;
+    }
+
+    pub fn tryAcquire(self: *Semaphore) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.count > 0) {
+            self.count -= 1;
+            return true;
+        }
+        return false;
+    }
+
+    pub fn release(self: *Semaphore) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.count < self.max_count) {
+            self.count += 1;
+            self.cond.signal();
+        }
+    }
+
+    pub fn deinit(self: *Semaphore) void {
+        self.mutex.deinit();
+        self.cond.deinit();
+    }
+};

@@ -29,6 +29,26 @@ pub const AstLoadOptions = struct {
     env_interpolator: ?*const env.EnvInterpolator = null,
 };
 
+pub fn parseByteSize(str: []const u8) ?usize {
+    const trimmed = std.mem.trim(u8, str, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    var num_len: usize = 0;
+    while (num_len < trimmed.len and (trimmed[num_len] >= '0' and trimmed[num_len] <= '9')) : (num_len += 1) {}
+    if (num_len == 0) return null;
+    const base_num = std.fmt.parseInt(usize, trimmed[0..num_len], 10) catch return null;
+    const unit = std.mem.trim(u8, trimmed[num_len..], " \t\r\n");
+    if (unit.len == 0 or std.ascii.eqlIgnoreCase(unit, "b")) {
+        return base_num;
+    } else if (std.ascii.eqlIgnoreCase(unit, "k") or std.ascii.eqlIgnoreCase(unit, "kb") or std.ascii.eqlIgnoreCase(unit, "kib")) {
+        return base_num * 1024;
+    } else if (std.ascii.eqlIgnoreCase(unit, "m") or std.ascii.eqlIgnoreCase(unit, "mb") or std.ascii.eqlIgnoreCase(unit, "mib")) {
+        return base_num * 1024 * 1024;
+    } else if (std.ascii.eqlIgnoreCase(unit, "g") or std.ascii.eqlIgnoreCase(unit, "gb") or std.ascii.eqlIgnoreCase(unit, "gib")) {
+        return base_num * 1024 * 1024 * 1024;
+    }
+    return base_num;
+}
+
 /// Parses raw stream expression strings such as:
 /// - "stream"
 /// - "lower_mp4.regions"
@@ -245,12 +265,14 @@ fn parseOutputs(alloc: Allocator, out_node: yaml_lib.Node) ![]const ChannelOutpu
                 const from = if (ch.get("from")) |f| f.asScalar() else null;
                 const schema = if (ch.get("schema")) |s| s.asScalar() else null;
                 const filter = if (ch.get("filter")) |fl| fl.asScalar() else null;
+                const retain = if (ch.get("retain")) |r| (if (r.asScalar()) |rs| std.mem.eql(u8, rs, "true") else false) else false;
                 try list.append(alloc, .{
                     .name = entry.key,
                     .from_field = from,
                     .schema_ref = schema,
                     .datasource = ds,
                     .filter = filter,
+                    .retain = retain,
                 });
             }
         }
@@ -454,6 +476,18 @@ pub fn loadPipelineAstFromYaml(
                 } else {
                     builder.setScheduler(.sequential);
                 }
+            }
+        }
+        if (rt.get("max_inflight_bytes")) |mib_node| {
+            if (mib_node.asScalar()) |mib_str| {
+                if (parseByteSize(mib_str)) |mib_val| {
+                    builder.setMaxInflightBytes(mib_val);
+                }
+            }
+        }
+        if (rt.get("retain_all")) |ra_node| {
+            if (ra_node.asScalar()) |ra_str| {
+                builder.setRetainAll(std.mem.eql(u8, ra_str, "true"));
             }
         }
     }

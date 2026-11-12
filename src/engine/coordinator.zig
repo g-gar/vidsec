@@ -22,6 +22,23 @@ const NetworkAdapter = @import("../transport/outbound/mod.zig").NetworkAdapter;
 const plan_mod = @import("plan.zig");
 const ExecutionPlan = plan_mod.ExecutionPlan;
 const NodeId = plan_mod.NodeId;
+const ChannelId = plan_mod.ChannelId;
+
+pub const StepArenaRecord = struct {
+    arena: std.heap.ArenaAllocator,
+    live_channels_count: usize,
+    retained: bool = false,
+};
+
+pub const ChannelState = struct {
+    id: ChannelId,
+    name: []const u8,
+    payload: PayloadHandle,
+    ref_count: usize,
+    retained: bool,
+    byte_size: usize,
+    arena_rec: ?*StepArenaRecord = null,
+};
 
 pub const StepCompletion = struct {
     node_id: NodeId,
@@ -33,6 +50,7 @@ pub const StepCompletion = struct {
     end_ns: u64,
     step_adapter: ?NetworkAdapter,
     records_before: usize,
+    step_arena: ?std.heap.ArenaAllocator = null,
 };
 
 pub const CompletionQueue = struct {
@@ -111,6 +129,26 @@ pub const Coordinator = struct {
     active_mask: ?[]const bool = null,
     total_active: usize = 0,
 
+    // ARCH-017 Phase 17.4: Memory Lifecycle & Channel Refcounting
+    step_arenas: std.ArrayListUnmanaged(*StepArenaRecord) = .empty,
+    channel_states: std.AutoHashMapUnmanaged(ChannelId, ChannelState) = .empty,
+    channel_name_to_id: std.StringHashMapUnmanaged(ChannelId) = .empty,
+    live_inflight_bytes: usize = 0,
+    max_inflight_bytes: ?usize = null,
+    retain_all: bool = false,
+
+    pub fn deinit(self: *Coordinator) void {
+        self.ready_queue.deinit(self.engine.allocator);
+        self.completion_queue.deinit(self.engine.allocator);
+        for (self.step_arenas.items) |ar| {
+            ar.arena.deinit();
+            self.engine.allocator.destroy(ar);
+        }
+        self.step_arenas.deinit(self.engine.allocator);
+        self.channel_states.deinit(self.engine.allocator);
+        self.channel_name_to_id.deinit(self.engine.allocator);
+    }
+
     pub fn run(
         engine: *PipelineEngine,
         plan: *const ExecutionPlan,
@@ -181,13 +219,16 @@ pub const Coordinator = struct {
             .current_input = active_input,
             .active_mask = active_mask,
             .total_active = total_active,
+            .max_inflight_bytes = engine.ast.runtime.max_inflight_bytes,
+            .retain_all = engine.ast.runtime.retain_all,
         };
-        defer {
-            coord.ready_queue.deinit(engine.allocator);
-            coord.completion_queue.deinit(engine.allocator);
+        defer coord.deinit();
+
+        for (plan.channels) |ch_slot| {
+            try coord.channel_name_to_id.put(engine.allocator, ch_slot.name, ch_slot.id);
         }
 
-        // Initialize ready queue with indegree == 0 nodes (in declaration order)
+        // Initialize ready queue with indegree == 0 nodes (in priority & declaration order)
         for (0..nodes_count) |i| {
             if (indegrees[i] == 0) {
                 try coord.enqueueReady(i);
@@ -196,8 +237,33 @@ pub const Coordinator = struct {
 
         // Coordinator Main Event Loop
         while (coord.completed_nodes < total_active) {
-            // 1. Dispatch all ready nodes while we have capacity and are not stopped
+            // 1. Dispatch ready nodes respecting memory backpressure
             while (coord.ready_queue.items.len > 0 and !coord.has_fatal_error and !coord.summary.halted_early) {
+                const next_node_id = coord.ready_queue.items[0];
+                if (coord.shouldThrottle(next_node_id)) {
+                    coord.summary.throttle_count += 1;
+                    var found_consumer = false;
+                    for (coord.ready_queue.items, 0..) |cand_id, idx| {
+                        if (!coord.shouldThrottle(cand_id)) {
+                            _ = coord.ready_queue.orderedRemove(idx);
+                            const node = plan.nodes[cand_id];
+                            if (node.isRouter()) {
+                                try coord.executeRouter(node);
+                            } else {
+                                try coord.dispatchTask(cand_id);
+                            }
+                            found_consumer = true;
+                            break;
+                        }
+                    }
+                    if (!found_consumer) {
+                        // All ready tasks are producers and memory budget is reached;
+                        // wait for in-flight tasks to complete and release memory.
+                        break;
+                    }
+                    continue;
+                }
+
                 const node_id = coord.ready_queue.orderedRemove(0);
                 const node = plan.nodes[node_id];
                 if (node.isRouter()) {
@@ -234,9 +300,41 @@ pub const Coordinator = struct {
         }
     }
 
+    fn shouldThrottle(self: *Coordinator, node_id: NodeId) bool {
+        if (self.max_inflight_bytes) |budget| {
+            if (self.live_inflight_bytes >= budget and self.in_flight > 0) {
+                const node = self.plan.nodes[node_id];
+                if (node.produced_channels.len > 0 and node.consumed_channels.len == 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    fn nodePriority(self: *const Coordinator, node_id: NodeId) u32 {
+        const node = self.plan.nodes[node_id];
+        var score: u32 = 0;
+        // Prioritize nodes that consume channels so intermediate buffers are freed earlier
+        if (node.consumed_channels.len > 0) {
+            score += 1000;
+            score += @min(999, @as(u32, @intCast(node.consumed_channels.len * 10)));
+        }
+        return score;
+    }
+
     fn enqueueReady(self: *Coordinator, node_id: NodeId) !void {
+        const priority = self.nodePriority(node_id);
         var insert_idx: usize = 0;
-        while (insert_idx < self.ready_queue.items.len and self.ready_queue.items[insert_idx] < node_id) : (insert_idx += 1) {}
+        while (insert_idx < self.ready_queue.items.len) : (insert_idx += 1) {
+            const cand_id = self.ready_queue.items[insert_idx];
+            const cand_priority = self.nodePriority(cand_id);
+            if (priority > cand_priority) {
+                break;
+            } else if (priority == cand_priority and node_id < cand_id) {
+                break;
+            }
+        }
         try self.ready_queue.insert(self.engine.allocator, insert_idx, node_id);
     }
 
@@ -268,11 +366,12 @@ pub const Coordinator = struct {
                             .end_ns = engine_mod.nowNs(),
                             .step_adapter = null,
                             .records_before = 0,
+                            .step_arena = null,
                         }) catch {};
                         return;
                     }
                 }
-                try bound_inputs_list.append(self.outputs_alloc, .{
+                try bound_inputs_list.append(self.engine.allocator, .{
                     .name = in_binding.param_name,
                     .payload = resolved_payload,
                 });
@@ -282,28 +381,28 @@ pub const Coordinator = struct {
             }
         }
 
-        try bound_inputs_list.append(self.outputs_alloc, .{
+        try bound_inputs_list.append(self.engine.allocator, .{
             .name = "stream",
             .payload = self.current_input,
         });
-        try bound_inputs_list.append(self.outputs_alloc, .{
+        try bound_inputs_list.append(self.engine.allocator, .{
             .name = "input",
             .payload = self.current_input,
         });
 
         // Innate ambient merge (ARCH-018 §3.2)
-        if (try self.engine.ambient.asPayload(self.outputs_alloc, "system.timestamp")) |ts_p| {
-            try bound_inputs_list.append(self.outputs_alloc, .{ .name = "system.timestamp", .payload = ts_p });
-            try bound_inputs_list.append(self.outputs_alloc, .{ .name = "timestamp", .payload = ts_p });
+        if (try self.engine.ambient.asPayload(self.engine.allocator, "system.timestamp")) |ts_p| {
+            try bound_inputs_list.append(self.engine.allocator, .{ .name = "system.timestamp", .payload = ts_p });
+            try bound_inputs_list.append(self.engine.allocator, .{ .name = "timestamp", .payload = ts_p });
         }
-        if (try self.engine.ambient.asPayload(self.outputs_alloc, "system.hour")) |hr_p| {
-            try bound_inputs_list.append(self.outputs_alloc, .{ .name = "system.hour", .payload = hr_p });
-            try bound_inputs_list.append(self.outputs_alloc, .{ .name = "hour", .payload = hr_p });
+        if (try self.engine.ambient.asPayload(self.engine.allocator, "system.hour")) |hr_p| {
+            try bound_inputs_list.append(self.engine.allocator, .{ .name = "system.hour", .payload = hr_p });
+            try bound_inputs_list.append(self.engine.allocator, .{ .name = "hour", .payload = hr_p });
         }
-        if (try self.engine.ambient.asPayload(self.outputs_alloc, "system.cpu_load")) |cpu_p| {
-            try bound_inputs_list.append(self.outputs_alloc, .{ .name = "system.cpu_load", .payload = cpu_p });
-            try bound_inputs_list.append(self.outputs_alloc, .{ .name = "cpu_load", .payload = cpu_p });
-            try bound_inputs_list.append(self.outputs_alloc, .{ .name = "cpu_usage", .payload = cpu_p });
+        if (try self.engine.ambient.asPayload(self.engine.allocator, "system.cpu_load")) |cpu_p| {
+            try bound_inputs_list.append(self.engine.allocator, .{ .name = "system.cpu_load", .payload = cpu_p });
+            try bound_inputs_list.append(self.engine.allocator, .{ .name = "cpu_load", .payload = cpu_p });
+            try bound_inputs_list.append(self.engine.allocator, .{ .name = "cpu_usage", .payload = cpu_p });
         }
 
         if (self.engine.kernel) |k| {
@@ -337,6 +436,9 @@ pub const Coordinator = struct {
 
         const workers: u32 = if (task_spec.concurrency) |c| @intCast(c) else @intCast(self.engine.workers);
 
+        const owned_bound_inputs = try bound_inputs_list.toOwnedSlice(self.engine.allocator);
+        errdefer self.engine.allocator.free(owned_bound_inputs);
+
         const job_ctx = try self.engine.allocator.create(StepJobContext);
         job_ctx.* = .{
             .coordinator = self,
@@ -344,7 +446,7 @@ pub const Coordinator = struct {
             .task_spec = task_spec,
             .step_input = step_input,
             .input_bytes = input_bytes,
-            .bound_inputs = bound_inputs_list.items,
+            .bound_inputs = owned_bound_inputs,
             .step_adapter = step_adapter,
             .records_before = records_before,
             .step_span_id = step_span_id,
@@ -362,7 +464,12 @@ pub const Coordinator = struct {
 
     fn workerRun(raw_ctx: *anyopaque) void {
         const job_ctx: *StepJobContext = @ptrCast(@alignCast(raw_ctx));
-        defer job_ctx.coordinator.engine.allocator.destroy(job_ctx);
+        defer {
+            if (job_ctx.bound_inputs.len > 0) {
+                job_ctx.coordinator.engine.allocator.free(job_ctx.bound_inputs);
+            }
+            job_ctx.coordinator.engine.allocator.destroy(job_ctx);
+        }
 
         const coord = job_ctx.coordinator;
         if (coord.cancel_flag.load(.acquire)) {
@@ -376,9 +483,13 @@ pub const Coordinator = struct {
                 .end_ns = engine_mod.nowNs(),
                 .step_adapter = job_ctx.step_adapter,
                 .records_before = job_ctx.records_before,
+                .step_arena = null,
             }) catch {};
             return;
         }
+
+        var step_arena = std.heap.ArenaAllocator.init(coord.engine.allocator);
+        const step_alloc = step_arena.allocator();
 
         const desc = coord.engine.modules.resolveTask(job_ctx.task_spec.module, job_ctx.task_spec.task) catch {
             coord.cancel_flag.store(true, .release);
@@ -392,7 +503,10 @@ pub const Coordinator = struct {
                 .end_ns = engine_mod.nowNs(),
                 .step_adapter = job_ctx.step_adapter,
                 .records_before = job_ctx.records_before,
-            }) catch {};
+                .step_arena = step_arena,
+            }) catch {
+                step_arena.deinit();
+            };
             return;
         };
 
@@ -404,7 +518,7 @@ pub const Coordinator = struct {
         };
 
         const outcome = modules_mod.executeTask(desc, .{
-            .allocator = coord.outputs_alloc,
+            .allocator = step_alloc,
             .input_payload = job_ctx.step_input,
             .input_bytes = job_ctx.input_bytes,
             .params = job_ctx.task_spec.static_params,
@@ -426,7 +540,22 @@ pub const Coordinator = struct {
             .end_ns = end_ns,
             .step_adapter = job_ctx.step_adapter,
             .records_before = job_ctx.records_before,
-        }) catch {};
+            .step_arena = step_arena,
+        }) catch {
+            step_arena.deinit();
+        };
+    }
+
+    fn freeArena(self: *Coordinator, ar: *StepArenaRecord) void {
+        for (self.step_arenas.items, 0..) |item, idx| {
+            if (item == ar) {
+                _ = self.step_arenas.orderedRemove(idx);
+                ar.arena.deinit();
+                self.engine.allocator.destroy(ar);
+                self.summary.arenas_freed_early += 1;
+                break;
+            }
+        }
     }
 
     fn processCompletion(self: *Coordinator, comp: StepCompletion) !void {
@@ -464,7 +593,26 @@ pub const Coordinator = struct {
             },
         }
 
+        if (comp.status == .fatal_error) {
+            if (comp.step_arena) |*st_arena| {
+                st_arena.deinit();
+            }
+        }
+
         if (comp.status != .fatal_error) {
+            var maybe_arena_rec: ?*StepArenaRecord = null;
+            if (comp.step_arena) |st_arena| {
+                const ar = try self.engine.allocator.create(StepArenaRecord);
+                ar.* = .{
+                    .arena = st_arena,
+                    .live_channels_count = 0,
+                    .retained = self.retain_all,
+                };
+                try self.step_arenas.append(self.engine.allocator, ar);
+                maybe_arena_rec = ar;
+                self.summary.arenas_created += 1;
+            }
+
             var last_processed_output = comp.output;
 
             for (task_spec.outputs) |out_ch| {
@@ -513,11 +661,132 @@ pub const Coordinator = struct {
                 const scoped_name = try std.fmt.allocPrint(self.outputs_alloc, "{s}.{s}", .{ task_spec.id, out_ch.name });
                 try self.outputs.put(self.outputs_alloc, scoped_name, channel_payload);
                 last_processed_output = channel_payload;
+
+                // ARCH-017 §3.5: Channel Refcounting & Lifetime Tracking
+                const ch_byte_size = channel_payload.len * channel_payload.element_size;
+                self.live_inflight_bytes += ch_byte_size;
+                if (self.live_inflight_bytes > self.summary.peak_inflight_bytes) {
+                    self.summary.peak_inflight_bytes = self.live_inflight_bytes;
+                }
+
+                var consumers_count: usize = 0;
+                var ch_id_opt: ?ChannelId = null;
+
+                if (self.channel_name_to_id.get(out_ch.name)) |cid| {
+                    ch_id_opt = cid;
+                    consumers_count = self.plan.channels[cid].consumers_count;
+                } else if (self.channel_name_to_id.get(scoped_name)) |cid| {
+                    ch_id_opt = cid;
+                    consumers_count = self.plan.channels[cid].consumers_count;
+                }
+
+                const is_retained = out_ch.retain or self.retain_all or std.mem.eql(u8, out_ch.datasource, "pipeline_memory") or (node.successors.len == 0);
+                if (is_retained and maybe_arena_rec != null) {
+                    maybe_arena_rec.?.retained = true;
+                }
+
+                if (maybe_arena_rec) |ar| {
+                    ar.live_channels_count += 1;
+                }
+
+                if (ch_id_opt) |cid| {
+                    try self.channel_states.put(self.engine.allocator, cid, .{
+                        .id = cid,
+                        .name = out_ch.name,
+                        .payload = channel_payload,
+                        .ref_count = consumers_count,
+                        .retained = is_retained,
+                        .byte_size = ch_byte_size,
+                        .arena_rec = maybe_arena_rec,
+                    });
+
+                    if (consumers_count == 0 and !is_retained) {
+                        if (self.live_inflight_bytes >= ch_byte_size) {
+                            self.live_inflight_bytes -= ch_byte_size;
+                        } else {
+                            self.live_inflight_bytes = 0;
+                        }
+                        if (maybe_arena_rec) |ar| {
+                            ar.live_channels_count -= 1;
+                            if (ar.live_channels_count == 0 and !ar.retained) {
+                                self.freeArena(ar);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (task_spec.outputs.len == 0) {
+                const ch_name = task_spec.id;
+                const ch_byte_size = last_processed_output.len * last_processed_output.element_size;
+                self.live_inflight_bytes += ch_byte_size;
+                if (self.live_inflight_bytes > self.summary.peak_inflight_bytes) {
+                    self.summary.peak_inflight_bytes = self.live_inflight_bytes;
+                }
+
+                var consumers_count: usize = 0;
+                const is_retained = self.retain_all or (node.successors.len == 0);
+                if (is_retained and maybe_arena_rec != null) {
+                    maybe_arena_rec.?.retained = true;
+                }
+
+                if (self.channel_name_to_id.get(ch_name)) |cid| {
+                    consumers_count = self.plan.channels[cid].consumers_count;
+                    if (maybe_arena_rec) |ar| {
+                        ar.live_channels_count += 1;
+                    }
+                    try self.channel_states.put(self.engine.allocator, cid, .{
+                        .id = cid,
+                        .name = ch_name,
+                        .payload = last_processed_output,
+                        .ref_count = consumers_count,
+                        .retained = is_retained,
+                        .byte_size = ch_byte_size,
+                        .arena_rec = maybe_arena_rec,
+                    });
+                    if (consumers_count == 0 and !is_retained) {
+                        if (self.live_inflight_bytes >= ch_byte_size) {
+                            self.live_inflight_bytes -= ch_byte_size;
+                        } else {
+                            self.live_inflight_bytes = 0;
+                        }
+                        if (maybe_arena_rec) |ar| {
+                            ar.live_channels_count -= 1;
+                            if (ar.live_channels_count == 0 and !ar.retained) {
+                                self.freeArena(ar);
+                            }
+                        }
+                    }
+                }
             }
 
             try self.outputs.put(self.outputs_alloc, task_spec.id, last_processed_output);
             self.current_input = last_processed_output;
             self.summary.steps_executed += 1;
+
+            // Decrement refcount of channels consumed by this node
+            for (node.consumed_channels) |ch_id| {
+                if (self.channel_states.getPtr(ch_id)) |ch_st| {
+                    if (ch_st.ref_count > 0) {
+                        ch_st.ref_count -= 1;
+                        if (ch_st.ref_count == 0 and !ch_st.retained) {
+                            if (self.live_inflight_bytes >= ch_st.byte_size) {
+                                self.live_inflight_bytes -= ch_st.byte_size;
+                            } else {
+                                self.live_inflight_bytes = 0;
+                            }
+                            if (ch_st.arena_rec) |ar| {
+                                if (ar.live_channels_count > 0) {
+                                    ar.live_channels_count -= 1;
+                                    if (ar.live_channels_count == 0 and !ar.retained) {
+                                        self.freeArena(ar);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             // Decrement successors' indegree and unlock ready nodes
             for (node.successors) |succ_id| {
@@ -597,6 +866,30 @@ pub const Coordinator = struct {
                 }
                 if (!std.mem.eql(u8, def_pipe, "continue")) {
                     try self.engine.executeSubPipeline(def_pipe, self.current_input, self.outputs, self.outputs_alloc, self.net_ctrl, self.summary, self.trace_id, self.parent_span_id, self.pool);
+                }
+            }
+        }
+
+        // Router completes: decrement refcount of any channels it consumed
+        for (node.consumed_channels) |ch_id| {
+            if (self.channel_states.getPtr(ch_id)) |ch_st| {
+                if (ch_st.ref_count > 0) {
+                    ch_st.ref_count -= 1;
+                    if (ch_st.ref_count == 0 and !ch_st.retained) {
+                        if (self.live_inflight_bytes >= ch_st.byte_size) {
+                            self.live_inflight_bytes -= ch_st.byte_size;
+                        } else {
+                            self.live_inflight_bytes = 0;
+                        }
+                        if (ch_st.arena_rec) |ar| {
+                            if (ar.live_channels_count > 0) {
+                                ar.live_channels_count -= 1;
+                                if (ar.live_channels_count == 0 and !ar.retained) {
+                                    self.freeArena(ar);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

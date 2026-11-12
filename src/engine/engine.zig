@@ -32,6 +32,12 @@ pub const ExecutionSummary = struct {
     routers_evaluated: usize = 0,
     halted_early: bool = false,
     final_pipeline: []const u8 = "main",
+
+    // ARCH-017 Phase 17.4: Memory lifecycle and backpressure metrics
+    arenas_created: usize = 0,
+    arenas_freed_early: usize = 0,
+    peak_inflight_bytes: usize = 0,
+    throttle_count: usize = 0,
 };
 
 pub const EngineError = error{

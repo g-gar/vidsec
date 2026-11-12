@@ -707,3 +707,337 @@ test "ARCH-017 Phase 17.3: Single-worker (workers: 1) falls back to topological 
     try testing.expectEqual(@as(usize, 1), slice.len);
     try testing.expectEqual(@as(u64, 230), slice[0].total);
 }
+
+// -------------------------------------------------------------------------
+// Tasks for ARCH-017 Phase 17.4 Verification
+// -------------------------------------------------------------------------
+
+const MemoryStageInputs = struct {
+    stream: []const SampleItem,
+};
+
+const MemoryMidTask = struct {
+    pub const Context = struct {
+        pub const concurrency_safe = true;
+    };
+    pub fn execute(_: *MemoryMidTask, alloc: std.mem.Allocator, inputs: MemoryStageInputs) ![]const SampleItem {
+        const slice = try alloc.alloc(SampleItem, inputs.stream.len);
+        for (inputs.stream, 0..) |it, idx| {
+            slice[idx] = .{ .id = it.id + 1, .val = it.val + 10 };
+        }
+        return slice;
+    }
+};
+
+const MemoryJoinInputs = struct {
+    stream: []const SampleItem,
+};
+
+const MemoryJoinTask = struct {
+    pub const Context = struct {
+        pub const concurrency_safe = true;
+    };
+    pub fn execute(_: *MemoryJoinTask, alloc: std.mem.Allocator, inputs: MemoryJoinInputs) ![]const FinalResult {
+        var sum: u64 = 0;
+        for (inputs.stream) |it| {
+            sum += it.val;
+        }
+        const slice = try alloc.alloc(FinalResult, 1);
+        slice[0] = .{ .total = sum };
+        return slice;
+    }
+};
+
+const BulkProducerTask = struct {
+    pub const Context = struct {
+        pub const concurrency_safe = true;
+    };
+    pub fn execute(_: *BulkProducerTask, alloc: std.mem.Allocator) ![]const SampleItem {
+        const slice = try alloc.alloc(SampleItem, 50);
+        for (slice, 0..) |*item, idx| {
+            item.* = .{ .id = @intCast(idx), .val = 1 };
+        }
+        return slice;
+    }
+};
+
+const BulkConsumerInputs = struct {
+    stream: []const SampleItem,
+};
+
+const BulkConsumerTask = struct {
+    pub const Context = struct {
+        pub const concurrency_safe = true;
+    };
+    pub fn execute(_: *BulkConsumerTask, alloc: std.mem.Allocator, inputs: BulkConsumerInputs) ![]const SampleItem {
+        sleepMs(10);
+        const slice = try alloc.alloc(SampleItem, inputs.stream.len);
+        for (inputs.stream, 0..) |it, idx| {
+            slice[idx] = .{ .id = it.id, .val = it.val * 2 };
+        }
+        return slice;
+    }
+};
+
+test "ARCH-017 Phase 17.4: Intermediate step arenas are deallocated early on channel exhaustion" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const root_desc = plugin.defineTaskService(DiamondRootTask, .{ .name = "stage_root" });
+    const mid_desc = plugin.defineTaskService(MemoryMidTask, .{ .name = "stage_mid" });
+    const join_desc = plugin.defineTaskService(MemoryJoinTask, .{ .name = "stage_join" });
+
+    var tasks = [_]plugin.TaskDescriptor_ABI{ root_desc, mid_desc, join_desc };
+    const manifest = plugin.ModuleManifest_ABI{
+        .module_name = "dag_mem_demo",
+        .module_version = .{ .major = 1, .minor = 0, .patch = 0 },
+        .tasks_ptr = &tasks,
+        .tasks_len = tasks.len,
+    };
+
+    var mod_reg = flowdata.plugin.ModuleRegistry.init(alloc);
+    defer mod_reg.deinit();
+    try mod_reg.registerStaticModule("dag_mem_demo", &manifest);
+
+    var repo_reg = flowdata.repository.RepositoryRegistry.init(alloc);
+    defer repo_reg.deinit();
+
+    const MemoryRepository = @import("flowdata_extensions").datasource.MemoryRepository;
+    var mem_repo = MemoryRepository.init(alloc);
+    try repo_reg.register("pipeline_memory", mem_repo.storageRepository());
+
+    const pipeline_yaml =
+        \\version: 2
+        \\runtime:
+        \\  scheduler: dag
+        \\  workers: 2
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: stage1
+        \\        uses: dag_mem_demo/stage_root
+        \\
+        \\      - id: stage2
+        \\        uses: dag_mem_demo/stage_mid
+        \\        inputs:
+        \\          stream: stage1
+        \\
+        \\      - id: stage3
+        \\        uses: dag_mem_demo/stage_mid
+        \\        inputs:
+        \\          stream: stage2
+        \\
+        \\      - id: stage4
+        \\        uses: dag_mem_demo/stage_join
+        \\        inputs:
+        \\          stream: stage3
+        \\        outputs:
+        \\          final_out:
+        \\            datasource: pipeline_memory
+    ;
+
+    const ast = try flowdata.yaml.loadPipelineAstFromYaml(alloc, pipeline_yaml, .{});
+    var engine = flowdata.engine.PipelineEngine.init(alloc, ast, &mod_reg, &repo_reg);
+    defer engine.deinit();
+
+    const summary = try engine.run(flowdata.dataflow.PayloadHandle.empty());
+    try testing.expectEqual(@as(usize, 4), summary.steps_executed);
+    try testing.expect(!summary.halted_early);
+
+    // Verify memory reclamation:
+    // 4 step arenas created, 3 intermediate arenas freed early when their consumers finished.
+    try testing.expectEqual(@as(usize, 4), summary.arenas_created);
+    try testing.expectEqual(@as(usize, 3), summary.arenas_freed_early);
+
+    const out_repo = repo_reg.get("pipeline_memory").?;
+    const payload = out_repo.readPayload("final_out").?;
+    const slice = payload.asSlice(FinalResult);
+    try testing.expectEqual(@as(usize, 1), slice.len);
+    // 100 + 10 (stage2) + 10 (stage3) = 120
+    try testing.expectEqual(@as(u64, 120), slice[0].total);
+}
+
+test "ARCH-017 Phase 17.4: Channel retention preserves intermediate outputs and arenas" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const root_desc = plugin.defineTaskService(DiamondRootTask, .{ .name = "stage_root" });
+    const mid_desc = plugin.defineTaskService(MemoryMidTask, .{ .name = "stage_mid" });
+    const join_desc = plugin.defineTaskService(MemoryJoinTask, .{ .name = "stage_join" });
+
+    var tasks = [_]plugin.TaskDescriptor_ABI{ root_desc, mid_desc, join_desc };
+    const manifest = plugin.ModuleManifest_ABI{
+        .module_name = "dag_retain_demo",
+        .module_version = .{ .major = 1, .minor = 0, .patch = 0 },
+        .tasks_ptr = &tasks,
+        .tasks_len = tasks.len,
+    };
+
+    var mod_reg = flowdata.plugin.ModuleRegistry.init(alloc);
+    defer mod_reg.deinit();
+    try mod_reg.registerStaticModule("dag_retain_demo", &manifest);
+
+    var repo_reg = flowdata.repository.RepositoryRegistry.init(alloc);
+    defer repo_reg.deinit();
+
+    const MemoryRepository = @import("flowdata_extensions").datasource.MemoryRepository;
+    var mem_repo = MemoryRepository.init(alloc);
+    try repo_reg.register("pipeline_memory", mem_repo.storageRepository());
+
+    const pipeline_yaml =
+        \\version: 2
+        \\runtime:
+        \\  scheduler: dag
+        \\  workers: 2
+        \\  retain_all: true
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: stage1
+        \\        uses: dag_retain_demo/stage_root
+        \\
+        \\      - id: stage2
+        \\        uses: dag_retain_demo/stage_mid
+        \\        inputs:
+        \\          stream: stage1
+        \\
+        \\      - id: stage3
+        \\        uses: dag_retain_demo/stage_mid
+        \\        inputs:
+        \\          stream: stage2
+        \\
+        \\      - id: stage4
+        \\        uses: dag_retain_demo/stage_join
+        \\        inputs:
+        \\          stream: stage3
+        \\        outputs:
+        \\          final_out:
+        \\            datasource: pipeline_memory
+    ;
+
+    const ast = try flowdata.yaml.loadPipelineAstFromYaml(alloc, pipeline_yaml, .{});
+    var engine = flowdata.engine.PipelineEngine.init(alloc, ast, &mod_reg, &repo_reg);
+    defer engine.deinit();
+
+    const summary = try engine.run(flowdata.dataflow.PayloadHandle.empty());
+    try testing.expectEqual(@as(usize, 4), summary.steps_executed);
+    try testing.expect(!summary.halted_early);
+
+    // With retain_all: true, no arenas are freed early
+    try testing.expectEqual(@as(usize, 4), summary.arenas_created);
+    try testing.expectEqual(@as(usize, 0), summary.arenas_freed_early);
+
+    const out_repo = repo_reg.get("pipeline_memory").?;
+    const payload = out_repo.readPayload("final_out").?;
+    const slice = payload.asSlice(FinalResult);
+    try testing.expectEqual(@as(usize, 1), slice.len);
+    try testing.expectEqual(@as(u64, 120), slice[0].total);
+}
+
+test "ARCH-017 Phase 17.4: Memory backpressure throttles producers without deadlocks" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const prod_desc = plugin.defineTaskService(BulkProducerTask, .{ .name = "bulk_prod" });
+    const cons_desc = plugin.defineTaskService(BulkConsumerTask, .{ .name = "bulk_cons" });
+    const join_desc = plugin.defineTaskService(DiamondJoinTask, .{ .name = "bulk_join" });
+
+    var tasks = [_]plugin.TaskDescriptor_ABI{ prod_desc, cons_desc, join_desc };
+    const manifest = plugin.ModuleManifest_ABI{
+        .module_name = "dag_backpressure_demo",
+        .module_version = .{ .major = 1, .minor = 0, .patch = 0 },
+        .tasks_ptr = &tasks,
+        .tasks_len = tasks.len,
+    };
+
+    var mod_reg = flowdata.plugin.ModuleRegistry.init(alloc);
+    defer mod_reg.deinit();
+    try mod_reg.registerStaticModule("dag_backpressure_demo", &manifest);
+
+    var repo_reg = flowdata.repository.RepositoryRegistry.init(alloc);
+    defer repo_reg.deinit();
+
+    const MemoryRepository = @import("flowdata_extensions").datasource.MemoryRepository;
+    var mem_repo = MemoryRepository.init(alloc);
+    try repo_reg.register("pipeline_memory", mem_repo.storageRepository());
+
+    // 50 items * 16 bytes = 800 bytes per producer
+    // max_inflight_bytes: 64B triggers backpressure on independent producers
+    const pipeline_yaml =
+        \\version: 2
+        \\runtime:
+        \\  scheduler: dag
+        \\  workers: 4
+        \\  max_inflight_bytes: 64B
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: prod_a
+        \\        uses: dag_backpressure_demo/bulk_prod
+        \\
+        \\      - id: prod_b
+        \\        uses: dag_backpressure_demo/bulk_prod
+        \\
+        \\      - id: cons_a
+        \\        uses: dag_backpressure_demo/bulk_cons
+        \\        inputs:
+        \\          stream: prod_a
+        \\
+        \\      - id: cons_b
+        \\        uses: dag_backpressure_demo/bulk_cons
+        \\        inputs:
+        \\          stream: prod_b
+        \\
+        \\      - id: join_step
+        \\        uses: dag_backpressure_demo/bulk_join
+        \\        inputs:
+        \\          in_merged: merge(cons_a, cons_b)
+        \\        outputs:
+        \\          final_sum:
+        \\            datasource: pipeline_memory
+    ;
+
+    const ast = try flowdata.yaml.loadPipelineAstFromYaml(alloc, pipeline_yaml, .{});
+    var engine = flowdata.engine.PipelineEngine.init(alloc, ast, &mod_reg, &repo_reg);
+    defer engine.deinit();
+
+    const summary = try engine.run(flowdata.dataflow.PayloadHandle.empty());
+    try testing.expectEqual(@as(usize, 5), summary.steps_executed);
+    try testing.expect(!summary.halted_early);
+
+    // Backpressure throttled producer nodes when memory limit was exceeded
+    try testing.expect(summary.throttle_count > 0);
+    try testing.expect(summary.peak_inflight_bytes >= 64);
+
+    const out_repo = repo_reg.get("pipeline_memory").?;
+    const payload = out_repo.readPayload("final_sum").?;
+    const slice = payload.asSlice(FinalResult);
+    try testing.expectEqual(@as(usize, 1), slice.len);
+    // 50 items from prod_a doubled = 100
+    // 50 items from prod_b doubled = 100
+    // total = 200
+    try testing.expectEqual(@as(u64, 200), slice[0].total);
+}
+
+test "ARCH-017 Phase 17.4: Counting Semaphore concurrency cap and tryAcquire" {
+    var sem = flowdata.concurrency.Semaphore.init(2);
+    defer sem.deinit();
+
+    try testing.expect(sem.tryAcquire());
+    try testing.expect(sem.tryAcquire());
+    try testing.expect(!sem.tryAcquire()); // budget exhausted
+
+    sem.release();
+    try testing.expect(sem.tryAcquire()); // restored permit
+    try testing.expect(!sem.tryAcquire());
+
+    sem.release();
+    sem.release();
+    sem.release(); // release capped at max_count (2)
+    try testing.expect(sem.tryAcquire());
+    try testing.expect(sem.tryAcquire());
+    try testing.expect(!sem.tryAcquire());
+}

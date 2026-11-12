@@ -20,6 +20,10 @@ pub const RuntimeConfig = struct {
     default_network: []const u8 = "isolated",
     /// Scheduler mode: sequential (default) or dag (ARCH-017).
     scheduler: SchedulerMode = .sequential,
+    /// Maximum live in-flight memory allowed across unconsumed channels (ARCH-017 §3.5).
+    max_inflight_bytes: ?usize = null,
+    /// When true, prevents freeing intermediate channels until pipeline completion.
+    retain_all: bool = false,
 };
 
 pub const ConfigParam = repository.ConfigParam;
@@ -165,6 +169,7 @@ pub const ChannelOutputSpec = struct {
     schema_ref: ?[]const u8 = null,
     datasource: []const u8 = "default",
     filter: ?[]const u8 = null,
+    retain: bool = false,
 };
 
 // =============================================================================
@@ -332,6 +337,14 @@ pub const PipelineBuilder = struct {
 
     pub fn setScheduler(self: *PipelineBuilder, scheduler: SchedulerMode) void {
         self.runtime.scheduler = scheduler;
+    }
+
+    pub fn setMaxInflightBytes(self: *PipelineBuilder, bytes: ?usize) void {
+        self.runtime.max_inflight_bytes = bytes;
+    }
+
+    pub fn setRetainAll(self: *PipelineBuilder, retain_all: bool) void {
+        self.runtime.retain_all = retain_all;
     }
 
     pub fn addModule(self: *PipelineBuilder, spec: ModuleSpec) ValidationError!void {

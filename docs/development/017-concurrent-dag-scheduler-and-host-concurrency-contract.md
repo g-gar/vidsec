@@ -6,7 +6,7 @@
 | **Depends On** | [`ARCH-002`](./002-open-kernel-extension-system.md), [`ARCH-004`](./004-observability-otel-and-dag-visualizer.md), [`ARCH-011`](./011-pipeline-yaml-specification-and-orchestration.md), [`ARCH-016`](./016-reactive-bifurcation-parallel-expansion-and-join.md) (Typed Payload Contract, multi-channel I/O) |
 | **Unblocks** | `ARCH-016` Phase 16.5 (parallel elemental lifting) |
 | **Area** | `src/engine/`, `src/dataflow/`, `src/transport/outbound/`, `src/repository/`, `src/kernel/`, `src/plugin/loader/` |
-| **Status** | `COMPLETED (Phases 1-3 Core Engine & Scheduler Fully Verified)` |
+| **Status** | `COMPLETED (Phases 1-5 Fully Implemented and Verified)` |
 
 ---
 
@@ -254,7 +254,7 @@ pipelines:
 | **P1** | Host Concurrency Contract (§4) + worker pool with help-while-waiting + thread-safe backing allocator | None (still sequential). **Unblocks ARCH-016 16.5** | **COMPLETED** |
 | **P2** | Plan compiler (`ExecutionPlan`, validations, `after:`), executed in topological order in `sequential` mode | Stricter load-time validation only | **COMPLETED** |
 | **P3** | Coordinator + concurrent dispatch (`scheduler: dag`), MPSC completions, deterministic failure reporting | Independent steps run concurrently | **COMPLETED** |
-| **P4** | Per-step arenas, channel refcounting, `max_inflight_bytes` backpressure, `max_concurrent` caps | Lower memory peaks | **PENDING** |
+| **P4** | Per-step arenas, channel refcounting, `max_inflight_bytes` backpressure, `max_concurrent` caps | Lower memory peaks | **COMPLETED** |
 | **P5** | Routers / sub-pipelines as sub-graphs, halt/cancel semantics, dynamic branch activation | Routers & sub-pipelines participate directly in DAG | **COMPLETED (Subsumed by ARCH-018: `ReactiveRouter` & `Coordinator.runSelective`)** |
 
 `scheduler: sequential` stays the default until P5 passes the mode-equivalence suite. After that, `dag` becomes the default.
