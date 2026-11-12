@@ -18,4 +18,5 @@ test {
     _ = @import("core/dag_scheduler_test.zig");
     _ = @import("core/reactive_dispatch_test.zig");
     _ = @import("core/reactive_router_test.zig");
+    _ = @import("core/collectors_test.zig");
 }

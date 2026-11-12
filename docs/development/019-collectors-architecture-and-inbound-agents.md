@@ -5,7 +5,7 @@
 | **ID** | `ARCH-019` |
 | **Depends On** | [`ARCH-014`](./014-inbound-emitter-datasources-and-reactive-dispatch.md), [`ARCH-018`](./018-type-driven-inbound-router-and-service-catalog.md) |
 | **Area** | `collectors/`, `src/transport/inbound/`, `src/engine/` |
-| **Status** | `DESIGN & ARCHITECTURE SPECIFICATION` |
+| **Status** | `COMPLETED` |
 
 ---
 
@@ -49,6 +49,31 @@ A collector delivers gathered jobs into the Flowdata engine through decoupled ch
 1. **Inbound HTTP/gRPC Transport**: Calling the daemon endpoint (`POST /v1/ingest/:source` or `/v1/jobs`).
 2. **Local IPC / Unix Domain Socket**: Streaming serialized `JobEnvelope`s directly to the engine's reactive listener.
 3. **Appended Queue / Spool**: Writing to an intermediate append log observed by an ingest agent.
+
+### 2.3. Job ID Generation & Idempotency Strategy
+
+#### Evaluated Architectural Options
+
+| Option | Strategy | Pros | Cons |
+| :--- | :--- | :--- | :--- |
+| **Option A** | Simple Timestamp + Monotonic Counter | Simple to implement, fast | Risk of collisions across distributed collectors or rapid sub-nanosecond bursts; no idempotency. |
+| **Option B** | Content-Addressed Hash (`SHA-256(topic + body)`) | Perfect natural deduplication of identical payloads | Expensive computational overhead; identical legitimate events spaced in time get collapsed. |
+| **Option C** | **ULID (Universally Unique Lexicographically Sortable Identifier)** | **K-sortable by time**, 128-bit collision-proof entropy, 26-char Base32 URL/disk safe, zero DB B-Tree index fragmentation | Requires 128-bit bit-packing encoder (implemented in `collectors/common/ulid.zig`). |
+
+#### Architectural Decision & Rationale: **Option C (ULID + Client Idempotency Override)**
+
+The chosen implementation standard for Flowdata collectors adopts **Option C** (with hybrid support for client idempotency headers):
+
+1. **K-Sortable Chronological Order by Design**:
+   The first 48 bits encode UNIX epoch timestamp in milliseconds (characters `0..9`), guaranteeing that standard alphabetical sort (`std.mem.order`) matches physical occurrence time.
+2. **Disk Spool FIFO Optimization**:
+   Files saved as `<spool_dir>/<ULID>.job` naturally sort in exact chronological FIFO order without needing secondary index files or zero-padded decimal strings.
+3. **Zero Collision Guarantee**:
+   The trailing 80 bits provide cryptographically secure entropy, preventing collisions even if thousands of events arrive within the exact same millisecond.
+4. **Database & Index Efficiency**:
+   Unlike UUIDv4 which causes random page thrashing in SQLite B-Trees, monotonically increasing ULIDs append smoothly to indexes.
+5. **Client Idempotency Header Support**:
+   For HTTP webhooks, if the incoming request specifies an explicit `X-Request-ID`, `X-Event-ID`, or `Idempotency-Key` header, the collector adopts that identifier to maintain upstream idempotency; otherwise, it emits a generated `wh_<ULID>`.
 
 ---
 

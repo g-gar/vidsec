@@ -90,7 +90,7 @@ flowchart LR
 | **16** | [`016-reactive-bifurcation-parallel-expansion-and-join.md`](./016-reactive-bifurcation-parallel-expansion-and-join.md) | Typed payload contract (`Lowered(T)` + `schema_id`, hybrid with `DynamicRecord`), multi-channel I/O binding, and opt-in elemental auto-lifting (map/filter/expansion) with per-item error policy. | `COMPLETED` |
 | **17** | [`017-concurrent-dag-scheduler-and-host-concurrency-contract.md`](./017-concurrent-dag-scheduler-and-host-concurrency-contract.md) | Concurrent DAG scheduler (plan compiler, single-thread coordinator, shared worker pool with help-while-waiting), channel lifecycle with refcounting and backpressure, and host services concurrency contract. | `COMPLETED (Phases 1-3 Verified)` |
 | **18** | [`018-type-driven-inbound-router-and-service-catalog.md`](./018-type-driven-inbound-router-and-service-catalog.md) | Type-driven reactive inbound/outbound router, service catalog with `canHandle`, innate context merge, and unary input transformations. | `COMPLETED` |
-| **19** | [`019-collectors-architecture-and-inbound-agents.md`](./019-collectors-architecture-and-inbound-agents.md) | Standalone collectors architecture (`/collectors/`), file system inotify watchers, and inbound collection agents. | `READY` |
+| **19** | [`019-collectors-architecture-and-inbound-agents.md`](./019-collectors-architecture-and-inbound-agents.md) | Standalone collectors architecture (`/collectors/`), file system inotify watchers, and inbound collection agents. | `COMPLETED` |
 
 ---
 

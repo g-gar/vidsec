@@ -111,6 +111,14 @@ pub fn build(b: *std.Build) void {
     vidsec_shim_mod.addImport("flowdata", flowdata_mod);
     vidsec_shim_mod.addImport("flowdata_extensions", extensions_mod);
 
+    // 5b. Standalone Collector Common module (ARCH-019)
+    const collectors_common_mod = b.addModule("collectors_common", .{
+        .root_source_file = b.path("collectors/common/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
     test_suite_mod.linkSystemLibrary("sqlite3", .{});
     test_suite_mod.addImport("flowdata", flowdata_mod);
     test_suite_mod.addImport("flowdata_extensions", extensions_mod);
@@ -118,6 +126,7 @@ pub fn build(b: *std.Build) void {
     test_suite_mod.addImport("flowdata_abi", plugin_mod);
     test_suite_mod.addImport("vidsec", vidsec_shim_mod);
     test_suite_mod.addImport("vidsec_dataflow", dataflow_mod);
+    test_suite_mod.addImport("collectors_common", collectors_common_mod);
 
     const run_test_suite = b.addRunArtifact(b.addTest(.{ .root_module = test_suite_mod }));
     run_test_suite.setCwd(b.path("."));
@@ -131,4 +140,48 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_ds_sqlite.step);
     test_step.dependOn(&run_ds_yaml_file.step);
     test_step.dependOn(&run_test_suite.step);
+
+    // 6. Standalone Collector Executables (ARCH-019)
+
+    const webhook_collector_mod = b.createModule(.{
+        .root_source_file = b.path("collectors/webhook_receiver/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    webhook_collector_mod.addImport("collectors_common", collectors_common_mod);
+
+    const webhook_collector_exe = b.addExecutable(.{
+        .name = "flowdata-collector-webhook",
+        .root_module = webhook_collector_mod,
+    });
+    b.installArtifact(webhook_collector_exe);
+
+    const run_webhook_collector = b.addRunArtifact(webhook_collector_exe);
+    if (b.args) |args| {
+        run_webhook_collector.addArgs(args);
+    }
+    const run_webhook_step = b.step("run-collector-webhook", "Run the standalone Webhook collector in the foreground");
+    run_webhook_step.dependOn(&run_webhook_collector.step);
+
+    const filewatcher_collector_mod = b.createModule(.{
+        .root_source_file = b.path("collectors/file_watcher/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    filewatcher_collector_mod.addImport("collectors_common", collectors_common_mod);
+
+    const filewatcher_collector_exe = b.addExecutable(.{
+        .name = "flowdata-collector-filewatcher",
+        .root_module = filewatcher_collector_mod,
+    });
+    b.installArtifact(filewatcher_collector_exe);
+
+    const run_filewatcher_collector = b.addRunArtifact(filewatcher_collector_exe);
+    if (b.args) |args| {
+        run_filewatcher_collector.addArgs(args);
+    }
+    const run_filewatcher_step = b.step("run-collector-watcher", "Run the standalone inotify file watcher collector in the foreground");
+    run_filewatcher_step.dependOn(&run_filewatcher_collector.step);
 }
