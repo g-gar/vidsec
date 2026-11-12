@@ -1,242 +1,208 @@
-# 013 — Engine Refactoring: First-Class `jobs:` Spec, Application Aliases, and Modular YAML Composition
+# 013 — Engine Refactoring: Modular YAML Composition and Dynamic Ingress Decoupling
 
 | Metadata | Value |
 | :--- | :--- |
 | **ID** | `ARCH-013` |
 | **Depends On** | [`ARCH-002`](./002-open-kernel-extension-system.md), [`ARCH-011`](./011-pipeline-yaml-specification-and-orchestration.md) |
 | **Area** | `src/yaml/`, `src/ast/`, `src/kernel/` |
-| **Status** | `ENGINE REFACTORING SPECIFICATION` |
+| **Status** | `ENGINE REFACTORING SPECIFICATION (MODERNIZED)` |
 
 ---
 
-## 1. Problem Statement & Motivation
+## 1. Problem Statement & Evolution
 
-As applications built on Flowdata grow, maintaining all configuration within a single `pipeline.yaml` introduces significant architectural pain:
+### 1.1. The Legacy Configuration Monolith
+In early designs, `pipeline.yaml` grew into a monolith mixing:
+1. **Virtual Networks & Protocols** (`networks:`): Timeouts, rate limits, retry policies.
+2. **Persistent Storage Engines** (`datasources:`): SQLite paths, WAL configuration, file stores.
+3. **Data Schemas** (`schemas:`): Relational tables and in-memory channel DTOs.
+4. **Execution Steps** (`pipelines:`): Reactive DAG orchestration and dependencies.
+5. **Static Workload Targets** (`jobs:` / `subscriptions:`): Static lists of series or URLs.
 
-1. **Configuration Monolith**:
-   A single file that mixes virtual networks (`networks:`), persistent storage engines (`datasources:`), DAG task steps (`pipelines:`), data schemas, and dozens of user-managed targets (mangas, video targets, audit rules) quickly exceeds 1,000+ lines (as already observed in `apps/vidsec/configs/pipeline.yaml`).
-2. **Role Confusion & Git Conflicts**:
-   * **Developers/Engineers** maintain pipeline logic, task concurrency, and network timeouts.
-   * **End-users/Operators** simply want to add, pause, or remove work targets (manga subscriptions, forensic target URLs). Mixing both in one file leads to accidental syntax breaks and constant merge conflicts.
-3. **Domain Vocabulary Mismatch**:
-   Different applications have different natural vocabularies for their workload units:
-   * In `apps/mangadex`: users think of `subscriptions:` or `series:`.
-   * In `apps/vidsec`: analysts think of `audit_targets:` or `scenarios:`.
-   * In the core engine: both are fundamentally **declarative batch/reconciliation jobs** (`jobs:`).
+Mixing all five concerns in a single file quickly exceeded 1,000+ lines (as seen in `apps/vidsec/configs/pipeline.yaml`), causing severe git merge conflicts between pipeline engineers and operators.
+
+### 1.2. The Architectural Shift: Static Pipeline vs. Dynamic Ingress
+With the delivery of **ARCH-014 (Inbound Emitter & Push Reactor)**, **ARCH-018 (Reactive Router)**, and **ARCH-019 (Standalone Collectors)**, the boundary is now strictly decoupled:
+
+* **Workload items (`jobs.yaml` / `subscriptions.yaml`) are NOT static pipeline configuration**:
+  They are dynamic, inbound runtime events. They are monitored by autonomous collectors (`flowdata-collector-filewatcher --watch configs/jobs.yaml`) or received via HTTP webhooks (`flowdata-collector-webhook`), converted to universal `JobEnvelope` records, and streamed into the engine via `POST /v1/jobs` or `emit()`.
+* **No Native File Interpolation for Jobs**:
+  Because jobs are ingested dynamically at runtime, the engine does not need `${file:jobs.yaml}` interpolators or static `jobs:` parsing inside `pipeline.yaml`.
+* **No Engine-Level Domain Aliases for Jobs**:
+  The engine core no longer needs to map `subscriptions -> jobs` in YAML. Instead, the standalone collector maps domain records directly into `JobEnvelope.topic` (e.g. `topic: "manga_subscription"` or `topic: "audit_target"`), and the Type-Driven Router (`ARCH-018`) dispatches them to matching tasks.
 
 ---
 
-## 2. Solution Architecture
+## 2. Modern Solution Architecture
 
-We introduce three orthogonal enhancements to the Flowdata v2 engine:
+ARCH-013 now focuses purely on **Modular YAML Composition (`include: [...]`)** for the static infrastructure and pipeline definitions:
 
 ```mermaid
 flowchart TD
-    subgraph ConfigDir["configs/ Directory (Modular YAML Files)"]
+    subgraph StaticConfigs["Static Infrastructure & Pipeline Configs (configs/)"]
         Root["pipeline.yaml<br/>(Root Orchestration)"]
-        NetF["networks.yaml"]
-        DSF["datasources.yaml"]
-        SchemaF["schemas.yaml (DB Tables & Memory DTOs)"]
-        JobsF["jobs.yaml (or subscriptions.yaml)"]
+        NetF["networks.yaml<br/>(Timeouts, Proxies, Rates)"]
+        DSF["datasources.yaml<br/>(SQLite, Memory, FileStore)"]
+        SchemaF["schemas.yaml<br/>(Tables & Channel DTOs)"]
+    end
+
+    subgraph DynamicIngress["Dynamic Workload Ingress (collectors/ - ARCH-019)"]
+        JobsFile["jobs.yaml / subscriptions.yaml<br/>(User Targets)"]
+        Watcher["flowdata-collector-filewatcher<br/>(Observes file deltas)"]
+        Webhook["flowdata-collector-webhook<br/>(HTTP Webhooks)"]
     end
 
     subgraph FlowdataEngine["Flowdata Core Engine"]
-        IncludeEng["1. YAML Multi-File Resolver<br/>(include: [ ... ] & ${file:path})"]
-        AliasReg["2. Application Domain Alias Registry<br/>(subscriptions -> jobs, audit_targets -> jobs)"]
-        AstBuilder["3. AST Builder<br/>(Generates PipelineAST with typed JobSpec collection)"]
+        IncludeEng["YAML Multi-File Resolver<br/>(include: [ ... ])"]
+        AstBuilder["AST Builder<br/>(Networks, Datasources, Schemas, Pipelines)"]
+        Router["Type-Driven Router & Push Reactor<br/>(ARCH-014 / ARCH-018)"]
+        DAG["Concurrent DAG Scheduler<br/>(ARCH-017)"]
     end
 
-    Root --> IncludeEng
-    NetF --> IncludeEng
-    DSF --> IncludeEng
-    SchemaF --> IncludeEng
-    JobsF --> IncludeEng
+    NetF -->|include| Root
+    DSF -->|include| Root
+    SchemaF -->|include| Root
+    Root --> IncludeEng --> AstBuilder --> DAG
 
-    IncludeEng --> AliasReg
-    AliasReg --> AstBuilder
-    AstBuilder --> Exec["PipelineRunner Execution"]
+    JobsFile --> Watcher
+    Watcher -->|JobEnvelope POST /v1/jobs| Router
+    Webhook -->|JobEnvelope POST /v1/jobs| Router
+    Router --> DAG
 ```
 
 ---
 
 ## 3. Detailed Technical Design
 
-### 3.1. First-Class `jobs:` in Core AST (`src/ast/ast.zig`)
+### 3.1. Top-Level `include:` Directive (`src/yaml/ast_loader.zig`)
 
-We elevate work targets to a first-class collection in `PipelineAST`:
-
-```zig
-pub const JobSpec = struct {
-    id: []const u8,
-    datasource: ?[]const u8 = null,           // Target datasource provider
-    enabled: bool = true,                     // Active vs. paused
-    params: std.StringHashMapUnmanaged([]const u8) = .empty,
-    tags: []const []const u8 = &.{},
-};
-
-pub const PipelineAST = struct {
-    version: u32,
-    runtime: RuntimeSpec,
-    networks: std.StringHashMapUnmanaged(NetworkSpec),
-    datasources: std.StringHashMapUnmanaged(DatasourceConfig),
-    jobs: std.StringHashMapUnmanaged(JobSpec), // <-- First-class jobs collection
-    pipelines: std.StringHashMapUnmanaged(PipelineSpec),
-    // ...
-};
-```
-
----
-
-### 3.2. Application Domain Aliases (`KernelContext` & `src/yaml/ast_loader.zig`)
-
-Applications can register domain-specific aliases for the `jobs:` root node during bootstrap. This keeps user-facing YAML natural without engine forks:
-
-#### Registration in Application (`apps/mangadex/src/main.zig`):
-```zig
-// In apps/mangadex: map "subscriptions" -> "jobs"
-kernel.dsl.registerNodeAlias("subscriptions", "jobs");
-
-// In apps/vidsec: map "audit_targets" -> "jobs"
-kernel.dsl.registerNodeAlias("audit_targets", "jobs");
-```
-
-#### Resolution in AST Loader (`src/yaml/ast_loader.zig`):
-When the loader encounters a root node not in the standard grammar, it queries `kernel.dsl.resolveNodeAlias(node_name)`. If `"subscriptions"` maps to `"jobs"`, it parses the node directly into the `ast.jobs` collection without warnings.
-
----
-
-### 3.3. Multi-File YAML Composition & Interpolation
-
-We support two complementary mechanisms for splitting large configurations:
-
-#### Mechanism A: Top-Level `include:` Directive (`src/yaml/ast_loader.zig`)
-The root `pipeline.yaml` can import external relative files:
+The root `pipeline.yaml` imports modular configuration files relative to its parent directory:
 
 ```yaml
 version: 2
 
+# Modular imports for infrastructure & schemas
 include:
   - "networks.yaml"
   - "datasources.yaml"
   - "schemas.yaml"
-  - "jobs.yaml"
 
 pipelines:
   main:
     steps:
-      # ...
+      - id: catalog_sync
+        task: manga_framework.catalog_sync
+        # ...
 ```
 
-* **Loader Implementation**:
-  When `ast_loader.load()` encounters `include:`, it resolves paths relative to the root YAML file directory, parses each sub-file into an intermediate YAML AST, and merges the maps (`networks`, `datasources`, `schemas`, `jobs`, `pipelines`) into the root tree before schema validation.
-
-#### Mechanism B: Native Kernel Interpolation `${file:relative_path}` (`src/kernel/dsl.zig`)
-Leveraging the `DslRegistry` scheme resolver created in `ARCH-002`:
-
-```yaml
-version: 2
-
-networks: "${file:networks.yaml}"
-datasources: "${file:datasources.yaml}"
-schemas: "${file:schemas.yaml}"
-jobs: "${file:jobs.yaml}"
-```
-
-* **Resolver Implementation**:
-  A built-in scheme resolver registered as `file`:
-  ```zig
-  pub fn resolveFileScheme(allocator: Allocator, base_dir: []const u8, file_path: []const u8) ![]const u8 {
-      const full_path = try std.fs.path.join(allocator, &.{ base_dir, file_path });
-      defer allocator.free(full_path);
-      return std.fs.cwd().readFileAlloc(allocator, full_path, 1024 * 1024);
-  }
-  ```
+#### Loader Implementation Rules:
+1. **Relative Path Resolution**: Paths in `include:` are resolved relative to the directory containing the root YAML file.
+2. **Map Merging**:
+   - `networks:` in sub-files are merged into root `ast.networks`.
+   - `datasources:` in sub-files are merged into root `ast.datasources`.
+   - `schemas:` in sub-files are registered in `SchemaCatalog`.
+3. **Collision Detection**: If the same network ID or datasource ID is defined in multiple files, the loader raises a descriptive validation error: `error.DuplicateConfigIdentifier`.
 
 ---
 
-### 3.4. Interpolating `schemas.yaml`: DB Tables and In-Memory DTOs
+### 3.2. Modular Infrastructure Files
 
-Extracting data definitions into `configs/schemas.yaml` allows declaring both persistent storage tables and ephemeral channel DTOs cleanly:
-
+#### `configs/networks.yaml`
 ```yaml
-# configs/schemas.yaml
-version: 2
+networks:
+  mangadex_api:
+    base_url: "https://api.mangadex.org"
+    timeout_ms: 10000
+    rate_limit:
+      requests_per_second: 5
+      burst: 10
 
+  komga_api:
+    base_url: "http://localhost:25600"
+    timeout_ms: 30000
+```
+
+#### `configs/datasources.yaml`
+```yaml
+datasources:
+  pipeline_memory:
+    driver: memory
+    capacity_bytes: 67108864 # 64MB
+
+  manga_library:
+    driver: sqlite
+    path: "./data/manga_library.sqlite"
+    wal_mode: true
+```
+
+#### `configs/schemas.yaml`
+```yaml
 schemas:
-  # Relational Database Schemas (SQLite library_db)
   storage:
-    sources:
-      columns: { id: { type: text, pk: true }, name: { type: text }, base_url: { type: text } }
     series:
-      columns: { id: { type: text, pk: true }, title: { type: text }, summary: { type: text, nullable: true }, author: { type: text, nullable: true } }
+      columns:
+        id: { type: text, pk: true }
+        title: { type: text }
+        author: { type: text, nullable: true }
     chapters:
-      columns: { id: { type: text, pk: true }, series_id: { type: text }, chapter_number: { type: text }, status: { type: text, default: "discovered" } }
-    pages:
-      columns: { id: { type: text, pk: true }, chapter_id: { type: text }, page_number: { type: int64 }, image_blob: { type: blob, nullable: true } }
+      columns:
+        id: { type: text, pk: true }
+        series_id: { type: text }
+        chapter_number: { type: text }
 
-  # In-Memory Channel DTOs (pipeline_memory)
   memory_dtos:
     discovered_chapter_dto:
-      columns: { chapter_id: { type: text }, series_id: { type: text }, chapter_number: { type: text }, language_iso: { type: text } }
-    completed_chapter_dto:
-      columns: { chapter_id: { type: text }, series_id: { type: text }, page_count: { type: int64 } }
-    packed_cbz_dto:
-      columns: { chapter_id: { type: text }, series_id: { type: text }, file_path: { type: text }, file_size_bytes: { type: int64 } }
+      columns:
+        chapter_id: { type: text }
+        series_id: { type: text }
+        chapter_number: { type: text }
 ```
 
 ---
 
-## 4. Resulting User Experience in `apps/mangadex`
+### 3.3. Dynamic Workload Separation (`jobs.yaml`)
 
-With this refactoring implemented, the configuration is split cleanly:
+Because work items are handled by autonomous collectors (`ARCH-019`), `jobs.yaml` lives outside the pipeline compilation path:
 
 ```text
 apps/mangadex/configs/
-├── pipeline.yaml         # Flowdata pipeline definition & DAG steps (Engineers only)
-├── networks.yaml         # Timeouts & rate limits for MangaDex, Komga, and Scrapers
-├── datasources.yaml      # SQLite WAL, Komga persistence sink, memory buffers
-├── schemas.yaml          # Relational tables & in-memory step channel DTOs
-└── jobs.yaml             # User-facing list: adding/pausing manga requires touching only this file
+├── pipeline.yaml         # Root orchestration (Engineer-owned)
+├── networks.yaml         # Included virtual networks
+├── datasources.yaml      # Included datasource drivers
+├── schemas.yaml          # Included database tables & DTOs
+└── jobs.yaml             # Standalone workload file (User/Operator-owned)
 ```
 
-### The Clean `jobs.yaml` File:
-```yaml
-# configs/jobs.yaml - Managed by end-users or automated tools
-subscriptions:
-  - title: "One Piece"
-    datasource: mangadex
-    series_id: "a1c7d817-0e59-4555-b52e-322e2365879e"
-    languages: ["es-la", "es", "en"]
-    chapters: "latest:5"
+#### How `jobs.yaml` is executed at runtime:
+1. Operator edits `configs/jobs.yaml` (e.g. adding a new manga series or updating targets).
+2. The standalone collector observes the modification via `inotify`:
+   ```bash
+   flowdata-collector-filewatcher --watch configs/jobs.yaml --topic manga_subscription
+   ```
+3. The collector reads the file, generates `JobEnvelope` records with `topic = "manga_subscription"` and unique ULIDs (`wh_01JB...`), and delivers them to Flowdata (`POST /v1/jobs`).
+4. Flowdata's Type-Driven Router (`ARCH-018`) matches `topic: manga_subscription` to the pipeline's reactive entry step, executing the DAG without any engine reload or restart.
 
-  - title: "Chainsaw Man"
-    datasource: mangadex
-    series_id: "a7774250-3785-4bda-ac68-6d4fb245ab5f"
-    languages: ["es"]
-    chapters: "latest:3"
+---
 
-  - title: "Kingdom"
-    datasource: tmo_scraper
-    series_id: "manga-kingdom-spanish"
-    languages: ["es"]
-    chapters: "all"
-    enabled: false         # Paused: skipped during execution
-```
+## 4. Architecture Boundary Summary
+
+| Domain | Responsibility | Owner / Artifact |
+| :--- | :--- | :--- |
+| **Static Pipeline Config** | Defining DAG steps, dependencies, concurrency, and engine settings. | `pipeline.yaml` via `include: [networks.yaml, datasources.yaml, schemas.yaml]` |
+| **Dynamic Ingress** | Monitoring files, receiving webhooks, scraping APIs, and spooling offline events. | `collectors/` (`flowdata-collector-filewatcher`, `flowdata-collector-webhook`) |
+| **Ingress Contract** | Universal event transport from collectors into the reactive router. | `JobEnvelope` (`POST /v1/jobs` or `emit()`) |
 
 ---
 
 ## 5. Implementation Roadmap & Verification Plan
 
-1. **AST & Grammar Expansion (`src/ast/ast.zig`)**:
-   * Add `jobs: std.StringHashMapUnmanaged(JobSpec)` to `PipelineAST`.
-2. **DSL Alias Support (`src/kernel/dsl.zig`)**:
-   * Add `node_aliases: std.StringHashMapUnmanaged([]const u8)` and `registerNodeAlias()` to `DslRegistry`.
-3. **YAML Multi-File Merge (`src/yaml/ast_loader.zig`)**:
-   * Implement `include:` array processing with recursive directory path resolution.
-4. **Kernel File Interpolation (`src/kernel/dsl.zig`)**:
-   * Register default `${file:...}` resolver.
-5. **Acceptance Tests (`tests/core/modular_yaml_test.zig`)**:
-   * Verify loading of split configs (`include: [...]`).
-   * Verify domain alias mapping (`"subscriptions"` -> `ast.jobs`).
-   * Verify `${file:path}` scalar and map expansion.
-   * Verify backward compatibility: ensure existing `apps/vidsec` tests continue to pass 100%.
+1. **YAML Multi-File Merge (`src/yaml/ast_loader.zig`)**:
+   * Implement `include:` array processing with path resolution relative to the root file.
+   * Merge `networks:`, `datasources:`, and `schemas:` into the single canonical AST tree.
+   * Provide descriptive syntax/duplicate key diagnostics.
+2. **Deprecation of Static `jobs:` inside Pipeline AST**:
+   * Retain `ast.jobs` solely as an optional backward-compatible fallback for legacy static tests, marking dynamic `JobEnvelope` as the canonical production ingress.
+3. **Unit & Integration Tests (`tests/core/modular_yaml_test.zig`)**:
+   * Test multi-file `include:` with valid nested files.
+   * Test error reporting on missing included files or duplicate keys.
+   * Verify that existing applications (`apps/vidsec`, `apps/mangadex`) continue to pass 100% of their test suites.
