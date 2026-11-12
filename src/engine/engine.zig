@@ -14,6 +14,8 @@ pub const Coordinator = @import("coordinator.zig").Coordinator;
 pub const reactor = @import("reactor.zig");
 pub const RecordEmitter = reactor.RecordEmitter;
 pub const PushReactor = reactor.PushReactor;
+pub const router = @import("router.zig");
+pub const ReactiveRouter = router.ReactiveRouter;
 
 pub const PipelineAST = ast_mod.PipelineAST;
 pub const ModuleRegistry = modules_mod.ModuleRegistry;
@@ -23,6 +25,7 @@ pub const NetworkAdapter = network_mod.NetworkAdapter;
 pub const EngineNetworkController = engine_net_mod.EngineNetworkController;
 pub const NetworkEvent = engine_net_mod.NetworkEvent;
 pub const PayloadHandle = dataflow.PayloadHandle;
+pub const AmbientContext = @import("ambient_context.zig").AmbientContext;
 
 pub const ExecutionSummary = struct {
     steps_executed: usize = 0,
@@ -128,6 +131,7 @@ pub const PipelineEngine = struct {
     kernel: ?*@import("../kernel/mod.zig").KernelContext = null,
     workers: usize = 1,
     outputs_arena: std.heap.ArenaAllocator,
+    ambient: AmbientContext,
 
     pub fn init(
         allocator: Allocator,
@@ -146,11 +150,16 @@ pub const PipelineEngine = struct {
             .kernel = null,
             .workers = w,
             .outputs_arena = std.heap.ArenaAllocator.init(allocator),
+            .ambient = AmbientContext.init(allocator),
         };
     }
 
     pub fn deinit(self: *PipelineEngine) void {
         self.outputs_arena.deinit();
+    }
+
+    pub fn withAmbient(self: *PipelineEngine, amb: AmbientContext) void {
+        self.ambient = amb;
     }
 
     pub fn withNetworks(self: *PipelineEngine, nets: *NetworkRegistry) void {
@@ -163,6 +172,10 @@ pub const PipelineEngine = struct {
 
     pub fn createReactor(self: *PipelineEngine, pipeline_name: []const u8) anyerror!*PushReactor {
         return PushReactor.init(self.allocator, self, pipeline_name);
+    }
+
+    pub fn createRouter(self: *PipelineEngine, pipeline_name: []const u8) anyerror!*ReactiveRouter {
+        return ReactiveRouter.init(self.allocator, self, pipeline_name);
     }
 
     pub fn run(self: *PipelineEngine, input_payload: PayloadHandle) anyerror!ExecutionSummary {
@@ -247,6 +260,14 @@ pub const PipelineEngine = struct {
                             return PayloadHandle.fromSlice(ast_mod.JobSpec, self.ast.jobs);
                         }
                     }
+
+                    // ARCH-018: Ambient context streams (system.*, env.*)
+                    if (std.mem.startsWith(u8, ref, "system.") or std.mem.startsWith(u8, ref, "env.")) {
+                        if (try self.ambient.asPayload(self.outputs_arena.allocator(), ref)) |amb_payload| {
+                            return amb_payload;
+                        }
+                    }
+
                     if (outputs.get(ref)) |prev_out| {
                         return prev_out;
                     }
@@ -366,25 +387,50 @@ pub const PipelineEngine = struct {
                     // Resolve input stream expressions via Dataflow algebra (ARCH-016 multi-input support)
                     var step_input = current_input;
                     var bound_inputs_list: std.ArrayListUnmanaged(modules_mod.BoundInput) = .empty;
+                    var short_circuited = false;
                     if (task_spec.inputs.len > 0) {
-                        for (task_spec.inputs, 0..) |in_binding, in_idx| {
+                        for (task_spec.inputs) |in_binding| {
                             var resolved_payload = try self.resolveStreamExpr(in_binding.expr, current_input, outputs);
                             if (in_binding.where_filter) |wf| {
                                 resolved_payload = try dataflow.predicate.filterPayload(self.allocator, resolved_payload, wf);
+                                if (resolved_payload.len == 0) {
+                                    // ARCH-018: Short-circuit rejection: unary where: condition not met.
+                                    short_circuited = true;
+                                    break;
+                                }
                             }
                             try bound_inputs_list.append(outputs_alloc, .{
                                 .name = in_binding.param_name,
                                 .payload = resolved_payload,
                             });
-                            if (in_idx == 0) {
+                            if (std.mem.eql(u8, in_binding.param_name, "primary") or std.mem.eql(u8, in_binding.param_name, "stream")) {
                                 step_input = resolved_payload;
                             }
                         }
-                    } else {
-                        try bound_inputs_list.append(outputs_alloc, .{
-                            .name = "stream",
-                            .payload = current_input,
-                        });
+                    }
+                    if (short_circuited) continue;
+
+                    try bound_inputs_list.append(outputs_alloc, .{
+                        .name = "stream",
+                        .payload = current_input,
+                    });
+                    try bound_inputs_list.append(outputs_alloc, .{
+                        .name = "input",
+                        .payload = current_input,
+                    });
+
+                    // Innate ambient merge (ARCH-018 §3.2)
+                    if (try self.ambient.asPayload(outputs_alloc, "system.timestamp")) |ts_p| {
+                        try bound_inputs_list.append(outputs_alloc, .{ .name = "system.timestamp", .payload = ts_p });
+                        try bound_inputs_list.append(outputs_alloc, .{ .name = "timestamp", .payload = ts_p });
+                    }
+                    if (try self.ambient.asPayload(outputs_alloc, "system.hour")) |hr_p| {
+                        try bound_inputs_list.append(outputs_alloc, .{ .name = "system.hour", .payload = hr_p });
+                        try bound_inputs_list.append(outputs_alloc, .{ .name = "hour", .payload = hr_p });
+                    }
+                    if (try self.ambient.asPayload(outputs_alloc, "system.cpu_load")) |cpu_p| {
+                        try bound_inputs_list.append(outputs_alloc, .{ .name = "system.cpu_load", .payload = cpu_p });
+                        try bound_inputs_list.append(outputs_alloc, .{ .name = "cpu_load", .payload = cpu_p });
                     }
 
                     if (self.kernel) |k| {

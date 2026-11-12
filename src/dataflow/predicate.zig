@@ -292,13 +292,14 @@ fn resolveOperand(comptime T: type, item: *const T, token: []const u8) Reflected
         return ReflectedValue.fromFloat(fv);
     } else |_| {}
 
-    // 5. Field access on the native struct (e.g. `role` or `box.role` or `item.role`)
+    // 5. Field access on the native struct (e.g. `role` or `box.role` or `container.header.codec_id`)
+    if (types.reflectPath(T, item, t)) |val| return val;
     var field_name = t;
     if (std.mem.lastIndexOf(u8, t, ".")) |dot_idx| {
         field_name = t[dot_idx + 1 ..];
     }
 
-    return reflectField(T, item, field_name) orelse .{ .none = {} };
+    return types.reflectPath(T, item, field_name) orelse .{ .none = {} };
 }
 
 fn resolveOperandHandle(payload: types.PayloadHandle, token: []const u8) ReflectedValue {
@@ -333,7 +334,8 @@ fn resolveOperandHandle(payload: types.PayloadHandle, token: []const u8) Reflect
         return ReflectedValue.fromInt(@as(i64, @intCast(payload.len)));
     }
 
-    // 6. Field access on the type-erased payload handle
+    // 6. Field access on the type-erased payload handle (nested paths and unary self-reflection)
+    if (payload.getReflectedPath(t)) |val| return val;
     var field_name = t;
     if (std.mem.lastIndexOf(u8, t, ".")) |dot_idx| {
         field_name = t[dot_idx + 1 ..];

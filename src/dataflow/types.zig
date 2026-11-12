@@ -122,6 +122,10 @@ pub const ReflectedValue = union(enum) {
 
 /// Reflectively extracts a named field from any native Zig struct at zero runtime allocation cost.
 pub fn reflectField(comptime T: type, item_ptr: *const T, field_name: []const u8) ?ReflectedValue {
+    if (field_name.len == 0) {
+        return reflectAny(T, item_ptr.*);
+    }
+
     if (T == DynamicRecord) {
         return item_ptr.getReflected(field_name);
     }
@@ -145,8 +149,34 @@ pub fn reflectField(comptime T: type, item_ptr: *const T, field_name: []const u8
             }
             return null;
         },
-        else => return null,
+        else => return reflectAny(T, item_ptr.*),
     }
+}
+
+/// Reflectively extracts a dot-separated nested path (e.g. `container.header.codec_id`)
+/// via direct compile-time struct offsets in O(1) without intermediate boxing (ARCH-018 §3.4).
+pub fn reflectPath(comptime T: type, item_ptr: *const T, path: []const u8) ?ReflectedValue {
+    const trimmed = std.mem.trim(u8, path, " \t");
+    if (std.mem.indexOfScalar(u8, trimmed, '.')) |dot_idx| {
+        const head = trimmed[0..dot_idx];
+        const tail = trimmed[dot_idx + 1 ..];
+        const info = @typeInfo(T);
+        if (info == .@"struct") {
+            inline for (info.@"struct".fields) |f| {
+                if (std.mem.eql(u8, f.name, head)) {
+                    const field_val = @field(item_ptr, f.name);
+                    const finfo = @typeInfo(f.type);
+                    if (finfo == .@"struct") {
+                        return reflectPath(f.type, &field_val, tail);
+                    } else if (finfo == .pointer and finfo.pointer.size == .one and @typeInfo(finfo.pointer.child) == .@"struct") {
+                        return reflectPath(finfo.pointer.child, field_val, tail);
+                    }
+                }
+            }
+        }
+        return null;
+    }
+    return reflectField(T, item_ptr, trimmed);
 }
 
 /// Helper to convert a typed field value into a ReflectedValue.
@@ -189,6 +219,69 @@ pub fn reflectAny(comptime F: type, val: F) ReflectedValue {
 pub const ReflectFn = *const fn (ptr: *const anyopaque, field_name: []const u8) ?ReflectedValue;
 pub const ContextualReflectFn = *const fn (ctx: *const anyopaque, ptr: *const anyopaque, field_name: []const u8) ?ReflectedValue;
 
+pub const OpaqueReflectedValueAbi = extern struct {
+    tag: u32 = 0,
+    int_val: i64 = 0,
+    float_val: f64 = 0.0,
+    str_ptr: ?[*]const u8 = null,
+    str_len: usize = 0,
+};
+
+pub const OpaqueReflectAbiFn = *const fn (ptr: *const anyopaque, field_ptr: [*]const u8, field_len: usize) callconv(.c) OpaqueReflectedValueAbi;
+
+/// Computes a deterministic 64-bit Wyhash fingerprint of the schema of `Target` at compile time.
+pub fn computeSchemaId(comptime Target: type) u64 {
+    const Holder = struct {
+        fn computeHash() u64 {
+            @setEvalBranchQuota(100_000);
+            var hasher = std.hash.Wyhash.init(0xdeadbeef_cafebabe);
+            feedTypeHash(&hasher, Target);
+            return hasher.final();
+        }
+
+        fn feedTypeHash(hasher: anytype, comptime T: type) void {
+            const info = @typeInfo(T);
+            hasher.update(@typeName(T));
+            const size_val: usize = @sizeOf(T);
+            const align_val: usize = @alignOf(T);
+            hasher.update(std.mem.asBytes(&size_val));
+            hasher.update(std.mem.asBytes(&align_val));
+
+            switch (info) {
+                .@"struct" => |s| {
+                    hasher.update("struct");
+                    inline for (s.fields) |f| {
+                        hasher.update(f.name);
+                        feedTypeHash(hasher, f.type);
+                    }
+                },
+                .pointer => |p| {
+                    if (p.size == .slice) {
+                        hasher.update("slice");
+                        feedTypeHash(hasher, p.child);
+                    }
+                },
+                .optional => |o| {
+                    hasher.update("optional");
+                    feedTypeHash(hasher, o.child);
+                },
+                .@"enum" => |e| {
+                    hasher.update("enum");
+                    inline for (e.fields) |ef| {
+                        hasher.update(ef.name);
+                        const ev: i128 = ef.value;
+                        hasher.update(std.mem.asBytes(&ev));
+                    }
+                },
+                else => {},
+            }
+        }
+
+        const id: u64 = computeHash();
+    };
+    return Holder.id;
+}
+
 pub const PayloadRepr = enum(u8) {
     bytes = 0,
     typed = 1,
@@ -207,6 +300,7 @@ pub const PayloadHandle = struct {
     reflect_fn: ?ReflectFn = null,
     reflect_ctx: ?*const anyopaque = null,
     reflect_ctx_fn: ?ContextualReflectFn = null,
+    abi_reflect_fn: ?OpaqueReflectAbiFn = null,
     repr: PayloadRepr = .bytes,
     schema_id: u64 = 0,
 
@@ -214,7 +308,23 @@ pub const PayloadHandle = struct {
         const Trampoline = struct {
             fn reflect(ptr: *const anyopaque, field: []const u8) ?ReflectedValue {
                 const typed: *const T = @ptrCast(@alignCast(ptr));
-                return reflectField(T, typed, field);
+                return reflectPath(T, typed, field);
+            }
+
+            fn reflectAbi(ptr: *const anyopaque, field_ptr: [*]const u8, field_len: usize) callconv(.c) OpaqueReflectedValueAbi {
+                const typed: *const T = @ptrCast(@alignCast(ptr));
+                const field = field_ptr[0..field_len];
+                if (reflectPath(T, typed, field)) |val| {
+                    return switch (val) {
+                        .boolean => |b| .{ .tag = 4, .int_val = if (b) 1 else 0 },
+                        .int => |iv| .{ .tag = 1, .int_val = iv },
+                        .uint => |uv| .{ .tag = 2, .int_val = @bitCast(uv) },
+                        .float => |fv| .{ .tag = 3, .float_val = fv },
+                        .string => |sv| .{ .tag = 5, .str_ptr = sv.ptr, .str_len = sv.len },
+                        else => .{ .tag = 0 },
+                    };
+                }
+                return .{ .tag = 0 };
             }
         };
 
@@ -226,7 +336,9 @@ pub const PayloadHandle = struct {
             .element_size = @sizeOf(T),
             .element_align = @alignOf(T),
             .reflect_fn = &Trampoline.reflect,
+            .abi_reflect_fn = &Trampoline.reflectAbi,
             .repr = if (T == u8) .bytes else .typed,
+            .schema_id = computeSchemaId(T),
         };
     }
 
@@ -234,7 +346,23 @@ pub const PayloadHandle = struct {
         const Trampoline = struct {
             fn reflect(ptr: *const anyopaque, field: []const u8) ?ReflectedValue {
                 const typed: [*]const T = @ptrCast(@alignCast(ptr));
-                return reflectField(T, &typed[0], field);
+                return reflectPath(T, &typed[0], field);
+            }
+
+            fn reflectAbi(ptr: *const anyopaque, field_ptr: [*]const u8, field_len: usize) callconv(.c) OpaqueReflectedValueAbi {
+                const typed: [*]const T = @ptrCast(@alignCast(ptr));
+                const field = field_ptr[0..field_len];
+                if (reflectPath(T, &typed[0], field)) |val| {
+                    return switch (val) {
+                        .boolean => |b| .{ .tag = 4, .int_val = if (b) 1 else 0 },
+                        .int => |iv| .{ .tag = 1, .int_val = iv },
+                        .uint => |uv| .{ .tag = 2, .int_val = @bitCast(uv) },
+                        .float => |fv| .{ .tag = 3, .float_val = fv },
+                        .string => |sv| .{ .tag = 5, .str_ptr = sv.ptr, .str_len = sv.len },
+                        else => .{ .tag = 0 },
+                    };
+                }
+                return .{ .tag = 0 };
             }
         };
 
@@ -248,7 +376,9 @@ pub const PayloadHandle = struct {
             .element_size = @sizeOf(T),
             .element_align = @alignOf(T),
             .reflect_fn = if (items.len > 0) &Trampoline.reflect else null,
+            .abi_reflect_fn = if (items.len > 0) &Trampoline.reflectAbi else null,
             .repr = if (is_raw_bytes) .bytes else if (is_dyn) .dynamic else .typed,
+            .schema_id = computeSchemaId(T),
         };
     }
 
@@ -274,6 +404,11 @@ pub const PayloadHandle = struct {
             }
         }
         return null;
+    }
+
+    /// Recursively retrieves a nested field along a dot-separated path (ARCH-018 §3.4).
+    pub fn getReflectedPath(self: PayloadHandle, path: []const u8) ?ReflectedValue {
+        return self.getReflected(path);
     }
 
     pub fn asSlice(self: PayloadHandle, comptime T: type) []const T {

@@ -89,6 +89,15 @@ pub fn resolveField(comptime field: std.builtin.Type.StructField, ctx: TaskConte
         return injectInputs(T, ctx);
     }
 
+    // 1d. Bound Input Channel check: primitive scalar `T` (int, float, bool)
+    if (@typeInfo(T) == .int or @typeInfo(T) == .float or @typeInfo(T) == .bool) {
+        if (try ctx.inputPayload(key_z)) |handle| {
+            if (handle.len > 0 and handle.ptr != null) {
+                return handle.asScalar(T).*;
+            }
+        }
+    }
+
     // 3. Fetch value from host context (checks both inputs: and params:)
     const maybe_val = try ctx.getParam(key_z);
 

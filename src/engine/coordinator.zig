@@ -252,24 +252,58 @@ pub const Coordinator = struct {
         var bound_inputs_list: std.ArrayListUnmanaged(modules_mod.BoundInput) = .empty;
 
         if (task_spec.inputs.len > 0) {
-            for (task_spec.inputs, 0..) |in_binding, in_idx| {
+            for (task_spec.inputs) |in_binding| {
                 var resolved_payload = try self.engine.resolveStreamExpr(in_binding.expr, self.current_input, self.outputs);
                 if (in_binding.where_filter) |wf| {
                     resolved_payload = try dataflow.predicate.filterPayload(self.engine.allocator, resolved_payload, wf);
+                    if (resolved_payload.len == 0) {
+                        // ARCH-018: Short-circuit rejection: unary where: condition not met.
+                        self.completion_queue.push(self.engine.allocator, .{
+                            .node_id = node_id,
+                            .status = .ok,
+                            .output = PayloadHandle.empty(),
+                            .channel_outputs = .empty,
+                            .step_span_id = step_span_id,
+                            .start_ns = step_start_ns,
+                            .end_ns = engine_mod.nowNs(),
+                            .step_adapter = null,
+                            .records_before = 0,
+                        }) catch {};
+                        return;
+                    }
                 }
                 try bound_inputs_list.append(self.outputs_alloc, .{
                     .name = in_binding.param_name,
                     .payload = resolved_payload,
                 });
-                if (in_idx == 0) {
+                if (std.mem.eql(u8, in_binding.param_name, "primary") or std.mem.eql(u8, in_binding.param_name, "stream")) {
                     step_input = resolved_payload;
                 }
             }
-        } else {
-            try bound_inputs_list.append(self.outputs_alloc, .{
-                .name = "stream",
-                .payload = self.current_input,
-            });
+        }
+
+        try bound_inputs_list.append(self.outputs_alloc, .{
+            .name = "stream",
+            .payload = self.current_input,
+        });
+        try bound_inputs_list.append(self.outputs_alloc, .{
+            .name = "input",
+            .payload = self.current_input,
+        });
+
+        // Innate ambient merge (ARCH-018 §3.2)
+        if (try self.engine.ambient.asPayload(self.outputs_alloc, "system.timestamp")) |ts_p| {
+            try bound_inputs_list.append(self.outputs_alloc, .{ .name = "system.timestamp", .payload = ts_p });
+            try bound_inputs_list.append(self.outputs_alloc, .{ .name = "timestamp", .payload = ts_p });
+        }
+        if (try self.engine.ambient.asPayload(self.outputs_alloc, "system.hour")) |hr_p| {
+            try bound_inputs_list.append(self.outputs_alloc, .{ .name = "system.hour", .payload = hr_p });
+            try bound_inputs_list.append(self.outputs_alloc, .{ .name = "hour", .payload = hr_p });
+        }
+        if (try self.engine.ambient.asPayload(self.outputs_alloc, "system.cpu_load")) |cpu_p| {
+            try bound_inputs_list.append(self.outputs_alloc, .{ .name = "system.cpu_load", .payload = cpu_p });
+            try bound_inputs_list.append(self.outputs_alloc, .{ .name = "cpu_load", .payload = cpu_p });
+            try bound_inputs_list.append(self.outputs_alloc, .{ .name = "cpu_usage", .payload = cpu_p });
         }
 
         if (self.engine.kernel) |k| {

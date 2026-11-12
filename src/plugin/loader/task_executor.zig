@@ -121,6 +121,7 @@ pub fn fromAbiPayload(abi_payload: abi.PayloadHandle_ABI, fallback_type_name: []
         .type_name = tname,
         .reflect_ctx = if (abi_payload.reflect_fn) |rf| @ptrCast(rf) else null,
         .reflect_ctx_fn = if (abi_payload.reflect_fn != null) &reflectAbiBridge else null,
+        .abi_reflect_fn = if (abi_payload.reflect_fn) |rf| @ptrCast(rf) else null,
         .repr = repr,
         .schema_id = abi_payload.schema_id,
     };
@@ -140,6 +141,7 @@ pub fn toAbiPayload(payload: PayloadHandle) abi.PayloadHandle_ABI {
         .element_size = payload.element_size,
         .element_align = payload.element_align,
         .is_stream = payload.is_stream,
+        .reflect_fn = if (payload.abi_reflect_fn) |rf| @ptrCast(rf) else null,
         .repr = abi_repr,
         .schema_id = payload.schema_id,
         .type_name_ptr = payload.type_name.ptr,

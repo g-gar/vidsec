@@ -423,6 +423,11 @@ fn resolveDataEdges(
     var matched_any = false;
 
     if (expr.stream_ref) |sref| {
+        // ARCH-018: Ambient system streams (system.*, env.*) are not intra-DAG producer steps
+        if (std.mem.startsWith(u8, sref, "system.") or std.mem.startsWith(u8, sref, "env.")) {
+            return false;
+        }
+
         if (std.mem.indexOfScalar(u8, sref, '.')) |dot_idx| {
             const prod_step_name = sref[0..dot_idx];
             const ch_name = sref[dot_idx + 1 ..];

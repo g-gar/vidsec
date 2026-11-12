@@ -17,4 +17,5 @@ test {
     _ = @import("core/execution_plan_test.zig");
     _ = @import("core/dag_scheduler_test.zig");
     _ = @import("core/reactive_dispatch_test.zig");
+    _ = @import("core/reactive_router_test.zig");
 }

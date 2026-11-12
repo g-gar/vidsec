@@ -659,6 +659,60 @@ pub fn DiContainer(comptime ContextImpl: type) type {
                         return .ok;
                     }
                 }
+
+                pub fn canHandle(payload_abi: *const types.PayloadHandle_ABI) callconv(.c) bool {
+                    if (comptime @hasDecl(Service, "canHandle")) {
+                        const CanHandleFnType = @TypeOf(Service.canHandle);
+                        const ch_info = @typeInfo(CanHandleFnType).@"fn";
+                        if (comptime ch_info.params.len == 1) {
+                            const P0 = ch_info.params[0].type.?;
+                            if (P0 == *const types.PayloadHandle_ABI) {
+                                return Service.canHandle(payload_abi);
+                            } else {
+                                return Service.canHandle(payload_abi.*);
+                            }
+                        } else if (comptime ch_info.params.len >= 2) {
+                            var s = std.mem.zeroes(Service);
+                            const P1 = ch_info.params[1].type.?;
+                            if (P1 == *const types.PayloadHandle_ABI) {
+                                return s.canHandle(payload_abi);
+                            } else {
+                                return s.canHandle(payload_abi.*);
+                            }
+                        }
+                    }
+
+                    // Automatic Structural Compatibility (ARCH-018 §3.1 Mode 1)
+                    if (comptime Inputs == void) {
+                        return true;
+                    }
+
+                    const expected_schema_id = comptime types.schemaId(Inputs);
+                    if (payload_abi.schema_id != 0 and expected_schema_id != 0 and payload_abi.schema_id == expected_schema_id) {
+                        return true;
+                    }
+                    if (comptime is_elemental) {
+                        const item_schema_id = comptime types.schemaId(ItemType);
+                        if (payload_abi.schema_id != 0 and item_schema_id != 0 and payload_abi.schema_id == item_schema_id) {
+                            return true;
+                        }
+                    }
+
+                    const in_info = @typeInfo(Inputs);
+                    if (comptime in_info == .@"struct") {
+                        inline for (in_info.@"struct".fields) |f| {
+                            const has_default = (f.default_value_ptr != null);
+                            if (!has_default) {
+                                if (payload_abi.getReflected(f.name) == null) {
+                                    return false;
+                                }
+                            }
+                        }
+                        return true;
+                    }
+
+                    return false;
+                }
             };
 
             var flags: u32 = TaskDescriptor_ABI.FLAG_CONCURRENCY_SAFE;
@@ -682,6 +736,7 @@ pub fn DiContainer(comptime ContextImpl: type) type {
                 .required_params_len = required_params.len,
                 .execute = &Trampoline.execute,
                 .flags = flags,
+                .can_handle = &Trampoline.canHandle,
             };
         }
     };

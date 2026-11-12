@@ -45,6 +45,7 @@ pub const HostApiVTable_ABI = host_api_vtable_abi.HostApiVTable_ABI;
 pub const TaskContext_ABI = task_context_abi.TaskContext_ABI;
 pub const TaskExecuteFn_ABI = task_execute_fn_abi.TaskExecuteFn_ABI;
 pub const TaskDescriptor_ABI = task_descriptor_abi.TaskDescriptor_ABI;
+pub const CanHandleFn_ABI = task_descriptor_abi.CanHandleFn_ABI;
 pub const ModuleManifest_ABI = module_manifest_abi.ModuleManifest_ABI;
 
 pub const MemContext_ABI = mem_context_abi.MemContext_ABI;

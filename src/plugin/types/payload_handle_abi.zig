@@ -15,6 +15,46 @@ pub const ReflectedValue_ABI = extern struct {
     float_val: f64 = 0.0,
     str_ptr: ?[*]const u8 = null,
     str_len: usize = 0,
+
+    pub fn asBool(self: ReflectedValue_ABI) ?bool {
+        return switch (self.tag) {
+            .boolean => self.int_val != 0,
+            .int, .uint => self.int_val != 0,
+            else => null,
+        };
+    }
+
+    pub fn asInt(self: ReflectedValue_ABI) ?i64 {
+        return switch (self.tag) {
+            .int, .uint => self.int_val,
+            else => null,
+        };
+    }
+
+    pub fn asFloat(self: ReflectedValue_ABI) ?f64 {
+        return switch (self.tag) {
+            .float => self.float_val,
+            .int, .uint => @floatFromInt(self.int_val),
+            else => null,
+        };
+    }
+
+    pub fn asString(self: ReflectedValue_ABI) ?[]const u8 {
+        if (self.tag == .string) {
+            if (self.str_ptr) |p| return p[0..self.str_len];
+        }
+        return null;
+    }
+
+    pub fn isTruthy(self: ReflectedValue_ABI) bool {
+        return switch (self.tag) {
+            .none => false,
+            .boolean => self.int_val != 0,
+            .int, .uint => self.int_val != 0,
+            .float => self.float_val != 0.0,
+            .string => self.str_len > 0,
+        };
+    }
 };
 
 pub const ReflectFn_ABI = *const fn (
@@ -49,6 +89,16 @@ pub const PayloadHandle_ABI = extern struct {
             return p[0..self.type_name_len];
         }
         return "";
+    }
+
+    pub fn getReflected(self: PayloadHandle_ABI, field_name: []const u8) ?ReflectedValue_ABI {
+        if (self.reflect_fn) |rf| {
+            if (self.ptr) |p| {
+                const val = rf(p, field_name.ptr, field_name.len);
+                if (val.tag != .none) return val;
+            }
+        }
+        return null;
     }
 
     pub fn empty() PayloadHandle_ABI {

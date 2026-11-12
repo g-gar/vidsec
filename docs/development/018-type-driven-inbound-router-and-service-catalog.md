@@ -5,7 +5,7 @@
 | **ID** | `ARCH-018` |
 | **Depends On** | [`ARCH-014`](./014-inbound-emitter-datasources-and-reactive-dispatch.md), [`ARCH-016`](./016-reactive-bifurcation-parallel-expansion-and-join.md), [`ARCH-017`](./017-concurrent-dag-scheduler-and-host-concurrency-contract.md) |
 | **Area** | `src/engine/`, `src/plugin/`, `src/dataflow/`, `src/yaml/` |
-| **Status** | `DESIGN & ARCHITECTURE SPECIFICATION` |
+| **Status** | `COMPLETED` |
 
 ---
 
