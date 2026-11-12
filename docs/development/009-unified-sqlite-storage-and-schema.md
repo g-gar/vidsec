@@ -5,7 +5,7 @@
 | **ID** | `ARCH-009` |
 | **Depends On** | [`ARCH-005`](./005-mangadex-client-library.md), [`ARCH-007`](./007-zip-archive-and-cbz-engine.md), [`ARCH-008`](./008-comicinfo-metadata-library.md) |
 | **Area** | `apps/mangadex/configs/schemas.yaml`, `extensions/datasource/sqlite/` |
-| **Status** | `COMPLETED & ALIGNED` |
+| **Status** | `PHASE 1 COMPLETED / PHASE 2 SPECIFIED (Advanced Storage Engine)` |
 
 ---
 
@@ -237,3 +237,38 @@ Persistence is verified through automated test suites:
    * Verifies that `fetch_series_details`, `fetch_chapters`, and `fetch_chapter_pages` emit schema-compliant typed rows.
 3. **Engine Pragmas & Referential Integrity**:
    * Evaluated through `zig build test` in both root Flowdata and `apps/mangadex/` test runners.
+
+---
+
+## 7. Phase 2 Specification: Advanced Bidirectional Storage Engine
+
+While Phase 1 established declarative DDL provisioning and basic `DynamicRecord` sinks, real-world data pipelines require full bidirectional storage capabilities. The current `SqliteRepository` stub (`readPayload` returning `null`, lack of transactions, lack of typed mapping) must be upgraded with the following requirements:
+
+### 7.1. Full `readPayload` Implementation (`DynamicRecord` & Typed Hydration)
+* Implement `readPayload(table_name)` to dynamically construct `SELECT * FROM "table"` queries.
+* Query column metadata via `sqlite3_column_name` and `sqlite3_column_type`, reconstructing `flowdata.dataflow.DynamicRecord` instances with zero manual serialization.
+* Support schema-aware typed hydration: when a downstream task specifies a known `schema_id`, hydrate rows directly into `Lowered(T)` contiguous C-ABI memory.
+
+### 7.2. Zero-Reflection Typed `Lowered(T)` Direct Writes
+* When writing `PayloadHandle` with a static type (`Lowered(T)`), map fields directly to column bindings using compile-time or catalog offset reflection rather than requiring intermediate `DynamicRecord` allocation.
+* Eliminates double-serialization overhead for high-throughput stages (e.g. video sample tables, forensic packet records).
+
+### 7.3. Atomic Transaction Batching (`BEGIN IMMEDIATE` / `COMMIT`)
+* Wrap bulk writes in `writePayload` within an explicit `BEGIN IMMEDIATE;` and `COMMIT;` transaction block.
+* Avoids per-row implicit autocommit fsync operations, elevating write performance from ~50 rows/sec to over 50,000 rows/sec.
+* Implement rollback (`ROLLBACK;`) and error propagation on step failures.
+
+### 7.4. Filtered & Parameterized Query API
+* Support declarative query filters in task inputs:
+  ```yaml
+  inputs:
+    chapters_to_download:
+      from: catalog_db
+      table: discovered_chapters
+      filter: "status = 'discovered'"
+      limit: 10
+  ```
+* Inject filter expressions into prepared statements safely using SQLite parameter binding.
+
+### 7.5. Streaming Cursor Iterator (`next_row` Zero-RAM Inflation)
+* For large datasets (e.g. thousands of video frame boxes or image blobs), provide a streaming cursor iterator (`next_row`) that yields rows on-demand from an active `sqlite3_stmt` without materializing entire tables into RAM.

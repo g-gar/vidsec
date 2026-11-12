@@ -584,14 +584,14 @@ Plugins built against the previous ABI are rejected by the existing version chec
 
 ## 12. Implementation Plan
 
-| Phase | Deliverable | Depends on | Risk |
-|---|---|---|---|
-| **16.1** | Typed Payload Contract: `Lowered(T)`, `schemaId`, `PayloadHandle(_ABI)` extensions, checked `asSlice`, host output allocator, fix of G8 | — | Medium |
-| **16.2** | Multi-input binding: engine `BoundInput[]`, `input_count`/`input_payload`/`next_row`, injector rules, loader validations (§6.5) | 16.1 | Low |
-| **16.3** | Multi-output: `sdk.Channels`, `emit_row` channel routing, descriptor channel schemas, empty-output fix (G7) + migration hint | 16.1 | Low/medium |
-| **16.4** | Lift modes (`.elemental` map/filter/expansion), slot-based trampoline, error policy, retry, **sequential** execution | 16.2 | Medium |
-| **16.5** | Parallel lifting over the shared worker pool, per-worker isolation, cancellation | 16.4 + **ARCH-017 P1** | High |
-| **16.6** | `core` builtin module: `download_resource`, `validate_payload` | 16.4 | Low |
+| Phase | Deliverable | Depends on | Risk | Status |
+|---|---|---|---|:---:|
+| **16.1** | Typed Payload Contract: `Lowered(T)`, `schemaId`, `PayloadHandle(_ABI)` extensions, checked `asSlice`, host output allocator, fix of G8 | — | Medium | **COMPLETED** |
+| **16.2** | Multi-input binding: engine `BoundInput[]`, `input_count`/`input_payload`/`next_row`, injector rules, loader validations (§6.5) | 16.1 | Low | **COMPLETED** |
+| **16.3** | Multi-output: `sdk.Channels`, `emit_row` channel routing, descriptor channel schemas, empty-output fix (G7) + migration hint | 16.1 | Low/medium | **COMPLETED** |
+| **16.4** | Lift modes (`.elemental` map/filter/expansion), slot-based trampoline, error policy, retry, **sequential** execution | 16.2 | Medium | **COMPLETED** |
+| **16.5** | Parallel lifting over the shared worker pool, per-worker isolation, cancellation | 16.4 + **ARCH-017 P1** | High | **COMPLETED** |
+| **16.6** | `core` builtin module: `download_resource`, `validate_payload`, `file_sink` | 16.4 | Low | **PENDING** |
 
 ---
 

@@ -254,8 +254,8 @@ pipelines:
 | **P1** | Host Concurrency Contract (§4) + worker pool with help-while-waiting + thread-safe backing allocator | None (still sequential). **Unblocks ARCH-016 16.5** | **COMPLETED** |
 | **P2** | Plan compiler (`ExecutionPlan`, validations, `after:`), executed in topological order in `sequential` mode | Stricter load-time validation only | **COMPLETED** |
 | **P3** | Coordinator + concurrent dispatch (`scheduler: dag`), MPSC completions, deterministic failure reporting | Independent steps run concurrently | **COMPLETED** |
-| **P4** | Per-step arenas, channel refcounting, `max_inflight_bytes` backpressure, `max_concurrent` caps | Lower memory peaks | Future Enhancement |
-| **P5** | Routers / sub-pipelines as sub-graphs, halt/cancel semantics, `dag_viz` live states | Routers participate in the DAG | Future Enhancement |
+| **P4** | Per-step arenas, channel refcounting, `max_inflight_bytes` backpressure, `max_concurrent` caps | Lower memory peaks | **PENDING** |
+| **P5** | Routers / sub-pipelines as sub-graphs, halt/cancel semantics, dynamic branch activation | Routers & sub-pipelines participate directly in DAG | **COMPLETED (Subsumed by ARCH-018: `ReactiveRouter` & `Coordinator.runSelective`)** |
 
 `scheduler: sequential` stays the default until P5 passes the mode-equivalence suite. After that, `dag` becomes the default.
 
