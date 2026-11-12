@@ -5,32 +5,32 @@
 | **ID** | `ARCH-023` |
 | **Depends On** | [`ARCH-017`](./017-concurrent-dag-scheduler-and-host-concurrency-contract.md), [`ARCH-018`](./018-type-driven-inbound-router-and-service-catalog.md) |
 | **Area** | `src/engine/`, `src/ast/`, `src/yaml/` |
-| **Status** | `SPECIFICATION` |
+| **Status** | `COMPLETED` |
 
 ---
 
 ## 1. Context & Motivation
 
-Actualmente en [`src/engine/`](../../src/engine) conviven dos paradigmas válidos de enrutamiento de tareas:
+Currently in [`src/engine/`](../../src/engine), two valid task routing paradigms coexist:
 
-1. **Enrutamiento Dirigido / Nominal (`directed`)**: Sigue la topología declarada en `pipeline.yaml` mediante orden de pasos, `after:` y canales explícitos (`inputs:` / `outputs:`), garantizando determinismo y refcounting estático de memoria ([`ARCH-017`](./017-concurrent-dag-scheduler-and-host-concurrency-contract.md)).
-2. **Enrutamiento Guiado por Tipos (`type_driven`)**: Determina qué tareas activar dinámicamente inspeccionando las firmas de entrada (`canHandle`) y filtros unarios `where:` ([`ARCH-018`](./018-type-driven-inbound-router-and-service-catalog.md)).
+1. **Directed / Nominal Routing (`directed`)**: Follows the topology declared in `pipeline.yaml` via step ordering, `after:`, and explicit channels (`inputs:` / `outputs:`), guaranteeing determinism and static memory refcounting ([`ARCH-017`](./017-concurrent-dag-scheduler-and-host-concurrency-contract.md)).
+2. **Type-Driven Routing (`type_driven`)**: Dynamically determines which tasks to activate by inspecting input signatures (`canHandle`) and unary `where:` filters ([`ARCH-018`](./018-type-driven-inbound-router-and-service-catalog.md)).
 
-### Problema Arquitectónico Actual
-Hoy la lógica de **decisión de enrutado** (qué tarea sigue y con qué inputs) está mezclada con la **mecánica de ejecución** (hilos, `WorkerPool`, `StepArena`, telemetría y red) repartida entre cuatro archivos:
-* [`src/engine/plan.zig`](../../src/engine/plan.zig): Calcula aristas nominales (`inputs:`, `after:`, `implicit_chain`).
-* [`src/engine/coordinator.zig`](../../src/engine/coordinator.zig): Ejecuta el `WorkerPool` y gestiona `StepArena`, pero también resuelve `resolveStreamExpr`, merge ambiental y filtros unarios `where:`.
-* [`src/engine/router.zig`](../../src/engine/router.zig): Evalúa `canHandle` y bucles de re-enrutado, pero envuelve directamente a `Coordinator` y `executeSubPipelineSelective`.
-* [`src/engine/engine.zig`](../../src/engine/engine.zig): Mantiene una ruta de ejecución secuencial paralela con lógica duplicada de binding de inputs.
+### Current Architectural Problem
+Today, the **routing decision logic** (which task runs next and with which inputs) is mixed with the **execution mechanics** (threads, `WorkerPool`, `StepArena`, telemetry, and networking) across four files:
+* [`src/engine/plan.zig`](../../src/engine/plan.zig): Computes nominal edges (`inputs:`, `after:`, `implicit_chain`).
+* [`src/engine/coordinator.zig`](../../src/engine/coordinator.zig): Runs the `WorkerPool` and manages `StepArena`, but also resolves `resolveStreamExpr`, ambient merging, and unary `where:` filters.
+* [`src/engine/router.zig`](../../src/engine/router.zig): Evaluates `canHandle` and re-routing loops, but directly wraps `Coordinator` and `executeSubPipelineSelective`.
+* [`src/engine/engine.zig`](../../src/engine/engine.zig): Maintains a parallel sequential execution path with duplicated input-binding logic.
 
-Si añadimos nuevas formas de enrutar (como selección en YAML o enrutado híbrido) mediante `if/else` sobre esta estructura, el motor derivará en código espagueti difícil de mantener y testear.
+Adding new routing modes (such as YAML selection or hybrid routing) via `if/else` on top of this structure would turn the engine into hard-to-maintain, hard-to-test spaghetti code.
 
-### Objetivo
-Desacoplar completamente **cómo se decide qué ejecutar (`RoutingStrategy`)** de **cómo se ejecuta y gestiona la memoria (`PipelineEngine` / `Coordinator`)**, permitiendo:
-1. Estrategias independientes entre sí (`DirectedRouter`, `TypeDrivenRouter`, futuras estrategias).
-2. Motor agnóstico al tipo de enrutamiento.
-3. Tests unitarios puros de cada router (sin levantar `WorkerPool`, red ni SQLite) y tests del motor con un `MockRouter`.
-4. Selección declarativa en YAML mediante `routing:`.
+### Goal
+Completely decouple **how we decide what to run (`RoutingStrategy`)** from **how it is executed and how memory is managed (`PipelineEngine` / `Coordinator`)**, enabling:
+1. Mutually independent strategies (`DirectedRouter`, `TypeDrivenRouter`, future strategies).
+2. A routing-agnostic execution engine.
+3. Pure unit tests for each router (without spinning up `WorkerPool`, networking, or SQLite) and engine tests using a `MockRouter`.
+4. Declarative YAML selection via `routing:`.
 
 ---
 
@@ -41,81 +41,81 @@ flowchart TD
     YAML["pipeline.yaml<br/>(runtime.routing / pipeline.routing)"] --> AST["PipelineAST (RoutingMode)"]
     AST --> Reg["RouterRegistry"]
 
-    subgraph Engine["PipelineEngine & Coordinator (Agnóstico al Enrutamiento)"]
+    subgraph Engine["PipelineEngine & Coordinator (Routing-Agnostic)"]
         ExecLoop["Execution Loop<br/>(WorkerPool, StepArena, Net, Telemetry)"]
     end
 
-    subgraph Contract["Interfaz Desacoplada (src/engine/routing/strategy.zig)"]
-        Strategy["RoutingStrategy (VTable)<br/>- onStart(payload) -> []TaskActivation<br/>- onStepComplete(result) -> []TaskActivation<br/>- isFinished() -> bool"]
+    subgraph Contract["Decoupled Interface (src/engine/routing/strategy.zig)"]
+        Strategy["RoutingStrategy (VTable)<br/>- onPipelineStart(initial_input) -> []TaskActivation<br/>- onStepComplete(event) -> []TaskActivation<br/>- hasPendingWork() -> bool"]
     end
 
-    subgraph Impls["Implementaciones Independientes"]
-        Dir["DirectedRouter<br/>(ExecutionPlan, canales nominales, refcount)"]
+    subgraph Impls["Independent Implementations"]
+        Dir["DirectedRouter<br/>(ExecutionPlan, nominal channels, refcount)"]
         TypeDrv["TypeDrivenRouter<br/>(canHandle, where:, max_re_route_depth)"]
-        Fut["Futuros Routers<br/>(HybridRouter, WeightedRouter, etc.)"]
+        Fut["Future Routers<br/>(HybridRouter, WeightedRouter, etc.)"]
     end
 
     Reg --> Strategy
-    ExecLoop <-->|TaskActivation / StepResult| Strategy
+    ExecLoop <-->|TaskActivation / StepOutcomeEvent| Strategy
     Strategy -.-> Dir
     Strategy -.-> TypeDrv
     Strategy -.-> Fut
 ```
 
-### Separación Estricta de Responsabilidades
+### Strict Separation of Concerns
 
-| Componente | Responsabilidad Única | Qué NO debe conocer |
+| Component | Single Responsibility | What It Must NOT Know |
 | :--- | :--- | :--- |
-| **`PipelineEngine` / `Coordinator`** | Ciclo de vida, `WorkerPool`, `StepArena` (creación y `freeArena`), `NetworkController`, `AmbientContext`, telemetría. | Cómo se emparejan inputs, `canHandle`, `ExecutionPlan` interno o profundidad de re-enrutado. |
-| **`DirectedRouter`** | Grafo nominal (`ExecutionPlan`), resolución de canales `inputs:`/`outputs:`, barreras Join y conteo de consumidores. | `WorkerPool`, hilos, sockets, SQLite o `canHandle`. |
-| **`TypeDrivenRouter`** | Coincidencia estructural `canHandle`, filtros unarios `where:`, control de ciclos (`visited_mask`, `max_re_route_depth`). | `WorkerPool`, `StepArena` o aristas nominales de `plan.zig`. |
+| **`PipelineEngine` / `Coordinator`** | Lifecycle, `WorkerPool`, `StepArena` (creation and `freeArena`), `NetworkController`, `AmbientContext`, telemetry. | How inputs are matched, `canHandle`, internal `ExecutionPlan`, or re-routing depth. |
+| **`DirectedRouter`** | Nominal graph (`ExecutionPlan`), `inputs:`/`outputs:` channel resolution, Join barriers, and consumer counting. | `WorkerPool`, threads, sockets, SQLite, or `canHandle`. |
+| **`TypeDrivenRouter`** | Structural matching (`canHandle`), unary `where:` filters, cycle control (`visited_mask`, `max_re_route_depth`). | `WorkerPool`, `StepArena`, or nominal edges from `plan.zig`. |
 
 ---
 
 ## 3. Declarative YAML Contract (`routing:`)
 
-Separar `scheduler` (concurrencia/recursos) de `routing` (topología/despacho):
+Separate `scheduler` (concurrency/resources) from `routing` (topology/dispatch):
 
 ```yaml
 runtime:
   workers: 4
-  scheduler: dag          # Cómo se ejecuta: sequential | dag
-  routing: directed       # Cómo se enlaza: directed | type_driven | hybrid (default: directed)
+  scheduler: dag          # How it executes: sequential | dag
+  routing: directed       # How it binds: directed | type_driven | hybrid (default: directed)
   max_inflight_bytes: 512MiB
 ```
 
-También sobreescribible a nivel de cada pipeline individual:
+Also overridable per individual pipeline:
 
 ```yaml
 pipelines:
   manga_sync:
-    routing: directed     # ETL estricto con Fork/Join explícito
+    routing: directed     # Strict ETL with explicit Fork/Join
     steps: [...]
 
   security_triage:
-    routing: type_driven  # Malla de eventos basada en firmas (canHandle)
+    routing: type_driven  # Signature-based event mesh (canHandle)
     steps: [...]
 ```
 
-### Matriz de Ortogonalidad
+### Orthogonality Matrix
 
-| `scheduler` \ `routing` | `directed` | `type_driven` | `hybrid` (futuro) |
+| `scheduler` \ `routing` | `directed` | `type_driven` | `hybrid` (future) |
 | :--- | :--- | :--- | :--- |
-| **`sequential`** | Ejecución 1-a-1 en el orden topológico del grafo. | Bucle reactivo en un único hilo por cada emisión. | Igual que `sequential` con auto-binding 1:1. |
-| **`dag`** | Pool concurrente con canales nominales y backpressure. | Pool concurrente disparando todas las tareas con `canHandle == true` en paralelo. | Pool concurrente con inferencia automática donde falte `inputs:`. |
+| **`sequential`** | 1-to-1 execution in graph topological order. | Reactive single-threaded loop per emission. | Same as `sequential` with 1:1 auto-binding. |
+| **`dag`** | Concurrent pool with nominal channels and backpressure. | Concurrent pool firing all tasks with `canHandle == true` in parallel. | Concurrent pool with automatic inference where `inputs:` is omitted. |
 
 ---
 
-## 4. Contrato Core en Zig (`RoutingStrategy`)
+## 4. Core Zig Contract (`RoutingStrategy`)
 
-Ubicación propuesta: `src/engine/routing/strategy.zig`.
+Location: `src/engine/routing/strategy.zig`.
 
 ```zig
 pub const TaskActivation = struct {
     node_id: NodeId,
     step_input: PayloadHandle,
     bound_inputs: []const BoundInput,
-    /// Opcional: canales consumidos para decrementar refcount en modo directed.
+    /// Optional: consumed channels for decrementing refcount in directed mode.
     consumed_channels: []const ChannelId = &.{},
 };
 
@@ -131,21 +131,21 @@ pub const RoutingStrategy = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        /// Inicializa el estado de enrutado para una ejecución y devuelve las activaciones raíz.
+        /// Initializes routing state for a run and returns root activations.
         onPipelineStart: *const fn (
             ptr: *anyopaque,
             alloc: Allocator,
             initial_input: PayloadHandle,
         ) anyerror![]TaskActivation,
 
-        /// Procesa la finalización de una tarea y devuelve nuevas activaciones desbloqueadas.
+        /// Processes task completion and returns newly unlocked activations.
         onStepComplete: *const fn (
             ptr: *anyopaque,
             alloc: Allocator,
             event: StepOutcomeEvent,
         ) anyerror![]TaskActivation,
 
-        /// Indica si quedan nodos pendientes de activar o barreras activas.
+        /// Indicates whether pending nodes or active barriers remain.
         hasPendingWork: *const fn (ptr: *anyopaque) bool,
 
         deinit: *const fn (ptr: *anyopaque) void,
@@ -153,64 +153,64 @@ pub const RoutingStrategy = struct {
 };
 ```
 
-> **Nota sobre aislamiento:** Este contrato solo depende de tipos de datos (`PayloadHandle`, `BoundInput`, `NodeId`, `Allocator`). No importa nada de `WorkerPool`, `NetworkController` ni `RepositoryRegistry`.
+> **Note on isolation:** This contract only depends on data types (`PayloadHandle`, `BoundInput`, `NodeId`, `Allocator`). It imports nothing from `WorkerPool`, `NetworkController`, or `RepositoryRegistry`.
 
 ---
 
-## 5. Plan de Implementación Paso a Paso (Incremental y Sin Roturas)
+## 5. Step-by-Step Implementation Plan (Incremental & Non-Breaking)
 
-Cada fase es autocontenida y debe dejar todas las suites de tests en verde antes de pasar a la siguiente.
+Each phase is self-contained and must leave all test suites green before moving to the next.
 
-### Fase 1: Directiva `routing:` en AST y Loader YAML
-* **Archivos:** [`src/ast/ast.zig`](../../src/ast/ast.zig), [`src/yaml/ast_loader.zig`](../../src/yaml/ast_loader.zig).
-* **Cambios:**
-  1. Añadir `pub const RoutingMode = enum { directed, type_driven, hybrid };`.
-  2. Añadir `routing: RoutingMode = .directed` a `RuntimeSpec` y `routing: ?RoutingMode = null` a `PipelineDecl` (si es `null`, hereda `runtime.routing`).
-  3. Parsear el campo `routing` en `ast_loader.zig` manteniendo `.directed` por defecto para 100% de retrocompatibilidad.
-* **Verificación:** Tests unitarios de AST y YAML comprobando valores por defecto y override por pipeline.
+### Phase 1: `routing:` Directive in AST & YAML Loader
+* **Files:** [`src/ast/ast.zig`](../../src/ast/ast.zig), [`src/yaml/ast_loader.zig`](../../src/yaml/ast_loader.zig).
+* **Changes:**
+  1. Add `pub const RoutingMode = enum { directed, type_driven, hybrid };`.
+  2. Add `routing: RoutingMode = .directed` to `RuntimeSpec` and `routing: ?RoutingMode = null` to `PipelineDecl` (when `null`, inherits `runtime.routing`).
+  3. Parse the `routing` field in `ast_loader.zig`, keeping `.directed` as default for 100% backward compatibility.
+* **Verification:** AST and YAML unit tests verifying defaults and per-pipeline overrides.
 
-### Fase 2: Definir `RoutingStrategy` y `RouterRegistry`
-* **Archivos nuevos:** `src/engine/routing/strategy.zig`, `src/engine/routing/registry.zig`.
-* **Cambios:**
-  1. Definir `RoutingStrategy`, `TaskActivation`, `StepOutcomeEvent` y `RoutingContext` (solo vistas de solo lectura de AST, descriptores `canHandle`, repositorios de lectura e `AmbientContext`).
-  2. Crear `RouterRegistry` (patrón idéntico a `RepositoryRegistry`) para instanciar estrategias por `RoutingMode` o nombre personalizado.
-* **Verificación:** Compilación limpia y test con un `MockRouter` en memoria.
+### Phase 2: Define `RoutingStrategy` & `RouterRegistry`
+* **New files:** `src/engine/routing/strategy.zig`, `src/engine/routing/registry.zig`.
+* **Changes:**
+  1. Define `RoutingStrategy`, `TaskActivation`, `StepOutcomeEvent`, and `RoutingContext` (read-only views of AST, `canHandle` descriptors, read repositories, and `AmbientContext`).
+  2. Create `RouterRegistry` (same pattern as `RepositoryRegistry`) to instantiate strategies by `RoutingMode` or custom name.
+* **Verification:** Clean build and in-memory test with a `MockRouter`.
 
-### Fase 3: Extraer `DirectedRouter`
-* **Archivos:** `src/engine/routing/directed.zig` (extraído desde [`plan.zig`](../../src/engine/plan.zig), [`coordinator.zig`](../../src/engine/coordinator.zig) y [`engine.zig`](../../src/engine/engine.zig)).
-* **Cambios:**
-  1. Encapsular `ExecutionPlan`, tracking de `indegree` restante, resolución de `inputs:` (`resolveStreamExpr`), filtros unarios `where:` y mapeo de `consumed_channels`.
-  2. Exponer `RoutingStrategy` sin depender de `WorkerPool`.
-* **Verificación:** Suite unitaria pura de `DirectedRouter`: pasar un `PipelineDecl` (lineal, fork, join) + payloads simulados y validar la secuencia exacta de `TaskActivation` devuelta en microsegundos y sin hilos.
+### Phase 3: Extract `DirectedRouter`
+* **Files:** `src/engine/routing/directed.zig` (extracted from [`plan.zig`](../../src/engine/plan.zig), [`coordinator.zig`](../../src/engine/coordinator.zig), and [`engine.zig`](../../src/engine/engine.zig)).
+* **Changes:**
+  1. Encapsulate `ExecutionPlan`, remaining `indegree` tracking, `inputs:` resolution (`resolveStreamExpr`), unary `where:` filters, and `consumed_channels` mapping.
+  2. Expose `RoutingStrategy` without depending on `WorkerPool`.
+* **Verification:** Pure unit suite for `DirectedRouter`: pass a `PipelineDecl` (linear, fork, join) + simulated payloads and validate the exact `TaskActivation` sequence returned in microseconds with no threads.
 
-### Fase 4: Aislar `TypeDrivenRouter`
-* **Archivos:** Refactorizar [`src/engine/router.zig`](../../src/engine/router.zig) hacia `src/engine/routing/type_driven.zig`.
-* **Cambios:**
-  1. Implementar `RoutingStrategy` usando exclusivamente `TaskDescriptor_ABI.canHandle`, evaluación de `where:` unario, `visited_mask` y límite `max_re_route_depth`.
-  2. Eliminar de `TypeDrivenRouter` cualquier invocación directa a `Coordinator.runSelective` o `executeSubPipelineSelective`: el router solo emite `[]TaskActivation` y deja que el motor ejecute.
-* **Verificación:** Migrar los casos de [`tests/core/reactive_router_test.zig`](../../tests/core/reactive_router_test.zig) para validar `TypeDrivenRouter` en aislamiento y en integración con el motor.
+### Phase 4: Isolate `TypeDrivenRouter`
+* **Files:** Refactor [`src/engine/router.zig`](../../src/engine/router.zig) into `src/engine/routing/type_driven.zig`.
+* **Changes:**
+  1. Implement `RoutingStrategy` using exclusively `TaskDescriptor_ABI.canHandle`, unary `where:` evaluation, `visited_mask`, and `max_re_route_depth` limit.
+  2. Remove any direct invocation of `Coordinator.runSelective` or `executeSubPipelineSelective` from `TypeDrivenRouter`: the router only emits `[]TaskActivation` and lets the engine execute.
+* **Verification:** Migrate cases from [`tests/core/reactive_router_test.zig`](../../tests/core/reactive_router_test.zig) to validate `TypeDrivenRouter` both in isolation and integrated with the engine.
 
-### Fase 5: Unificar el Bucle de Ejecución en `Coordinator` y `PipelineEngine`
-* **Archivos:** [`src/engine/coordinator.zig`](../../src/engine/coordinator.zig), [`src/engine/engine.zig`](../../src/engine/engine.zig).
-* **Cambios:**
-  1. Hacer que `Coordinator` reciba una `RoutingStrategy` creada desde `RouterRegistry` según `pipeline.routing orelse runtime.routing`.
-  2. Reemplazar la lógica inline de `dispatchTask` (resolución de `inputs:`, `where:`, `indegree` ad-hoc) por llamadas a `strategy.onPipelineStart(...)` y `strategy.onStepComplete(...)`.
-  3. Unificar la ejecución `sequential` usando el mismo ciclo con `strategy` (simplemente ejecutando `TaskActivation`s en el hilo actual en lugar de encolar en `WorkerPool`), eliminando la duplicación en `engine.zig`.
-* **Verificación:**
-  * Nuevo test unitario de `Coordinator` usando `MockRouter` para probar backpressure (`max_inflight_bytes`), cancelación y `freeArena` de forma aislada.
-  * Todas las suites existentes (`zig build test`, `apps/mangadex`, `apps/vidsec`) pasando al 100%.
+### Phase 5: Unify Execution Loop in `Coordinator` & `PipelineEngine`
+* **Files:** [`src/engine/coordinator.zig`](../../src/engine/coordinator.zig), [`src/engine/engine.zig`](../../src/engine/engine.zig).
+* **Changes:**
+  1. Have `Coordinator` receive a `RoutingStrategy` created from `RouterRegistry` using `pipeline.routing orelse runtime.routing`.
+  2. Replace inline `dispatchTask` logic (`inputs:` resolution, `where:`, ad-hoc `indegree`) with calls to `strategy.onPipelineStart(...)` and `strategy.onStepComplete(...)`.
+  3. Unify `sequential` execution using the same loop with `strategy` (simply running `TaskActivation`s on the current thread instead of enqueueing into `WorkerPool`), eliminating duplication in `engine.zig`.
+* **Verification:**
+  * New `Coordinator` unit test using `MockRouter` to test backpressure (`max_inflight_bytes`), cancellation, and `freeArena` in isolation.
+  * All existing suites (`zig build test`, `apps/mangadex`, `apps/vidsec`) passing 100%.
 
-### Fase 6 (Opcional / Futura): `HybridRouter` (`auto_bind`)
-* **Archivos:** `src/engine/routing/hybrid.zig`.
-* **Cambios:**
-  1. Reutilizar el grafo de `DirectedRouter`, pero cuando un paso omita `inputs:`, inspeccionar `canHandle` frente a los canales ya declarados por pasos anteriores.
-  2. Si existe exactamente un canal compatible, crear la arista de datos y sumar al `consumers_count` automáticamente; si hay ambigüedad o es un Join multi-rama, exigir `inputs:` explícito.
+### Phase 6 (Optional / Future): `HybridRouter` (`auto_bind`)
+* **Files:** `src/engine/routing/hybrid.zig`.
+* **Changes:**
+  1. Reuse `DirectedRouter`'s graph, but when a step omits `inputs:`, inspect `canHandle` against channels already declared by upstream steps.
+  2. If exactly one compatible channel exists, automatically create the data edge and increment `consumers_count`; if ambiguous or a multi-branch Join, require explicit `inputs:`.
 
 ---
 
-## 6. Criterios de Aceptación
+## 6. Acceptance Criteria
 
-1. **Cero dependencias cruzadas:** `directed.zig` y `type_driven.zig` no se importan entre sí ni importan `WorkerPool` / `Coordinator`.
-2. **Testabilidad pura:** Cada estrategia de enrutado dispone de tests unitarios que se ejecutan sin hilos, sin red y sin acceso a disco.
-3. **Motor desacoplado:** `Coordinator` tiene tests unitarios verificando gestión de arenas y `WorkerPool` contra un `MockRouter`.
-4. **Retrocompatibilidad total:** Pipelines sin `routing:` siguen comportándose como `directed` sin requerir cambios en [`apps/mangadex/configs/pipeline.yaml`](../../apps/mangadex/configs/pipeline.yaml) ni [`apps/vidsec/configs/pipeline.yaml`](../../apps/vidsec/configs/pipeline.yaml).
+1. **Zero cross-dependencies:** `directed.zig` and `type_driven.zig` do not import each other and do not import `WorkerPool` / `Coordinator`.
+2. **Pure testability:** Every routing strategy has unit tests that run without threads, networking, or disk I/O.
+3. **Decoupled engine:** `Coordinator` has unit tests verifying arena management and `WorkerPool` against a `MockRouter`.
+4. **Full backward compatibility:** Pipelines without `routing:` continue behaving as `directed` with no changes required in [`apps/mangadex/configs/pipeline.yaml`](../../apps/mangadex/configs/pipeline.yaml) or [`apps/vidsec/configs/pipeline.yaml`](../../apps/vidsec/configs/pipeline.yaml).

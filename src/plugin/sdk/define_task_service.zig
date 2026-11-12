@@ -94,6 +94,10 @@ pub fn DiContainer(comptime ContextImpl: type) type {
                 input_injector.computeRequiredParams(Inputs)
             else
                 &.{};
+            const required_input_fields = if (has_inputs)
+                input_injector.computeRequiredInputFields(Inputs)
+            else
+                &.{};
 
             const ReturnType = fn_info.return_type orelse @compileError("Service.execute must have a return type");
             const ret_info = @typeInfo(ReturnType);
@@ -737,6 +741,8 @@ pub fn DiContainer(comptime ContextImpl: type) type {
                 .execute = &Trampoline.execute,
                 .flags = flags,
                 .can_handle = &Trampoline.canHandle,
+                .input_fields_ptr = if (required_input_fields.len > 0) required_input_fields.ptr else null,
+                .input_fields_len = required_input_fields.len,
             };
         }
     };

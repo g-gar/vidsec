@@ -187,6 +187,14 @@ fn convertValue(comptime T: type, val: types.Value_ABI) InputInjectorError!T {
 /// Computes the list of required parameter names for `Inputs` at compile time.
 /// A field is required if it is not a stream, has no default value, and is not optional.
 pub fn computeRequiredParams(comptime Inputs: type) []const [*:0]const u8 {
+    return computeInputFieldsImpl(Inputs, false);
+}
+
+pub fn computeRequiredInputFields(comptime Inputs: type) []const [*:0]const u8 {
+    return computeInputFieldsImpl(Inputs, true);
+}
+
+fn computeInputFieldsImpl(comptime Inputs: type, comptime include_slices: bool) []const [*:0]const u8 {
     const Holder = struct {
         fn getParams() []const [*:0]const u8 {
             const fields = @typeInfo(Inputs).@"struct".fields;
@@ -194,7 +202,7 @@ pub fn computeRequiredParams(comptime Inputs: type) []const [*:0]const u8 {
             inline for (fields) |f| {
                 const is_slice_input = (@typeInfo(f.type) == .pointer and @typeInfo(f.type).pointer.size == .slice and @typeInfo(f.type).pointer.child != u8);
                 if (f.type != reader.BoundedStreamReader and
-                    !is_slice_input and
+                    (include_slices or !is_slice_input) and
                     f.default_value_ptr == null and
                     @typeInfo(f.type) != .optional)
                 {
@@ -219,7 +227,7 @@ pub fn computeRequiredParams(comptime Inputs: type) []const [*:0]const u8 {
             inline for (fields) |f| {
                 const is_slice_input = (@typeInfo(f.type) == .pointer and @typeInfo(f.type).pointer.size == .slice and @typeInfo(f.type).pointer.child != u8);
                 if (f.type != reader.BoundedStreamReader and
-                    !is_slice_input and
+                    (include_slices or !is_slice_input) and
                     f.default_value_ptr == null and
                     @typeInfo(f.type) != .optional)
                 {

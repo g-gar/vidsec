@@ -41,6 +41,8 @@ pub const TypeDrivenRouter = struct {
     pending_count: usize = 0,
     re_route_depth: usize = 0,
     halted: bool = false,
+    accumulated_named: std.StringHashMapUnmanaged(PayloadHandle) = .empty,
+    accumulated_payloads: std.ArrayListUnmanaged(PayloadHandle) = .empty,
 
     pub fn init(ctx: RoutingContext, options: TypeDrivenOptions) !*TypeDrivenRouter {
         var arena = std.heap.ArenaAllocator.init(ctx.allocator);
@@ -105,7 +107,21 @@ pub const TypeDrivenRouter = struct {
 
     pub fn onPipelineStart(self: *TypeDrivenRouter, alloc: Allocator, initial_input: PayloadHandle) ![]TaskActivation {
         if (self.halted or self.pipeline.steps.len == 0) return &.{};
-        return self.activateMatches(alloc, initial_input);
+        try self.recordPayload("input", initial_input);
+        try self.recordPayload("stream", initial_input);
+
+        var all_activations: std.ArrayListUnmanaged(TaskActivation) = .empty;
+        errdefer all_activations.deinit(alloc);
+
+        const direct = try self.activateMatches(alloc, initial_input);
+        defer alloc.free(direct);
+        try all_activations.appendSlice(alloc, direct);
+
+        const joins = try self.activateSatisfiedJoins(alloc, initial_input);
+        defer alloc.free(joins);
+        try all_activations.appendSlice(alloc, joins);
+
+        return all_activations.toOwnedSlice(alloc);
     }
 
     pub fn onStepComplete(self: *TypeDrivenRouter, alloc: Allocator, event: StepOutcomeEvent) ![]TaskActivation {
@@ -118,6 +134,20 @@ pub const TypeDrivenRouter = struct {
         if (self.halted or !self.options.enable_outbound_loop) return &.{};
         if (self.re_route_depth >= self.options.max_re_route_depth) return &.{};
 
+        // Accumulate completed step outputs and named channels for multi-input Joins (ARCH-024)
+        if (event.node_id < self.pipeline.steps.len and self.pipeline.steps[event.node_id] == .task) {
+            const task_spec = self.pipeline.steps[event.node_id].task;
+            if (event.output.len > 0) {
+                try self.recordPayload(task_spec.id, event.output);
+            }
+        }
+        for (event.channel_outputs) |ch_out| {
+            try self.recordPayload(ch_out.name, ch_out.payload);
+        }
+        if (event.output.len > 0) {
+            try self.recordPayload(null, event.output);
+        }
+
         var all_activations: std.ArrayListUnmanaged(TaskActivation) = .empty;
         errdefer all_activations.deinit(alloc);
 
@@ -125,6 +155,7 @@ pub const TypeDrivenRouter = struct {
         for (event.channel_outputs) |ch_out| {
             if (ch_out.payload.len == 0) continue;
             const acts = try self.activateMatches(alloc, ch_out.payload);
+            defer alloc.free(acts);
             if (acts.len > 0) {
                 routed_any = true;
                 try all_activations.appendSlice(alloc, acts);
@@ -133,10 +164,18 @@ pub const TypeDrivenRouter = struct {
 
         if (event.output.len > 0) {
             const acts = try self.activateMatches(alloc, event.output);
+            defer alloc.free(acts);
             if (acts.len > 0) {
                 routed_any = true;
                 try all_activations.appendSlice(alloc, acts);
             }
+        }
+
+        const join_acts = try self.activateSatisfiedJoins(alloc, event.output);
+        defer alloc.free(join_acts);
+        if (join_acts.len > 0) {
+            routed_any = true;
+            try all_activations.appendSlice(alloc, join_acts);
         }
 
         if (routed_any) {
@@ -148,6 +187,88 @@ pub const TypeDrivenRouter = struct {
 
     pub fn hasPendingWork(self: *const TypeDrivenRouter) bool {
         return !self.halted and self.pending_count > 0;
+    }
+
+    fn recordPayload(self: *TypeDrivenRouter, name: ?[]const u8, payload: PayloadHandle) !void {
+        if (payload.len == 0) return;
+        const arena_alloc = self.arena.allocator();
+        if (name) |n| {
+            const owned_name = try arena_alloc.dupe(u8, n);
+            try self.accumulated_named.put(arena_alloc, owned_name, payload);
+        }
+        for (self.accumulated_payloads.items) |existing| {
+            if (existing.ptr == payload.ptr and existing.len == payload.len) return;
+        }
+        try self.accumulated_payloads.append(arena_alloc, payload);
+    }
+
+    fn resolveAccumulatedParam(self: *const TypeDrivenRouter, param_name: []const u8) ?PayloadHandle {
+        if (self.accumulated_named.get(param_name)) |p| {
+            return p;
+        }
+        for (self.accumulated_payloads.items) |p| {
+            if (p.getReflected(param_name) != null) {
+                return p;
+            }
+        }
+        return null;
+    }
+
+    fn activateSatisfiedJoins(self: *TypeDrivenRouter, alloc: Allocator, fallback_payload: PayloadHandle) ![]TaskActivation {
+        var activations: std.ArrayListUnmanaged(TaskActivation) = .empty;
+        errdefer activations.deinit(alloc);
+
+        const arena_alloc = self.arena.allocator();
+
+        for (self.pipeline.steps, 0..) |step, node_id| {
+            if (self.active_mask) |mask| {
+                if (node_id < mask.len and !mask[node_id]) continue;
+            }
+            if (step != .task) continue;
+            if (self.visited_mask[node_id]) continue;
+
+            const task_spec = step.task;
+            const desc = self.modules.resolveTask(task_spec.module, task_spec.task) catch continue;
+            const req_params = if (desc.inputFields().len > 0) desc.inputFields() else desc.requiredParams();
+            if (req_params.len <= 1) continue;
+
+            var all_satisfied = true;
+            var primary_payload = fallback_payload;
+            var join_bound: std.ArrayListUnmanaged(BoundInput) = .empty;
+
+            for (req_params, 0..) |req_z, idx| {
+                const req_name = std.mem.span(req_z);
+                if (self.resolveAccumulatedParam(req_name)) |resolved_p| {
+                    if (idx == 0 and primary_payload.len == 0) {
+                        primary_payload = resolved_p;
+                    }
+                    try join_bound.append(arena_alloc, .{
+                        .name = try arena_alloc.dupe(u8, req_name),
+                        .payload = resolved_p,
+                    });
+                } else {
+                    all_satisfied = false;
+                    break;
+                }
+            }
+
+            if (!all_satisfied) continue;
+            if (!self.passesUnaryFilters(task_spec, primary_payload)) continue;
+
+            self.visited_mask[node_id] = true;
+            self.pending_count += 1;
+
+            const base_bound = try self.buildBoundInputs(primary_payload);
+            try join_bound.appendSlice(arena_alloc, base_bound);
+
+            try activations.append(alloc, .{
+                .node_id = node_id,
+                .step_input = primary_payload,
+                .bound_inputs = try join_bound.toOwnedSlice(arena_alloc),
+            });
+        }
+
+        return activations.toOwnedSlice(alloc);
     }
 
     fn activateMatches(self: *TypeDrivenRouter, alloc: Allocator, payload: PayloadHandle) ![]TaskActivation {

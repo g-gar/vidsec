@@ -94,7 +94,8 @@ flowchart LR
 | **20** | [`020-pipeline-checkpointing-and-crash-resume.md`](./020-pipeline-checkpointing-and-crash-resume.md) | Engine-level state journaling (`pipeline_runs`, `step_checkpoints`), input fingerprint hashing, deterministic milestone skipping, and CLI `--resume <run_id>`. | `SPECIFICATION` |
 | **21** | [`021-dead-letter-queue-and-fault-quarantine.md`](./021-dead-letter-queue-and-fault-quarantine.md) | Dead-Letter Queue (DLQ), `DeadLetterEnvelope` contract, unrecoverable fault routing to quarantine datasources, and rolling-window Circuit Breaker. | `SPECIFICATION` |
 | **22** | [`022-posix-signals-and-graceful-shutdown.md`](./022-posix-signals-and-graceful-shutdown.md) | POSIX signal traps (SIGINT/SIGTERM), cooperative atomic cancellation of worker threads, WAL transaction rollback/checkpointing, and atomic `.tmp` rename pattern. | `SPECIFICATION` |
-| **23** | [`023-pluggable-routing-strategy-decoupling.md`](./023-pluggable-routing-strategy-decoupling.md) | Decoupled `RoutingStrategy` vtable & `RouterRegistry` separating `DirectedRouter`, `TypeDrivenRouter`, and future routing policies from `PipelineEngine`/`Coordinator`, plus YAML `routing:` directive. | `SPECIFICATION` |
+| **23** | [`023-pluggable-routing-strategy-decoupling.md`](./023-pluggable-routing-strategy-decoupling.md) | Decoupled `RoutingStrategy` vtable & `RouterRegistry` separating `DirectedRouter`, `TypeDrivenRouter`, and future routing policies from `PipelineEngine`/`Coordinator`, plus YAML `routing:` directive. | `COMPLETED` |
+| **24** | [`024-type-driven-multi-input-accumulation.md`](./024-type-driven-multi-input-accumulation.md) | Multi-input Join accumulation in `TypeDrivenRouter` using `inputFields()` / `requiredParams()` and accumulated `BoundInput` resolution across parallel branches. | `COMPLETED` |
 
 ---
 

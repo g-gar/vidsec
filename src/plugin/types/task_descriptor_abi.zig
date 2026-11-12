@@ -31,6 +31,9 @@ pub const TaskDescriptor_ABI = extern struct {
     flags: u32 = 0,
     /// ARCH-018: Affinity predicate for dynamic schema matching & service catalog.
     can_handle: ?CanHandleFn_ABI = null,
+    /// ARCH-024: Catalog of all required input field names (including slice inputs) for multi-input Join routing.
+    input_fields_ptr: ?[*]const [*:0]const u8 = null,
+    input_fields_len: usize = 0,
 
     pub const FLAG_LIFT_ELEMENTAL: u32 = 1 << 0;
     pub const FLAG_CONCURRENCY_SAFE: u32 = 1 << 1;
@@ -73,6 +76,12 @@ pub const TaskDescriptor_ABI = extern struct {
         const ptr = self.required_params_ptr orelse return &.{};
         if (self.required_params_len == 0) return &.{};
         return ptr[0..self.required_params_len];
+    }
+
+    pub fn inputFields(self: TaskDescriptor_ABI) []const [*:0]const u8 {
+        const ptr = self.input_fields_ptr orelse return &.{};
+        if (self.input_fields_len == 0) return &.{};
+        return ptr[0..self.input_fields_len];
     }
 
     /// Returns `true` if `field_name` is in `output_fields`, or if the task does not constrain `output_fields`.

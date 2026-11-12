@@ -796,3 +796,147 @@ test "ARCH-023 Phase 5: PipelineEngine executes type_driven pipeline end-to-end 
     const summary = try eng.run(flowdata.dataflow.PayloadHandle.fromSlice(RawTarget, &raw));
     try testing.expectEqual(@as(usize, 2), summary.steps_executed);
 }
+
+test "ARCH-024 Phase 2: TypeDrivenRouter accumulates multi-input Join across parallel branches" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const StartTrigger = struct { series_id: []const u8 };
+    const PageOut = struct { page_no: u32 };
+    const MetaOut = struct { comic_info_xml: []const u8 };
+    const JoinInputs = struct {
+        pages: []const PageOut,
+        comic_info_xml: []const u8,
+    };
+    const BundleOut = struct { total_pages: usize, has_xml: bool };
+
+    const PagesSvc = struct {
+        pub fn execute(_: *@This(), a: std.mem.Allocator, _: StartTrigger) ![]const PageOut {
+            const out = try a.alloc(PageOut, 2);
+            out[0] = .{ .page_no = 1 };
+            out[1] = .{ .page_no = 2 };
+            return out;
+        }
+    };
+    const MetaSvc = struct {
+        pub fn execute(_: *@This(), _: std.mem.Allocator, in: StartTrigger) !MetaOut {
+            return .{ .comic_info_xml = in.series_id };
+        }
+    };
+    const JoinSvc = struct {
+        pub fn execute(_: *@This(), _: std.mem.Allocator, in: JoinInputs) !BundleOut {
+            return .{
+                .total_pages = in.pages.len,
+                .has_xml = in.comic_info_xml.len > 0,
+            };
+        }
+    };
+
+    var tasks = [_]plugin.TaskDescriptor_ABI{
+        plugin.defineTaskService(PagesSvc, .{ .name = "pages" }),
+        plugin.defineTaskService(MetaSvc, .{ .name = "meta" }),
+        plugin.defineTaskService(JoinSvc, .{ .name = "join" }),
+    };
+    const manifest = plugin.ModuleManifest_ABI{
+        .module_name = "td_join",
+        .module_version = .{ .major = 1, .minor = 0, .patch = 0 },
+        .tasks_ptr = &tasks,
+        .tasks_len = tasks.len,
+    };
+
+    var mod_reg = flowdata.ModuleRegistry.init(alloc);
+    defer mod_reg.deinit();
+    try mod_reg.registerStaticModule("td_join", &manifest);
+
+    const yaml_text =
+        \\version: 2
+        \\pipelines:
+        \\  main:
+        \\    routing: type_driven
+        \\    steps:
+        \\      - id: s_pages
+        \\        uses: td_join/pages
+        \\      - id: s_meta
+        \\        uses: td_join/meta
+        \\      - id: s_join
+        \\        uses: td_join/join
+    ;
+
+    const ast = try flowdata.yaml.loadPipelineAstFromYaml(alloc, yaml_text, .{});
+    var ambient = flowdata.AmbientContext.init(alloc);
+
+    const strategy = try routing.TypeDrivenRouter.factory(.{
+        .allocator = alloc,
+        .ast = ast,
+        .pipeline = ast.getPipeline("main").?,
+        .modules = &mod_reg,
+        .ambient = &ambient,
+    });
+    defer strategy.deinit();
+
+    const start_items = [_]StartTrigger{.{ .series_id = "<ComicInfo/>" }};
+    const start_payload = flowdata.dataflow.PayloadHandle.fromSlice(StartTrigger, &start_items);
+
+    const start_acts = try strategy.onPipelineStart(alloc, start_payload);
+    defer alloc.free(start_acts);
+    // Both s_pages (0) and s_meta (1) match StartTrigger; s_join (2) must NOT start yet
+    try testing.expectEqual(@as(usize, 2), start_acts.len);
+    try testing.expectEqual(@as(usize, 0), start_acts[0].node_id);
+    try testing.expectEqual(@as(usize, 1), start_acts[1].node_id);
+
+    // Complete first branch (s_pages) with channel "pages"
+    const pages_out = [_]PageOut{ .{ .page_no = 1 }, .{ .page_no = 2 } };
+    const pages_payload = flowdata.dataflow.PayloadHandle.fromSlice(PageOut, &pages_out);
+    const after_first = try strategy.onStepComplete(alloc, .{
+        .node_id = 0,
+        .status = .ok,
+        .output = pages_payload,
+        .channel_outputs = &.{.{ .name = "pages", .payload = pages_payload }},
+    });
+    defer alloc.free(after_first);
+    try testing.expectEqual(@as(usize, 0), after_first.len);
+
+    // Complete second branch (s_meta) -> s_join must now unlock with both bound inputs!
+    const meta_out = [_]MetaOut{.{ .comic_info_xml = "<ComicInfo/>" }};
+    const meta_payload = flowdata.dataflow.PayloadHandle.fromSlice(MetaOut, &meta_out);
+    const after_second = try strategy.onStepComplete(alloc, .{
+        .node_id = 1,
+        .status = .ok,
+        .output = meta_payload,
+        .channel_outputs = &.{},
+    });
+    defer alloc.free(after_second);
+    try testing.expectEqual(@as(usize, 1), after_second.len);
+    try testing.expectEqual(@as(usize, 2), after_second[0].node_id);
+
+    // Verify PipelineEngine E2E execution with routing: type_driven + scheduler: dag
+    var repo_reg = flowdata.RepositoryRegistry.init(alloc);
+    defer repo_reg.deinit();
+
+    const e2e_yaml =
+        \\version: 2
+        \\runtime:
+        \\  scheduler: dag
+        \\  workers: 2
+        \\  routing: type_driven
+        \\pipelines:
+        \\  main:
+        \\    steps:
+        \\      - id: s_pages
+        \\        uses: td_join/pages
+        \\        outputs:
+        \\          pages:
+        \\            datasource: pipeline_memory
+        \\      - id: s_meta
+        \\        uses: td_join/meta
+        \\      - id: s_join
+        \\        uses: td_join/join
+    ;
+    const e2e_ast = try flowdata.yaml.loadPipelineAstFromYaml(alloc, e2e_yaml, .{});
+    var eng = flowdata.PipelineEngine.init(alloc, e2e_ast, &mod_reg, &repo_reg);
+    defer eng.deinit();
+
+    const summary = try eng.run(start_payload);
+    try testing.expectEqual(@as(usize, 3), summary.steps_executed);
+}
