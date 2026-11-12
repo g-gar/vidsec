@@ -2,108 +2,114 @@
 
 > **High-Performance Reactive Dataflow Microkernel & Declarative Pipeline Engine in Zig**
 
-Flowdata is an ultra-fast, embeddable reactive dataflow engine designed to build, prototype, and run complex analytical pipelines in minutes. 
-
-Instead of hand-coding thread pools, transport sockets, rate limiters, and intermediate database schemas for every new project, Flowdata lets you declare **reactive dataflow topologies in YAML** while implementing **pure, atomic business tasks in Zig**.
+Flowdata is an embeddable, zero-copy dataflow engine and plugin microkernel for building declarative ETL, streaming, and binary-analysis pipelines in Zig. You describe topology, policies, and datasources in YAML while implementing pure, testable domain tasks in Zig.
 
 ---
 
-## Why Flowdata?
+## What the Flowdata Engine Provides
 
-Prototyping modern data-intensive apps typically means fighting boilerplate: coordinating threads, managing network rate limits, dealing with database staging tables, and gluing components together. 
-
-Flowdata solves this with 6 core design principles:
-
-1. **Declarative Pipelines (`pipeline.yaml`)**  
-   Wire up multi-step DAGs, branch streams (fan-out), filter records with declarative expressions (`where:`), and merge results (fan-in) without writing procedural glue code.
-2. **Compile-Time Dependency Injection (`DiContainer`)**  
-   Inspired by modern enterprise frameworks (like Spring Boot) but engineered idiomatically for Zig with **zero runtime reflection and zero heap overhead**. Services declare what they need (interfaces, loggers, clients), and Flowdata resolves and injects them at compile time.
-3. **Engine-Driven Concurrency (Auto-Lifting)**  
-   Write clean, atomic, single-item tasks (`1 -> 1`). Need to process 50 items in parallel? Simply set `concurrency: 4` in the pipeline configuration. The engine automatically lifts the task over incoming streams using worker pools and preserves deterministic ordering.
-4. **Intelligent Virtual Networking**  
-   Outbound HTTP adapters feature built-in token-bucket rate limiting, backpressure handling, proxy routing, and security policies (ACLs, private IP blocking). Your tasks never get banned by remote APIs.
-5. **RAM-First, Zero-Copy Dataflow**  
-   Route intermediate records and binary blobs between tasks via `pipeline_memory` using zero-copy fat pointers (`PayloadHandle`). Persist to disk or SQLite only when you explicitly choose to.
-6. **Reactive Emitter Datasources (`emitRecord` & Event-Driven Push)**  
-   Datasources aren't just passive storage sinks; they can act as live reactive event emitters. Whether streaming Server-Sent Events (SSE), WebSockets, live file watchers (`inotify` for hot-reloading configurations), or message queues, Flowdata's push reactor dispatches incoming items into running pipelines in real time without inefficient polling loops.
+1. **Pluggable Routing Strategies (`directed` & `type_driven`)**
+   * **`directed`**: Explicit DAG edges (`inputs:` / `outputs:` / `after:`) with deterministic execution and refcounted step arenas.
+   * **`type_driven`**: Dynamic signature matching via `canHandle()`, `inputFields()`, unary `where:` filters, and automatic **multi-input Join accumulation** across converging parallel branches without declaring `inputs:` in YAML.
+2. **Concurrent DAG Scheduler & Bounded Memory**
+   * `scheduler: dag | sequential` backed by a bounded `WorkerPool` (help-while-waiting), per-step `StepArena` reclamation, and `max_inflight_bytes` backpressure.
+   * **Elemental Auto-Lifting**: Write single-item tasks (`1 -> 1`) and scale out with `concurrency: N` in YAML.
+3. **Zero-Copy Dataflow & C-ABI Plugin SDK (`flowdata_plugin`)**
+   * Type-erased `PayloadHandle` fat pointers across steps with zero intermediate serialization.
+   * Compile-time dependency injection (`DiContainer`) and declarative services (`defineTaskService`) compiled into isolated `.so` modules over a strict C-ABI boundary (`TaskContext_ABI`, `HostApiVTable_ABI`).
+4. **Datasources with Explicit Roles & Unified Batch/Push Execution**
+   * Built-in drivers (`memory`, `sqlite` with declarative `schemas.yaml` DDL provisioning, `file_store`, `yaml_file`) with `role: source | sink | duplex` enforcement.
+   * Decoupled `BatchSource` and `RecordEmitter` / `PushReactor` unify offline CLI batch runs and live daemon/collector ingestion through the same execution path.
+5. **Least-Privilege Virtual Egress Networks**
+   * Pluggable adapters (`egress`, `isolated`, `sinkhole`, `ingress_only`) with token-bucket rate limiting, anti-SSRF/private-range blocking, host/scheme ACLs, and proxy load-balancing strategies.
+6. **Open Kernel Extensions & Transports**
+   * Modular `KernelContext` and `TelemetryBus` powering `inbound_cli`, `inbound_http`, `inbound_grpc`, `opentelemetry`, `dag_viz`, `pcapng`, `trace_jsonl`, and `artifact`.
+7. **Standalone Collectors (`collectors/`)**
+   * Decoupled ingress daemons (`flowdata-collector-filewatcher` using inotify, `flowdata-collector-webhook`) with ULID disk spooling when the engine is offline.
 
 ---
 
 ## Showcase Applications
 
-Flowdata is domain-agnostic. The repository includes two full showcase applications demonstrating very different workloads and architectural complexities:
+### 1. VidSec (`apps/vidsec/`)
+Binary media forensics and container inspection pipeline (ISOBMFF/MP4, EBML/MKV, RIFF, H.264 NAL units) using zero-copy `BoundedStreamReader`/`WindowReader`, virtual network guards, and automated quarantine/remediation plugins (`libanalyzer.so`, `libremediation.so`).
 
-### VidSec (`apps/vidsec`) — Video Stream Forensics & Network Security
-* **What it does:** Real-time deep packet inspection (DPI) of network captures, carving multimedia streams (RTSP / RTP / H.264 / PCAPNG), validating transport framing, and applying automated security and quarantine heuristics on binary payloads.
-* **Components & Technologies Used:**
-  * **Zero-copy byte stream windowing:** `BoundedStreamReader` and `WindowReader` for direct slicing of large PCAPNG files without memory duplication.
-  * **H.264 NAL Unit Parser:** Frame-level boundary detection and streaming video reconstruction.
-  * **Virtual Network Guard:** Outbound proxy interception, DNS resolution middleware, and rule-based network policy guards.
-  * **Quarantine Engine:** Automated carving of suspicious payload segments into SHA-256 verified quarantine storage.
-  * **OpenTelemetry Bus:** Hierarchical distributed tracing (`traceparent`) and DAG graph visualization (`extensions/opentelemetry`, `extensions/dag_viz`).
-* **Why check it out?**  
-  It is an ideal reference for **low-level binary protocol forensics, zero-copy packet carving, and real-time streaming analysis** without operating system or runtime overhead.
+### 2. MangaDex Catalog & Packaging Pipeline (`apps/mangadex/`)
+Multi-source manga synchronization and `.cbz` archiver running on `routing: type_driven` with `role: source` batch emission, rate-limited HTTP egress, `ComicInfo.xml` v2.1 serialization, and in-memory ZIP (`STORE`) packaging.
+* See [`apps/mangadex/README.md`](./apps/mangadex/README.md) for detailed topology, configuration, and usage.
 
 ---
 
-### MangaDex & Media Harvester (`apps/mangadex`) — Multi-Source Content Pipeline
-* **What it does:** Automated multi-source catalog synchronization, chapter discovery, rate-limited CDN image downloading, XML metadata generation, and high-speed packaging into `.cbz` archives integrated with personal media servers (Komga).
-* **Components & Technologies Used:**
-  * **Polymorphic Source Drivers:** Abstract `MangaSource` interface supporting both MangaDex REST APIs and generic HTML scrapers with dynamic capability matching (`canHandle`).
-  * **Compile-Time Dependency Injection:** Application container (`DiContainer(MangaContext)`) injecting HTTP adapters, drivers, and loggers into pure declarative task services (`defineTaskService`).
-  * **Custom SDKs & Protocols:**
-    * `mangadex_sdk`: Standalone HTTP client with OAuth/Personal Client/Static token authentication.
-    * `komga_sdk`: REST client for remote library sync and book scanning.
-    * `comicinfo`: High-performance XML serializer/deserializer implementing the Anansi ComicInfo v2.1 spec.
-    * `zip_archive`: Embedded `miniz` ZIP engine writing Deflate metadata and zero-compression `STORE` mode image archives.
-  * **Egress Rate Limiting:** Outbound network adapter enforcing 5 req/s token-bucket throttling to prevent CDN bans.
-  * **In-Memory Fork & Join:** Parallel image downloading running concurrently with `ComicInfo.xml` generation, joining in RAM before CBZ creation.
-* **Why check it out?**  
-  It serves as a blueprint for **enterprise-grade microservice orchestration**: external REST/HTML scraping, compile-time DI, third-party API clients, rate-limited network egress, and binary file packaging—all running in RAM without intermediate database bottlenecks.
-
----
-
-## Virtual Network Drivers & Datasource Synergy
-
-One of Flowdata's proudest architectural achievements is its **composable outbound virtual network subsystem** (`src/transport/outbound/`). Instead of letting tasks make raw, unmonitored socket calls, all network communication flows through policy-governed virtual network adapters that seamlessly connect to datasources:
-
-### Pluggable Network Drivers & Middlewares
-* **4 Specialized Adapters:**
-  * `egress`: Full-featured outbound engine with rate limiting, DNS caching, and proxy routing.
-  * `isolated`: Zero-trust network sandbox restricting communication strictly to whitelisted targets.
-  * `sinkhole`: Blackhole adapter for offline verification, unit testing, and safe malware/packet analysis.
-  * `ingress_only`: Enforces unidirectional traffic, preventing data exfiltration.
-* **Intelligent Middlewares & Proxy Strategies:**
-  * **Traffic Throttling:** Token-bucket rate limiter with burst control and backpressure management.
-  * **Anti-SSRF & ACL Guard:** Blocks RFC1918 private subnets (10.0.0.0/8, 192.168.0.0/16, 127.0.0.0/8) and cloud metadata services (169.254.169.254) out-of-the-box.
-  * **6 Load Balancing Strategies:** `round_robin`, `least_latency`, `smooth_weighted`, `sticky_host`, `failover`, and `random`.
-
-### The Network-to-Datasource Connection (The MangaDex Pattern)
-In Flowdata, **Network I/O and Storage I/O are completely decoupled from business tasks**:
-1. You declare a virtual network adapter in `pipeline.yaml` (e.g. `mangadex_api` with custom headers and a 5 req/s rate limit).
-2. The task receives an injected, thread-safe transport bridge through DI. It doesn't know (or care) whether it's talking through a rotating proxy, a rate limiter, or a mock sinkhole.
-3. As network responses arrive, the pipeline engine automatically routes the resulting domain entities into declared datasources (`pipeline_memory` for fast in-RAM coordination, or `catalog_db` for persistent SQLite storage).
-
-Tasks write pure domain logic—Flowdata handles all security, routing, rate-limiting, and storage mapping.
-
----
-
-## Quick Start
+## Building, Testing, and Running
 
 ### Prerequisites
 * [Zig](https://ziglang.org/download/) `0.16.x`
+* SQLite3 development library (`libsqlite3`)
 
-### Run Core Tests
+### 1. Core Engine & Tests
 ```bash
-zig build test
-```
-
-### Run Application Tests & Builds
-```bash
-# Test the MangaDex application suite (33 tests, 0 leaks)
-cd apps/mangadex
-zig build test
-
-# Build the standalone MangaDex CLI & shared plugin library (libmanga_catalog.so)
+# Build all core artifacts and collectors
 zig build
+
+# Run the core engine, routing, ABI, and collector test suites
+zig build test --summary all
 ```
+
+### 2. Running Applications
+
+#### VidSec (`apps/vidsec`)
+```bash
+cd apps/vidsec
+
+# Build binary and shared plugin libraries (libanalyzer.so, libremediation.so)
+zig build
+
+# Run VidSec test suite
+zig build test --summary all
+
+# Run the CLI against a pipeline/input
+./zig-out/bin/vidsec --help
+```
+
+#### MangaDex (`apps/mangadex`)
+```bash
+cd apps/mangadex
+
+# Build binary and shared plugin library (libmanga_catalog.so)
+zig build
+
+# Run MangaDex test suite
+zig build test --summary all
+
+# Mode A: Offline batch CLI (emits enabled targets from configs/jobs.yaml)
+./run_pipeline.sh
+
+# Mode B: Persistent HTTP daemon (/v1/jobs)
+./run_pipeline.sh --serve
+
+# Mode C: Dispatch a single JobEnvelope to a running daemon
+./send_mangadex_job.sh --series-id "<uuid>" --title "Series" --chapters "1..3" --lang "en"
+```
+
+### 3. Running Standalone Collectors
+From the repository root, build or run the collectors directly:
+
+```bash
+# Inotify file watcher collector (streams file updates to a running Flowdata daemon)
+zig build run-collector-watcher -- \
+  --watch apps/mangadex/configs/jobs.yaml \
+  --topic manga_subscription \
+  --endpoint http://127.0.0.1:8080/v1/jobs
+
+# Standalone Webhook collector
+zig build run-collector-webhook -- --help
+```
+
+Or run the installed binaries directly from `./zig-out/bin/`:
+* `./zig-out/bin/flowdata-collector-filewatcher`
+* `./zig-out/bin/flowdata-collector-webhook`
+
+---
+
+## Architecture Documentation
+See [`docs/development/000-architecture-roadmap.md`](./docs/development/000-architecture-roadmap.md) for the full architectural specifications (`ARCH-001` through `ARCH-027`).

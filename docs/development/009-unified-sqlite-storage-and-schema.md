@@ -18,9 +18,9 @@ During early design, two paradigms for SQLite persistence were evaluated:
    * *Critical Shortcomings*: Tightly couples business plugins to a specific database engine; bypasses Flowdata's zero-copy stream router; introduces redundant boilerplate and schema drift between YAML specifications and Zig code.
 
 2. **Declarative Flowdata Schema & Native SQLite Datasource (`driver: sqlite`) — (SELECTED & IMPLEMENTED)**:
-   * **Single Source of Truth (SSOT)**: Relational tables, columns, constraints, foreign keys (`ON DELETE CASCADE`), and indexes are defined declaratively in [`configs/schemas.yaml`](file:///home/ubuntu/.gemini/antigravity/scratch/vidsec/apps/mangadex/configs/schemas.yaml).
+   * **Single Source of Truth (SSOT)**: Relational tables, columns, constraints, foreign keys (`ON DELETE CASCADE`), and indexes are defined declaratively in [`configs/schemas.yaml`](../../apps/mangadex/configs/schemas.yaml).
    * **Automatic DDL Provisioning**: The SQLite extension engine (`extensions/datasource/sqlite/src/schema_provisioner.zig`) automatically translates the `SchemaCatalog` AST into strict SQLite DDL upon initialization.
-   * **Declarative Pipeline Routing**: Output channels from analytics tasks (e.g. `catalog_series`, `discovered_chapters`, `discovered_pages` in `manga_catalog.so`) are bound directly to `catalog_db` in [`configs/pipeline.yaml`](file:///home/ubuntu/.gemini/antigravity/scratch/vidsec/apps/mangadex/configs/pipeline.yaml). The engine executes type reflection and batched `INSERT OR REPLACE` operations without handwritten SQL.
+   * **Declarative Pipeline Routing**: Output channels from analytics tasks (e.g. `catalog_series`, `discovered_chapters`, `discovered_pages` in `manga_catalog.so`) are bound directly to `catalog_db` in [`configs/pipeline.yaml`](../../apps/mangadex/configs/pipeline.yaml). The engine executes type reflection and batched `INSERT OR REPLACE` operations without handwritten SQL.
 
 > [!TIP]
 > **Decision**: We adopt the **Unified SQLite Datasource** architecture (`mangadex.db`). Metadata, series tracking, and chapter statuses remain permanent, while image blobs are ephemeral buffers purged after `.cbz` archive creation.
@@ -230,10 +230,10 @@ pipelines:
 
 Persistence is verified through automated test suites:
 
-1. **AST & Schema Validation** ([`pipeline_config_test.zig`](file:///home/ubuntu/.gemini/antigravity/scratch/vidsec/apps/mangadex/tests/pipeline_config_test.zig)):
+1. **AST & Schema Validation** ([`pipeline_config_test.zig`](../../apps/mangadex/tests/pipeline_config_test.zig)):
    * Confirms `pipeline.yaml` parses into `PipelineAST` with `catalog_db` driver correctly identified as `sqlite`.
    * Verifies output channels route to their corresponding tables.
-2. **Catalog Task Execution** ([`catalog_plugin_test.zig`](file:///home/ubuntu/.gemini/antigravity/scratch/vidsec/apps/mangadex/tests/catalog_plugin_test.zig)):
+2. **Catalog Task Execution** ([`catalog_plugin_test.zig`](../../apps/mangadex/tests/catalog_plugin_test.zig)):
    * Verifies that `fetch_series_details`, `fetch_chapters`, and `fetch_chapter_pages` emit schema-compliant typed rows.
 3. **Engine Pragmas & Referential Integrity**:
    * Evaluated through `zig build test` in both root Flowdata and `apps/mangadex/` test runners.

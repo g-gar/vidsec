@@ -116,5 +116,5 @@ Any change made during tasks `001..004` (and subsequent phases) must comply with
 4. **Zero critical-path overhead if no extensions are subscribed**:
    * In `TelemetryBus`, if the subscriber slice is empty (`subscribers.items.len == 0`), emitting an event must collapse to an inline `if` without memory allocations or string formatting.
 5. **Mandatory verification upon completion of each task**:
-   * Run `zig build test --summary all` in `/home/ubuntu/.gemini/antigravity/scratch/vidsec`.
+   * Run `zig build test --summary all` in the repository root.
    * Run `cd apps/vidsec && zig build && zig build test --summary all`.
