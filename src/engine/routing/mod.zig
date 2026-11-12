@@ -3,6 +3,7 @@
 pub const strategy = @import("strategy.zig");
 pub const registry = @import("registry.zig");
 pub const directed = @import("directed.zig");
+pub const type_driven = @import("type_driven.zig");
 
 pub const NodeId = strategy.NodeId;
 pub const ChannelId = strategy.ChannelId;
@@ -18,3 +19,5 @@ pub const RouterFactoryFn = registry.RouterFactoryFn;
 pub const RouterRegistryError = registry.RouterRegistryError;
 pub const RouterRegistry = registry.RouterRegistry;
 pub const DirectedRouter = directed.DirectedRouter;
+pub const TypeDrivenRouter = type_driven.TypeDrivenRouter;
+pub const TypeDrivenOptions = type_driven.TypeDrivenOptions;
