@@ -12,6 +12,12 @@ pub const SchedulerMode = enum {
     dag,
 };
 
+pub const RoutingMode = enum {
+    directed,
+    type_driven,
+    hybrid,
+};
+
 pub const RuntimeConfig = struct {
     /// Worker thread quota for multi-core data parallelism.
     /// Default is 1 (deterministic single-threaded).
@@ -20,6 +26,8 @@ pub const RuntimeConfig = struct {
     default_network: []const u8 = "isolated",
     /// Scheduler mode: sequential (default) or dag (ARCH-017).
     scheduler: SchedulerMode = .sequential,
+    /// Routing strategy: directed (default), type_driven, or hybrid (ARCH-023).
+    routing: RoutingMode = .directed,
     /// Maximum live in-flight memory allowed across unconsumed channels (ARCH-017 §3.5).
     max_inflight_bytes: ?usize = null,
     /// When true, prevents freeing intermediate channels until pipeline completion.
@@ -229,7 +237,13 @@ pub const StepNode = union(enum) {
 
 pub const PipelineDecl = struct {
     name: []const u8,
+    routing: ?RoutingMode = null,
     steps: []const StepNode = &.{},
+
+    /// Returns the pipeline's explicit routing mode, or falls back to `default_routing`.
+    pub fn effectiveRouting(self: PipelineDecl, default_routing: RoutingMode) RoutingMode {
+        return self.routing orelse default_routing;
+    }
 };
 
 /// Specification for an external plugin module (.so).
@@ -345,6 +359,10 @@ pub const PipelineBuilder = struct {
 
     pub fn setScheduler(self: *PipelineBuilder, scheduler: SchedulerMode) void {
         self.runtime.scheduler = scheduler;
+    }
+
+    pub fn setRouting(self: *PipelineBuilder, routing: RoutingMode) void {
+        self.runtime.routing = routing;
     }
 
     pub fn setMaxInflightBytes(self: *PipelineBuilder, bytes: ?usize) void {
@@ -662,4 +680,23 @@ test "ast: PipelineBuilder adopts custom entrypoint or detects empty pipelines" 
 
     const ast = try builder.finish();
     try testing.expectEqualStrings("custom_pipeline", ast.getEntrypoint().?);
+}
+
+test "ast: RoutingMode defaults to directed and supports per-pipeline override" {
+    const testing = std.testing;
+    var builder = PipelineBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    try builder.addPipeline(.{ .name = "etl_pipe", .steps = &.{} });
+    try builder.addPipeline(.{ .name = "mesh_pipe", .routing = .type_driven, .steps = &.{} });
+
+    const ast = try builder.finish();
+    try testing.expectEqual(RoutingMode.directed, ast.runtime.routing);
+    try testing.expectEqual(RoutingMode.directed, ast.getPipeline("etl_pipe").?.effectiveRouting(ast.runtime.routing));
+    try testing.expectEqual(RoutingMode.type_driven, ast.getPipeline("mesh_pipe").?.effectiveRouting(ast.runtime.routing));
+
+    builder.setRouting(.hybrid);
+    try testing.expectEqual(RoutingMode.hybrid, builder.runtime.routing);
+    try testing.expectEqual(RoutingMode.hybrid, ast.getPipeline("etl_pipe").?.effectiveRouting(builder.runtime.routing));
+    try testing.expectEqual(RoutingMode.type_driven, ast.getPipeline("mesh_pipe").?.effectiveRouting(builder.runtime.routing));
 }

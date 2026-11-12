@@ -7,6 +7,7 @@ const network_loader = @import("loaders/network_loader.zig");
 
 pub const PipelineAST = ast.PipelineAST;
 pub const PipelineBuilder = ast.PipelineBuilder;
+pub const RoutingMode = ast.RoutingMode;
 pub const DatasourceSpec = ast.DatasourceSpec;
 pub const NetworkSpec = ast.NetworkSpec;
 pub const KeyValueParam = ast.KeyValueParam;
@@ -23,7 +24,15 @@ pub const YamlAstLoaderError = error{
     MissingPipelinesSection,
     MissingStepIdentifier,
     InvalidConcurrencyValue,
+    InvalidRoutingMode,
 } || ast.ValidationError || network_loader.NetworkLoaderError || yaml_lib.YamlAstError || Allocator.Error;
+
+fn parseRoutingMode(raw: []const u8) YamlAstLoaderError!RoutingMode {
+    if (std.mem.eql(u8, raw, "directed")) return .directed;
+    if (std.mem.eql(u8, raw, "type_driven")) return .type_driven;
+    if (std.mem.eql(u8, raw, "hybrid")) return .hybrid;
+    return error.InvalidRoutingMode;
+}
 
 pub const AstLoadOptions = struct {
     env_interpolator: ?*const env.EnvInterpolator = null,
@@ -478,6 +487,11 @@ pub fn loadPipelineAstFromYaml(
                 }
             }
         }
+        if (rt.get("routing")) |r_node| {
+            if (r_node.asScalar()) |r_str| {
+                builder.setRouting(try parseRoutingMode(r_str));
+            }
+        }
         if (rt.get("max_inflight_bytes")) |mib_node| {
             if (mib_node.asScalar()) |mib_str| {
                 if (parseByteSize(mib_str)) |mib_val| {
@@ -581,6 +595,13 @@ pub fn loadPipelineAstFromYaml(
             const pipe_name = pipe_entry.key;
             const pipe_val = pipe_entry.value;
 
+            var pipe_routing: ?RoutingMode = null;
+            if (pipe_val.get("routing")) |r_node| {
+                if (r_node.asScalar()) |r_str| {
+                    pipe_routing = try parseRoutingMode(r_str);
+                }
+            }
+
             const steps_seq = if (pipe_val.get("steps")) |s|
                 s.asSeq()
             else
@@ -606,6 +627,7 @@ pub fn loadPipelineAstFromYaml(
 
             try builder.addPipeline(.{
                 .name = pipe_name,
+                .routing = pipe_routing,
                 .steps = try steps_list.toOwnedSlice(allocator),
             });
         }

@@ -229,3 +229,71 @@ test "YAML to AST: Parse actual configs/pipeline.yaml" {
 test "Schema Loader: run all tests in schema_loader" {
     std.testing.refAllDecls(yaml_mod.schema_loader);
 }
+
+test "YAML to AST: Parse runtime.routing and per-pipeline routing overrides" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const yaml_text =
+        \\version: 2
+        \\runtime:
+        \\  workers: 2
+        \\  scheduler: dag
+        \\  routing: type_driven
+        \\pipelines:
+        \\  mesh_pipe:
+        \\    steps:
+        \\      - id: s1
+        \\        uses: mod/task_a
+        \\  etl_pipe:
+        \\    routing: directed
+        \\    steps:
+        \\      - id: s2
+        \\        uses: mod/task_b
+        \\  hybrid_pipe:
+        \\    routing: hybrid
+        \\    steps:
+        \\      - id: s3
+        \\        uses: mod/task_c
+    ;
+
+    const ast = try yaml_mod.loadPipelineAstFromYaml(alloc, yaml_text, .{});
+    try std.testing.expectEqual(yaml_mod.RoutingMode.type_driven, ast.runtime.routing);
+
+    const mesh = ast.getPipeline("mesh_pipe").?;
+    try std.testing.expectEqual(@as(?yaml_mod.RoutingMode, null), mesh.routing);
+    try std.testing.expectEqual(yaml_mod.RoutingMode.type_driven, mesh.effectiveRouting(ast.runtime.routing));
+
+    const etl = ast.getPipeline("etl_pipe").?;
+    try std.testing.expectEqual(@as(?yaml_mod.RoutingMode, .directed), etl.routing);
+    try std.testing.expectEqual(yaml_mod.RoutingMode.directed, etl.effectiveRouting(ast.runtime.routing));
+
+    const hybrid = ast.getPipeline("hybrid_pipe").?;
+    try std.testing.expectEqual(yaml_mod.RoutingMode.hybrid, hybrid.effectiveRouting(ast.runtime.routing));
+}
+
+test "YAML to AST: Rejects invalid routing mode in runtime or pipeline" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const bad_runtime_yaml =
+        \\version: 2
+        \\runtime:
+        \\  routing: magic_mode
+        \\pipelines:
+        \\  main:
+        \\    steps: []
+    ;
+    try std.testing.expectError(error.InvalidRoutingMode, yaml_mod.loadPipelineAstFromYaml(alloc, bad_runtime_yaml, .{}));
+
+    const bad_pipe_yaml =
+        \\version: 2
+        \\pipelines:
+        \\  main:
+        \\    routing: reactive
+        \\    steps: []
+    ;
+    try std.testing.expectError(error.InvalidRoutingMode, yaml_mod.loadPipelineAstFromYaml(alloc, bad_pipe_yaml, .{}));
+}

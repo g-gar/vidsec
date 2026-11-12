@@ -22,5 +22,6 @@ pub const SeedRow = schema_loader.SeedRow;
 pub const loadPipelineAstFromYaml = ast_loader.loadPipelineAstFromYaml;
 pub const AstLoadOptions = ast_loader.AstLoadOptions;
 pub const YamlAstLoaderError = ast_loader.YamlAstLoaderError;
+pub const RoutingMode = ast_loader.RoutingMode;
 pub const parseInboundStreamExpr = ast_loader.parseInboundStreamExpr;
 pub const parseJobEntry = ast_loader.parseJobEntry;
