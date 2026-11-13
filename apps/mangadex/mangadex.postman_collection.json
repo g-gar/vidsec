@@ -1,0 +1,118 @@
+{
+  "info": {
+    "name": "Flowdata MangaDex Jobs",
+    "description": "Colección sencilla para comprobar el servidor Flowdata (--serve) y enviar JobEnvelopes a /v1/jobs usando variables de colección.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "engine_url",
+      "value": "http://127.0.0.1:8080",
+      "type": "string"
+    },
+    {
+      "key": "series_id",
+      "value": "9d45ff11-2385-4179-8663-e0dbb0ebd792",
+      "type": "string"
+    },
+    {
+      "key": "title",
+      "value": "Low Orbit Human",
+      "type": "string"
+    },
+    {
+      "key": "chapters",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "language",
+      "value": "en",
+      "type": "string"
+    },
+    {
+      "key": "library",
+      "value": "manga",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Healthcheck",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{engine_url}}/health",
+          "host": [
+            "{{engine_url}}"
+          ],
+          "path": [
+            "health"
+          ]
+        },
+        "description": "Comprueba que el servidor Flowdata está escuchando en modo --serve."
+      },
+      "response": []
+    },
+    {
+      "name": "Dispatch Manga Job",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const tsNs = `${Date.now()}000000`;",
+              "const library = (pm.variables.get('library') || '').trim();",
+              "const inner = {",
+              "  series_id: pm.variables.get('series_id'),",
+              "  title: pm.variables.get('title'),",
+              "  chapters: pm.variables.get('chapters'),",
+              "  languages: [pm.variables.get('language') || 'en'],",
+              "  datasource: 'mangadex',",
+              "  enabled: true",
+              "};",
+              "if (library.length > 0) inner.library = library;",
+              "pm.variables.set('timestamp_ns', tsNs);",
+              "pm.variables.set('job_id', `job_${tsNs}`);",
+              "pm.variables.set('escaped_payload', JSON.stringify(JSON.stringify(inner)));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"id\": \"{{job_id}}\",\n  \"source\": \"postman\",\n  \"topic\": \"manga_subscription\",\n  \"payload\": {{escaped_payload}},\n  \"timestamp_ns\": {{timestamp_ns}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{engine_url}}/v1/jobs",
+          "host": [
+            "{{engine_url}}"
+          ],
+          "path": [
+            "v1",
+            "jobs"
+          ]
+        },
+        "description": "Envía un JobEnvelope al endpoint /v1/jobs usando las variables de la colección (series_id, title, chapters, language, library)."
+      },
+      "response": []
+    }
+  ]
+}
+
