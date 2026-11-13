@@ -246,6 +246,8 @@ pub const TypeDrivenRouter = struct {
                         .name = try arena_alloc.dupe(u8, req_name),
                         .payload = resolved_p,
                     });
+                } else if (hasStaticParam(task_spec.static_params, req_name)) {
+                    // Satisfied declaratively via step `params:` in pipeline YAML
                 } else {
                     all_satisfied = false;
                     break;
@@ -301,6 +303,14 @@ pub const TypeDrivenRouter = struct {
         try bound.append(arena_alloc, .{ .name = "stream", .payload = payload });
         try bound.append(arena_alloc, .{ .name = "input", .payload = payload });
 
+        var named_it = self.accumulated_named.iterator();
+        while (named_it.next()) |entry| {
+            const k = entry.key_ptr.*;
+            if (!std.mem.eql(u8, k, "stream") and !std.mem.eql(u8, k, "input")) {
+                try bound.append(arena_alloc, .{ .name = k, .payload = entry.value_ptr.* });
+            }
+        }
+
         if (try self.ambient.asPayload(arena_alloc, "system.timestamp")) |ts_p| {
             try bound.append(arena_alloc, .{ .name = "system.timestamp", .payload = ts_p });
             try bound.append(arena_alloc, .{ .name = "timestamp", .payload = ts_p });
@@ -316,6 +326,13 @@ pub const TypeDrivenRouter = struct {
         }
 
         return bound.toOwnedSlice(arena_alloc);
+    }
+
+    fn hasStaticParam(params: []const ast.KeyValueParam, key: []const u8) bool {
+        for (params) |p| {
+            if (std.mem.eql(u8, p.key, key)) return true;
+        }
+        return false;
     }
 
     fn passesUnaryFilters(self: *const TypeDrivenRouter, task_spec: ast.TaskStepSpec, payload: PayloadHandle) bool {

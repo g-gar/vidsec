@@ -149,7 +149,7 @@ pub fn reflectField(comptime T: type, item_ptr: *const T, field_name: []const u8
             }
             return null;
         },
-        else => return reflectAny(T, item_ptr.*),
+        else => return null,
     }
 }
 

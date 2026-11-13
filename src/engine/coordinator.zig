@@ -204,6 +204,9 @@ pub const Coordinator = struct {
         const nodes_count = plan.nodes.len;
         if (nodes_count == 0) return;
 
+        const pipe_decl = engine.ast.getPipeline(plan.pipeline_name);
+        const eff_routing = if (pipe_decl) |p| p.effectiveRouting(engine.ast.runtime.routing) else engine.ast.runtime.routing;
+
         var coord = Coordinator{
             .engine = engine,
             .plan = plan,
@@ -219,7 +222,7 @@ pub const Coordinator = struct {
             .pipeline_name = plan.pipeline_name,
             .current_input = active_input,
             .max_inflight_bytes = engine.ast.runtime.max_inflight_bytes,
-            .retain_all = engine.ast.runtime.retain_all,
+            .retain_all = engine.ast.runtime.retain_all or (eff_routing != .directed),
         };
         defer coord.deinit();
 
@@ -613,159 +616,159 @@ pub const Coordinator = struct {
         defer channel_outputs_list.deinit(self.engine.allocator);
 
         for (task_spec.outputs) |out_ch| {
-                var channel_payload = if (comp.channel_outputs.get(out_ch.name)) |ch_pl|
-                    ch_pl
-                else
-                    comp.output;
+            var channel_payload = if (comp.channel_outputs.get(out_ch.name)) |ch_pl|
+                ch_pl
+            else
+                comp.output;
 
-                if (out_ch.from_field) |src_field| {
-                    if (comp.channel_outputs.get(src_field)) |ch_pl| {
-                        channel_payload = ch_pl;
-                    } else if (std.mem.eql(u8, src_field, "network.captured_events")) {
-                        if (comp.step_adapter) |sa| {
-                            const new_events = try self.net_ctrl.collectStepEvents(task_spec.id, sa, comp.records_before);
-                            channel_payload = PayloadHandle.fromSlice(NetworkEvent, new_events);
-                        }
-                    } else if (comp.output.getReflected(src_field)) |rval| {
-                        const dyn_fields = try self.engine.allocator.alloc(dataflow.DynamicField, 1);
-                        dyn_fields[0] = .{
-                            .name = try self.engine.allocator.dupe(u8, src_field),
-                            .value = rval,
-                        };
-                        const dyn_record = try self.engine.allocator.alloc(dataflow.DynamicRecord, 1);
-                        dyn_record[0] = dataflow.DynamicRecord.init(dyn_fields);
-                        channel_payload = PayloadHandle.fromSlice(dataflow.DynamicRecord, dyn_record);
+            if (out_ch.from_field) |src_field| {
+                if (comp.channel_outputs.get(src_field)) |ch_pl| {
+                    channel_payload = ch_pl;
+                } else if (std.mem.eql(u8, src_field, "network.captured_events")) {
+                    if (comp.step_adapter) |sa| {
+                        const new_events = try self.net_ctrl.collectStepEvents(task_spec.id, sa, comp.records_before);
+                        channel_payload = PayloadHandle.fromSlice(NetworkEvent, new_events);
                     }
-                }
-
-                if (out_ch.filter) |flt| {
-                    channel_payload = try dataflow.predicate.filterPayload(self.engine.allocator, channel_payload, flt);
-                }
-
-                if (self.engine.repos.get(out_ch.datasource)) |repo| {
-                    writeChannelToRepo(
-                        self.engine.allocator,
-                        repo,
-                        out_ch.name,
-                        channel_payload,
-                        out_ch.params,
-                    ) catch |err| {
-                        std.log.err("[Coordinator Step '{s}'] Failed to write channel '{s}' to datasource '{s}': {s}", .{
-                            task_spec.id,
-                            out_ch.name,
-                            out_ch.datasource,
-                            @errorName(err),
-                        });
-                        return err;
+                } else if (comp.output.getReflected(src_field)) |rval| {
+                    const dyn_fields = try self.engine.allocator.alloc(dataflow.DynamicField, 1);
+                    dyn_fields[0] = .{
+                        .name = try self.engine.allocator.dupe(u8, src_field),
+                        .value = rval,
                     };
+                    const dyn_record = try self.engine.allocator.alloc(dataflow.DynamicRecord, 1);
+                    dyn_record[0] = dataflow.DynamicRecord.init(dyn_fields);
+                    channel_payload = PayloadHandle.fromSlice(dataflow.DynamicRecord, dyn_record);
                 }
+            }
 
-                try self.outputs.put(self.outputs_alloc, out_ch.name, channel_payload);
-                const scoped_name = try std.fmt.allocPrint(self.outputs_alloc, "{s}.{s}", .{ task_spec.id, out_ch.name });
-                try self.outputs.put(self.outputs_alloc, scoped_name, channel_payload);
-                try channel_outputs_list.append(self.engine.allocator, .{
+            if (out_ch.filter) |flt| {
+                channel_payload = try dataflow.predicate.filterPayload(self.engine.allocator, channel_payload, flt);
+            }
+
+            if (self.engine.repos.get(out_ch.datasource)) |repo| {
+                writeChannelToRepo(
+                    self.engine.allocator,
+                    repo,
+                    out_ch.name,
+                    channel_payload,
+                    out_ch.params,
+                ) catch |err| {
+                    std.log.err("[Coordinator Step '{s}'] Failed to write channel '{s}' to datasource '{s}': {s}", .{
+                        task_spec.id,
+                        out_ch.name,
+                        out_ch.datasource,
+                        @errorName(err),
+                    });
+                    return err;
+                };
+            }
+
+            try self.outputs.put(self.outputs_alloc, out_ch.name, channel_payload);
+            const scoped_name = try std.fmt.allocPrint(self.outputs_alloc, "{s}.{s}", .{ task_spec.id, out_ch.name });
+            try self.outputs.put(self.outputs_alloc, scoped_name, channel_payload);
+            try channel_outputs_list.append(self.engine.allocator, .{
+                .name = out_ch.name,
+                .payload = channel_payload,
+            });
+            last_processed_output = channel_payload;
+
+            // ARCH-017 §3.5: Channel Refcounting & Lifetime Tracking
+            const ch_byte_size = channel_payload.len * channel_payload.element_size;
+            self.live_inflight_bytes += ch_byte_size;
+            if (self.live_inflight_bytes > self.summary.peak_inflight_bytes) {
+                self.summary.peak_inflight_bytes = self.live_inflight_bytes;
+            }
+
+            var consumers_count: usize = 0;
+            var ch_id_opt: ?ChannelId = null;
+
+            if (self.channel_name_to_id.get(out_ch.name)) |cid| {
+                ch_id_opt = cid;
+                consumers_count = self.plan.channels[cid].consumers_count;
+            } else if (self.channel_name_to_id.get(scoped_name)) |cid| {
+                ch_id_opt = cid;
+                consumers_count = self.plan.channels[cid].consumers_count;
+            }
+
+            const is_retained = out_ch.retain or self.retain_all or std.mem.eql(u8, out_ch.datasource, "pipeline_memory") or (node.successors.len == 0);
+            if (is_retained and maybe_arena_rec != null) {
+                maybe_arena_rec.?.retained = true;
+            }
+
+            if (maybe_arena_rec) |ar| {
+                ar.live_channels_count += 1;
+            }
+
+            if (ch_id_opt) |cid| {
+                try self.channel_states.put(self.engine.allocator, cid, .{
+                    .id = cid,
                     .name = out_ch.name,
                     .payload = channel_payload,
+                    .ref_count = consumers_count,
+                    .retained = is_retained,
+                    .byte_size = ch_byte_size,
+                    .arena_rec = maybe_arena_rec,
                 });
-                last_processed_output = channel_payload;
 
-                // ARCH-017 §3.5: Channel Refcounting & Lifetime Tracking
-                const ch_byte_size = channel_payload.len * channel_payload.element_size;
-                self.live_inflight_bytes += ch_byte_size;
-                if (self.live_inflight_bytes > self.summary.peak_inflight_bytes) {
-                    self.summary.peak_inflight_bytes = self.live_inflight_bytes;
+                if (consumers_count == 0 and !is_retained) {
+                    if (self.live_inflight_bytes >= ch_byte_size) {
+                        self.live_inflight_bytes -= ch_byte_size;
+                    } else {
+                        self.live_inflight_bytes = 0;
+                    }
+                    if (maybe_arena_rec) |ar| {
+                        ar.live_channels_count -= 1;
+                        if (ar.live_channels_count == 0 and !ar.retained) {
+                            self.freeArena(ar);
+                        }
+                    }
                 }
+            }
+        }
 
-                var consumers_count: usize = 0;
-                var ch_id_opt: ?ChannelId = null;
+        if (task_spec.outputs.len == 0) {
+            const ch_name = task_spec.id;
+            const ch_byte_size = last_processed_output.len * last_processed_output.element_size;
+            self.live_inflight_bytes += ch_byte_size;
+            if (self.live_inflight_bytes > self.summary.peak_inflight_bytes) {
+                self.summary.peak_inflight_bytes = self.live_inflight_bytes;
+            }
 
-                if (self.channel_name_to_id.get(out_ch.name)) |cid| {
-                    ch_id_opt = cid;
-                    consumers_count = self.plan.channels[cid].consumers_count;
-                } else if (self.channel_name_to_id.get(scoped_name)) |cid| {
-                    ch_id_opt = cid;
-                    consumers_count = self.plan.channels[cid].consumers_count;
-                }
+            var consumers_count: usize = 0;
+            const is_retained = self.retain_all or (node.successors.len == 0);
+            if (is_retained and maybe_arena_rec != null) {
+                maybe_arena_rec.?.retained = true;
+            }
 
-                const is_retained = out_ch.retain or self.retain_all or std.mem.eql(u8, out_ch.datasource, "pipeline_memory") or (node.successors.len == 0);
-                if (is_retained and maybe_arena_rec != null) {
-                    maybe_arena_rec.?.retained = true;
-                }
-
+            if (self.channel_name_to_id.get(ch_name)) |cid| {
+                consumers_count = self.plan.channels[cid].consumers_count;
                 if (maybe_arena_rec) |ar| {
                     ar.live_channels_count += 1;
                 }
-
-                if (ch_id_opt) |cid| {
-                    try self.channel_states.put(self.engine.allocator, cid, .{
-                        .id = cid,
-                        .name = out_ch.name,
-                        .payload = channel_payload,
-                        .ref_count = consumers_count,
-                        .retained = is_retained,
-                        .byte_size = ch_byte_size,
-                        .arena_rec = maybe_arena_rec,
-                    });
-
-                    if (consumers_count == 0 and !is_retained) {
-                        if (self.live_inflight_bytes >= ch_byte_size) {
-                            self.live_inflight_bytes -= ch_byte_size;
-                        } else {
-                            self.live_inflight_bytes = 0;
-                        }
-                        if (maybe_arena_rec) |ar| {
-                            ar.live_channels_count -= 1;
-                            if (ar.live_channels_count == 0 and !ar.retained) {
-                                self.freeArena(ar);
-                            }
-                        }
+                try self.channel_states.put(self.engine.allocator, cid, .{
+                    .id = cid,
+                    .name = ch_name,
+                    .payload = last_processed_output,
+                    .ref_count = consumers_count,
+                    .retained = is_retained,
+                    .byte_size = ch_byte_size,
+                    .arena_rec = maybe_arena_rec,
+                });
+                if (consumers_count == 0 and !is_retained) {
+                    if (self.live_inflight_bytes >= ch_byte_size) {
+                        self.live_inflight_bytes -= ch_byte_size;
+                    } else {
+                        self.live_inflight_bytes = 0;
                     }
-                }
-            }
-
-            if (task_spec.outputs.len == 0) {
-                const ch_name = task_spec.id;
-                const ch_byte_size = last_processed_output.len * last_processed_output.element_size;
-                self.live_inflight_bytes += ch_byte_size;
-                if (self.live_inflight_bytes > self.summary.peak_inflight_bytes) {
-                    self.summary.peak_inflight_bytes = self.live_inflight_bytes;
-                }
-
-                var consumers_count: usize = 0;
-                const is_retained = self.retain_all or (node.successors.len == 0);
-                if (is_retained and maybe_arena_rec != null) {
-                    maybe_arena_rec.?.retained = true;
-                }
-
-                if (self.channel_name_to_id.get(ch_name)) |cid| {
-                    consumers_count = self.plan.channels[cid].consumers_count;
                     if (maybe_arena_rec) |ar| {
-                        ar.live_channels_count += 1;
-                    }
-                    try self.channel_states.put(self.engine.allocator, cid, .{
-                        .id = cid,
-                        .name = ch_name,
-                        .payload = last_processed_output,
-                        .ref_count = consumers_count,
-                        .retained = is_retained,
-                        .byte_size = ch_byte_size,
-                        .arena_rec = maybe_arena_rec,
-                    });
-                    if (consumers_count == 0 and !is_retained) {
-                        if (self.live_inflight_bytes >= ch_byte_size) {
-                            self.live_inflight_bytes -= ch_byte_size;
-                        } else {
-                            self.live_inflight_bytes = 0;
-                        }
-                        if (maybe_arena_rec) |ar| {
-                            ar.live_channels_count -= 1;
-                            if (ar.live_channels_count == 0 and !ar.retained) {
-                                self.freeArena(ar);
-                            }
+                        ar.live_channels_count -= 1;
+                        if (ar.live_channels_count == 0 and !ar.retained) {
+                            self.freeArena(ar);
                         }
                     }
                 }
             }
+        }
 
         try self.outputs.put(self.outputs_alloc, task_spec.id, last_processed_output);
         self.current_input = last_processed_output;
