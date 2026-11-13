@@ -1,5 +1,10 @@
 pub const storage_repository = @import("storage_repository.zig");
 pub const repository_registry = @import("repository_registry.zig");
+pub const capabilities_mod = @import("capabilities.zig");
+pub const specs_mod = @import("specs.zig");
+pub const row_iterator_mod = @import("row_iterator.zig");
+pub const synchronized_repository = @import("synchronized_repository.zig");
+pub const async_batch_repository = @import("async_batch_repository.zig");
 
 pub const Repository = storage_repository.Repository;
 pub const RepositoryVTable = storage_repository.RepositoryVTable;
@@ -10,3 +15,16 @@ pub const DatasourceFactoryFn = repository_registry.DatasourceFactoryFn;
 pub const ConfigParam = repository_registry.ConfigParam;
 pub const KeyValueParam = ConfigParam;
 pub const DatasourceConfig = repository_registry.DatasourceConfig;
+
+// 009A universal contract types
+pub const Capabilities = capabilities_mod.Capabilities;
+pub const WriteMode = specs_mod.WriteMode;
+pub const WriteSpec = specs_mod.WriteSpec;
+pub const ReadSpec = specs_mod.ReadSpec;
+pub const RecordMap = specs_mod.RecordMap;
+pub const OrderByColumn = specs_mod.OrderByColumn;
+pub const SortOrder = specs_mod.SortOrder;
+pub const ProjectionMode = specs_mod.ProjectionMode;
+pub const RowIterator = row_iterator_mod.RowIterator;
+pub const SynchronizedRepository = synchronized_repository.SynchronizedRepository;
+pub const AsyncBatchRepository = async_batch_repository.AsyncBatchRepository;

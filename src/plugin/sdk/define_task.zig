@@ -8,6 +8,7 @@ const computeOutputFields = define_pure_task.computeOutputFields;
 const logger_mod = @import("logger.zig");
 
 const TaskDescriptor_ABI = types.TaskDescriptor_ABI;
+const FieldMeta_ABI = types.FieldMeta_ABI;
 const TaskContext_ABI = types.TaskContext_ABI;
 const TaskStatus_ABI = types.TaskStatus_ABI;
 const FLOWDATA_ABI_VERSION = types.FLOWDATA_ABI_VERSION;
@@ -23,6 +24,43 @@ fn deduceInputsType(comptime RunFnType: type) type {
         }
     }
     return void;
+}
+
+/// Maps a Zig field type to its Flowdata logical column type name (ARCH-009A §2.2).
+pub fn zigTypeToLogical(comptime T: type) [*:0]const u8 {
+    return switch (@typeInfo(T)) {
+        .optional => |opt| zigTypeToLogical(opt.child),
+        .int => |i| if (i.signedness == .signed) "int64" else "uint64",
+        .comptime_int => "int64",
+        .float, .comptime_float => "float64",
+        .bool => "bool",
+        .@"enum" => "enum_type",
+        .pointer => |p| blk: {
+            if (p.size == .slice and p.child == u8) break :blk "text";
+            break :blk "json";
+        },
+        .@"struct" => "json",
+        else => "text",
+    };
+}
+
+/// Generates compile-time `FieldMeta_ABI` slice for any struct type `T`.
+pub fn computeFieldMeta(comptime T: type) []const FieldMeta_ABI {
+    const info = @typeInfo(T);
+    if (info != .@"struct") return &.{};
+    const fields = info.@"struct".fields;
+    if (fields.len == 0) return &.{};
+    comptime var arr: [fields.len]FieldMeta_ABI = undefined;
+    inline for (fields, 0..) |f, i| {
+        const is_opt = @typeInfo(f.type) == .optional;
+        arr[i] = .{
+            .name = (f.name ++ "\x00")[0..f.name.len :0].ptr,
+            .logical_type = comptime zigTypeToLogical(f.type),
+            .nullable = is_opt,
+        };
+    }
+    const final_arr = arr;
+    return &final_arr;
 }
 
 /// Coerces a tuple or slice of string literals into `[]const [*:0]const u8`.
@@ -95,6 +133,9 @@ pub fn defineTask(comptime spec: anytype) TaskDescriptor_ABI {
         computeOutputFields(ElemType)
     else
         &.{};
+
+    const computed_input_meta: []const FieldMeta_ABI = if (has_inputs) computeFieldMeta(Inputs) else &.{};
+    const computed_output_meta: []const FieldMeta_ABI = if (ElemType != TaskStatus_ABI and ElemType != void) computeFieldMeta(ElemType) else &.{};
 
     // Parameter layout detection
     const takes_allocator = fn_info.params.len >= 1 and fn_info.params[0].type.? == Allocator;
@@ -192,5 +233,9 @@ pub fn defineTask(comptime spec: anytype) TaskDescriptor_ABI {
         .required_params_ptr = if (required_params.len > 0) required_params.ptr else null,
         .required_params_len = required_params.len,
         .execute = &Trampoline.execute,
+        .input_meta_ptr = if (computed_input_meta.len > 0) computed_input_meta.ptr else null,
+        .input_meta_len = computed_input_meta.len,
+        .output_meta_ptr = if (computed_output_meta.len > 0) computed_output_meta.ptr else null,
+        .output_meta_len = computed_output_meta.len,
     };
 }

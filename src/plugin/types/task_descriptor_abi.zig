@@ -13,6 +13,21 @@ fn defaultExecuteStub(ctx: *TaskContext_ABI) callconv(.c) TaskStatus_ABI {
     return .fatal_error;
 }
 
+/// ARCH-009A §2.2: Compile-time field metadata for preflight schema validation.
+pub const FieldMeta_ABI = extern struct {
+    name: [*:0]const u8,
+    logical_type: [*:0]const u8,
+    nullable: bool,
+
+    pub fn nameSlice(self: FieldMeta_ABI) []const u8 {
+        return std.mem.span(self.name);
+    }
+
+    pub fn logicalTypeSlice(self: FieldMeta_ABI) []const u8 {
+        return std.mem.span(self.logical_type);
+    }
+};
+
 /// Metadata and entrypoint for a single task exposed by a plugin module.
 pub const TaskDescriptor_ABI = extern struct {
     task_name: [*:0]const u8,
@@ -34,6 +49,11 @@ pub const TaskDescriptor_ABI = extern struct {
     /// ARCH-024: Catalog of all required input field names (including slice inputs) for multi-input Join routing.
     input_fields_ptr: ?[*]const [*:0]const u8 = null,
     input_fields_len: usize = 0,
+    /// ARCH-009A §2.2: Typed field metadata (name, logical_type, nullable) for preflight schema validation.
+    input_meta_ptr: ?[*]const FieldMeta_ABI = null,
+    input_meta_len: usize = 0,
+    output_meta_ptr: ?[*]const FieldMeta_ABI = null,
+    output_meta_len: usize = 0,
 
     pub const FLAG_LIFT_ELEMENTAL: u32 = 1 << 0;
     pub const FLAG_CONCURRENCY_SAFE: u32 = 1 << 1;
@@ -82,6 +102,18 @@ pub const TaskDescriptor_ABI = extern struct {
         const ptr = self.input_fields_ptr orelse return &.{};
         if (self.input_fields_len == 0) return &.{};
         return ptr[0..self.input_fields_len];
+    }
+
+    pub fn inputMeta(self: TaskDescriptor_ABI) []const FieldMeta_ABI {
+        const ptr = self.input_meta_ptr orelse return &.{};
+        if (self.input_meta_len == 0) return &.{};
+        return ptr[0..self.input_meta_len];
+    }
+
+    pub fn outputMeta(self: TaskDescriptor_ABI) []const FieldMeta_ABI {
+        const ptr = self.output_meta_ptr orelse return &.{};
+        if (self.output_meta_len == 0) return &.{};
+        return ptr[0..self.output_meta_len];
     }
 
     /// Returns `true` if `field_name` is in `output_fields`, or if the task does not constrain `output_fields`.

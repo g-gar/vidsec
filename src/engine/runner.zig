@@ -229,11 +229,13 @@ pub const PipelineRunner = struct {
             }
         };
 
+        var loaded_catalog: ?yaml_core.SchemaCatalog = null;
         if (schemas_path) |s_path| {
             const arena = self.config_arena.allocator();
             const schema_yaml_bytes = try readFileBytes(arena, s_path);
             const catalog = try yaml_core.SchemaCatalog.parseYaml(arena, schema_yaml_bytes, &self.env_interp);
             try catalog.yamlValidate(arena);
+            loaded_catalog = catalog;
         }
 
         // 3. Validate modules and step task bindings
@@ -241,20 +243,34 @@ pub const PipelineRunner = struct {
             for (pipe.steps) |step| {
                 switch (step) {
                     .task => |t| {
-                        if (load_shared and self.options.load_shared_modules) {
-                            _ = try self.registry.resolveTask(t.module, t.task);
-                        }
+                        const resolved_desc = if (load_shared and self.options.load_shared_modules)
+                            try self.registry.resolveTask(t.module, t.task)
+                        else
+                            null;
+
                         for (t.inputs) |in_b| {
                             if (in_b.expr.stream_ref) |sref| {
                                 const ds_id = if (std.mem.indexOfScalar(u8, sref, '.')) |dot| sref[0..dot] else sref;
                                 if (self.ast.getDatasource(ds_id)) |ds| {
                                     if (ds.role == .sink) return error.CannotReadFromSinkDatasource;
                                 }
+                                if (loaded_catalog) |*cat| {
+                                    if (resolved_desc) |desc| {
+                                        const tbl_name = if (std.mem.indexOfScalar(u8, sref, '.')) |dot| sref[dot + 1 ..] else sref;
+                                        try engine_mod.preflight.validateTaskAgainstCatalog(desc, tbl_name, cat, false);
+                                    }
+                                }
                             }
                         }
                         for (t.outputs) |out_ch| {
                             if (self.ast.getDatasource(out_ch.datasource)) |ds| {
                                 if (ds.role == .source) return error.CannotWriteToSourceDatasource;
+                            }
+                            if (loaded_catalog) |*cat| {
+                                if (resolved_desc) |desc| {
+                                    const tbl_name = out_ch.schema_ref orelse out_ch.name;
+                                    try engine_mod.preflight.validateTaskAgainstCatalog(desc, tbl_name, cat, true);
+                                }
                             }
                         }
                     },
