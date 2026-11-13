@@ -1,274 +1,141 @@
-# 009 — Unified SQLite Storage & Declarative Schema Architecture
+# 009 — Portable Repository Contract, Core Schema & SQLite Refactor
 
 | Metadata | Value |
 | :--- | :--- |
 | **ID** | `ARCH-009` |
-| **Depends On** | [`ARCH-005`](./005-mangadex-client-library.md), [`ARCH-007`](./007-zip-archive-and-cbz-engine.md), [`ARCH-008`](./008-comicinfo-metadata-library.md) |
-| **Area** | `apps/mangadex/configs/schemas.yaml`, `extensions/datasource/sqlite/` |
-| **Status** | `PHASE 1 COMPLETED / PHASE 2 SPECIFIED (Advanced Storage Engine)` |
+| **Depends On** | [`ARCH-002`](./002-open-kernel-extension-system.md), [`ARCH-025`](./025-datasource-roles-and-batch-emission-decoupling.md) |
+| **Area** | `src/schema/`, `src/repository/`, `src/dataflow/`, `src/plugin/`, `src/engine/`, `libs/sqlite/`, `extensions/datasource/` |
+| **Status** | `SPECIFICATION (REFACTOR)` |
 
 ---
 
-## 1. Architectural Evolution: Native Datasource vs. Monolithic Storage Library
+## 1. Purpose & Design Principles
 
-During early design, two paradigms for SQLite persistence were evaluated:
+Flowdata separates **what** data looks like and **how** pipeline steps wire inputs/outputs from **where** it is stored. Binding a step output or input to a datasource in `pipeline.yaml` must transparently drive inserts, partial updates, deletes, and reads without task code embedding SQL or engine-specific logic.
 
-1. **Ad-hoc Custom Library (`manga_storage/`)**:
-   * Writing handwritten SQL query strings and transaction helpers in a dedicated Zig struct wrapping SQLite C pointers (`*anyopaque`).
-   * *Critical Shortcomings*: Tightly couples business plugins to a specific database engine; bypasses Flowdata's zero-copy stream router; introduces redundant boilerplate and schema drift between YAML specifications and Zig code.
-
-2. **Declarative Flowdata Schema & Native SQLite Datasource (`driver: sqlite`) — (SELECTED & IMPLEMENTED)**:
-   * **Single Source of Truth (SSOT)**: Relational tables, columns, constraints, foreign keys (`ON DELETE CASCADE`), and indexes are defined declaratively in [`configs/schemas.yaml`](../../apps/mangadex/configs/schemas.yaml).
-   * **Automatic DDL Provisioning**: The SQLite extension engine (`extensions/datasource/sqlite/src/schema_provisioner.zig`) automatically translates the `SchemaCatalog` AST into strict SQLite DDL upon initialization.
-   * **Declarative Pipeline Routing**: Output channels from analytics tasks (e.g. `catalog_series`, `discovered_chapters`, `discovered_pages` in `manga_catalog.so`) are bound directly to `catalog_db` in [`configs/pipeline.yaml`](../../apps/mangadex/configs/pipeline.yaml). The engine executes type reflection and batched `INSERT OR REPLACE` operations without handwritten SQL.
-
-> [!TIP]
-> **Decision**: We adopt the **Unified SQLite Datasource** architecture (`mangadex.db`). Metadata, series tracking, and chapter statuses remain permanent, while image blobs are ephemeral buffers purged after `.cbz` archive creation.
+Non-negotiable rules:
+1. **Engine-agnostic core:** `src/schema/`, `src/repository/`, and `schemas.yaml` contain zero SQL and zero project-specific concepts.
+2. **Schema is authoritative:** Tables are never inferred from runtime payloads unless `schemaless: true` is explicitly configured. Initialization and schema errors fail loudly.
+3. **Struct shape = projection:** On write, every field declared in the emitted struct (including `null`) is written; fields absent from the struct are untouched. On read, the target input struct defines the projected fields.
+4. **Core-first execution order:** Core contracts → `memory` reference driver → `libs/sqlite` → `extensions/datasource/sqlite` (and subsequently other drivers like `blob_store` / `json`).
 
 ---
 
-## 2. SQLite Engine Configuration & Production Pragmas
+## 2. Layer 1 — Core Contracts (`src/`)
 
-The database connection in `extensions/datasource/sqlite/src/sqlite_repository.zig` is configured with high-performance concurrency pragmas:
+### 2.1. Portable Schema (`src/schema/`)
+Extract `SchemaCatalog`, `TableSchema`, `ColumnSpec`, `IndexSpec`, and `SeedRow` out of `src/yaml/loaders/schema_loader.zig` into `src/schema/`. Remove `renderSeedInsertSql` and `renderAllSeedsSql` from the YAML layer (YAML loader only decodes into `SchemaCatalog`).
 
-```sql
-PRAGMA journal_mode = WAL;            -- Concurrent reader threads while active pipeline tasks write
-PRAGMA synchronous = NORMAL;          -- Optimal throughput without risking database corruption
-PRAGMA foreign_keys = ON;             -- Enforces referential integrity (e.g. cascade series deletion)
-PRAGMA auto_vacuum = INCREMENTAL;     -- Reclaims unallocated disk pages without full DB write-locks
-PRAGMA busy_timeout = 5000;           -- 5000ms busy queueing timeout to prevent SQLITE_BUSY under load
+* **Logical types:** `int64`, `uint64`, `float64`, `bool`, `text`, `bytes`, `timestamp`, `json`, `enum`. Remove `any`.
+* **Defaults:** Typed literals matching the column type, plus portable generators (`now`, `uuid`) evaluated by Flowdata.
+* **Schema layering:**
+  * *Mandatory semantics* (types, `nullable`, `pk` / `primary_key`): enforced by all drivers (or by Flowdata before write).
+  * *Constraints* (`ref` foreign keys, `unique`, `check`): enforced natively or flagged in preflight via driver `Capabilities`.
+  * *Hints* (`indexes`): used by drivers that support them; safely ignored otherwise.
+  * *Engine extensions*: optional driver-namespaced block (e.g. `sqlite: { strict: true, without_rowid: false }`), ignored by other drivers.
+
+### 2.2. Preflight Type Validation (`src/plugin/` & `src/engine/`)
+* Extend `TaskDescriptor_ABI` with typed field metadata `(name, logical_type, nullable)` for both inputs and outputs, generated at `comptime` by the Zig plugin SDK.
+* `validatePreFlight()` cross-checks:
+  1. Task input/output struct fields vs. target table columns in `SchemaCatalog` (type compatibility, nullability, PK presence).
+  2. Pipeline directives (`mode`, `where`, `order_by`) vs. driver `Capabilities`.
+
+### 2.3. Predicate AST (`src/dataflow/predicate.zig`)
+Replace runtime string-splitting evaluation with a parsed **Predicate AST** (`eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `and`, `or`, `is_null`, `in`, literals). Drivers with pushdown support compile the AST to native queries; others let Flowdata evaluate the AST in memory.
+
+### 2.4. Universal `Repository` Contract (`src/repository/`)
+Designed as **collection + key + typed record** so it applies uniformly to relational DBs, KV/document stores, `memory`, and object storage (`file_store`/S3, where collection = bucket/prefix, PK = object key, `bytes` = object body, and scalar fields = metadata/sidecar):
+
+```zig
+pub const Capabilities = struct {
+    transactions: bool = false,
+    partial_update: bool = false,
+    filter_pushdown: bool = false,
+    order_pushdown: bool = false,
+    relational_constraints: bool = false,
+    schema_ddl: bool = false,
+};
 ```
 
-* When running under `:memory:` (unit tests), `journal_mode` and file sync pragmas are skipped to optimize RAM execution.
-* On file-backed instances, `PRAGMA auto_vacuum = INCREMENTAL` ensures page deletion frees space incrementally via periodic `PRAGMA incremental_vacuum(N);` calls.
+Core vtable operations:
+* `capabilities() Capabilities`
+* `ensureSchema(catalog: *const SchemaCatalog) !void`
+* `write(spec: WriteSpec) !void` — `WriteSpec` carries `{ table, mode, payload, record_map }`.
+  * `mode`: `upsert` (default when table has PK), `append` (default when table has no PK), `update`, `replace_all`, `delete`.
+  * `RecordMap`: compiled once per `(type_name, table)` to avoid per-row string reflection lookups.
+* `read(spec: ReadSpec) !PayloadHandle` — `ReadSpec` carries `{ table, projection, where_ast, order_by, limit, offset }`.
+* `count(table: []const u8) !usize`
+* Optional transaction hooks (`beginTx`, `commit`, `rollback`, null when `capabilities().transactions == false`).
+
+### 2.5. Engine Integration (`src/engine/`)
+* Inputs bound to a datasource read via `Repository.read(ReadSpec)` (pushdown if `filter_pushdown`/`order_pushdown` is true; in-memory AST evaluation fallback otherwise).
+* Each pipeline step executes its writes to a transactional datasource within a single transaction.
 
 ---
 
-## 3. Canonical Declarative Relational Schema (`configs/schemas.yaml`)
+## 3. Layer 2 — Reference Driver (`extensions/datasource/memory/`)
 
-The canonical schema is declared in `apps/mangadex/configs/schemas.yaml`:
-
-```yaml
-version: 2
-
-schemas:
-  catalog:
-    # 1. Tracked Manga Series Metadata
-    catalog_series:
-      columns:
-        series_id:           { type: text, pk: true }
-        source_id:           { type: text, default: "'mangadex'" }
-        title:               { type: text }
-        author:              { type: text, nullable: true }
-        artist:              { type: text, nullable: true }
-        status:              { type: text, default: "'ongoing'" }
-        year:                { type: int64, nullable: true }
-        cover_url:           { type: text, nullable: true }
-        available_languages: { type: text, default: "''" }
-        summary:             { type: text, nullable: true }
-        alt_titles_json:     { type: text, nullable: true }
-        genres_json:         { type: text, nullable: true }
-        last_synced_at:      { type: int64, nullable: true }
-
-    # 2. Manga Chapters with Foreign Key referencing Series
-    discovered_chapters:
-      columns:
-        source_chapter_id:   { type: text, pk: true }
-        series_id:           { type: text, ref: catalog_series.series_id, on_delete: cascade }
-        chapter_number:      { type: text }
-        volume_number:       { type: text, nullable: true }
-        title:               { type: text, nullable: true }
-        language:            { type: text }
-        scanlation_group:    { type: text, nullable: true }
-        page_count:          { type: int64, default: 0 }
-        status:              { type: text, default: "'discovered'" }
-        cbz_output_path:     { type: text, nullable: true }
-        retry_count:         { type: int64, default: 0 }
-        error_message:       { type: text, nullable: true }
-        updated_at:          { type: int64, nullable: true }
-      indexes:
-        - series_id
-        - status
-
-    # 3. Ephemeral Chapter Pages with Foreign Key referencing Chapters
-    discovered_pages:
-      columns:
-        source_chapter_id:   { type: text, ref: discovered_chapters.source_chapter_id, on_delete: cascade }
-        page_number:         { type: int64 }
-        url:                 { type: text }
-        image_blob:          { type: blob, nullable: true }
-        byte_size:           { type: int64, default: 0 }
-        status:              { type: text, default: "'pending'" }
-        downloaded_at:       { type: int64, nullable: true }
-      primary_key:
-        - source_chapter_id
-        - page_number
-      indexes:
-        - source_chapter_id
-
-    # 4. Egress / Destination Delivery History (e.g. Komga, Kavita)
-    egress_history:
-      columns:
-        id:                  { type: text, pk: true }
-        source_chapter_id:   { type: text, ref: discovered_chapters.source_chapter_id, on_delete: cascade }
-        target:              { type: text }
-        external_book_id:    { type: text, nullable: true }
-        delivered_at:        { type: int64 }
-        status:              { type: text, default: "'success'" }
-        details:             { type: text, nullable: true }
-      indexes:
-        - source_chapter_id
-        - target
-```
-
-### 3.1. Generated DDL Mapping Reference
-
-The Flowdata provisioner parses the YAML types and executes equivalent SQLite DDL:
-
-| YAML Schema Column Type | SQLite Storage Class | Constraint Mapping |
-| :--- | :--- | :--- |
-| `type: text` | `TEXT` | `NOT NULL` by default unless `nullable: true` |
-| `type: int64` | `INTEGER` | Stored as 64-bit integer |
-| `type: blob` | `BLOB` | Dynamic binary data |
-| `pk: true` | `PRIMARY KEY` | Single-column primary key |
-| `primary_key: [col1, col2]` | `PRIMARY KEY (col1, col2)` | Composite primary key |
-| `ref: table.col, on_delete: cascade` | `REFERENCES table(col) ON DELETE CASCADE` | Enforced foreign key constraint |
-| `indexes: [col]` | `CREATE INDEX idx_... ON table(col)` | Automatic secondary index creation |
+`MemoryRepository` serves as the **behavioral oracle** for all drivers:
+* **Ephemeral channels** (undeclared in `schemas.yaml`): retain zero-copy `PayloadHandle` snapshot semantics.
+* **Schema-backed tables** (declared in `schemas.yaml`): enforce types, nullability, PK uniqueness, `WriteSpec` modes (`upsert`, `append`, `update`, `replace_all`, `delete`), and `ReadSpec` via the Predicate AST.
 
 ---
 
-## 4. Chapter Lifecycle & Ephemeral Blob Eviction Workflow
+## 4. Layer 3 — Pure SQLite Library (`libs/sqlite/`)
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Pipeline as Flowdata Engine
-    participant DB as SQLite (catalog_db)
-    participant FS as Host Filesystem (.cbz)
-    participant Komga as Komga Ingest API
+Extract and harden `db.zig` and `ddl.zig` from `extensions/datasource/sqlite/src/sqlite_lib/` into `libs/sqlite/` (zero `flowdata` dependency; compatible with system `sqlite3` and static `sqlite3.c` for `ARCH-031`). Delete `query.zig`.
 
-    Note over Pipeline,DB: 1. Ingestion & Discovery
-    Pipeline->>DB: INSERT INTO catalog_series, discovered_chapters, discovered_pages
-    Note over DB: Chapter status = 'discovered'
-
-    Note over Pipeline,DB: 2. Image Download Stage
-    loop For each page in chapter
-        Pipeline->>DB: UPDATE discovered_pages SET image_blob = <bytes>, status = 'downloaded'
-    end
-    Pipeline->>DB: UPDATE discovered_chapters SET status = 'downloaded'
-
-    Note over Pipeline,FS: 3. CBZ Archive Creation (miniz + comicinfo)
-    Pipeline->>DB: SELECT page_number, image_blob FROM discovered_pages WHERE source_chapter_id = ?
-    Pipeline->>FS: Pack ComicInfo.xml + image pages (.store mode) -> 'One Piece - c1100.cbz'
-
-    Note over Pipeline,DB: 4. Atomic Blob Eviction
-    Pipeline->>DB: BEGIN TRANSACTION;
-    Pipeline->>DB: UPDATE discovered_pages SET image_blob = NULL, status = 'packed' WHERE source_chapter_id = ?;
-    Pipeline->>DB: UPDATE discovered_chapters SET status = 'packed', cbz_output_path = ? WHERE source_chapter_id = ?;
-    Pipeline->>DB: COMMIT;
-
-    Note over Pipeline,DB: 5. Reclaim Disk Space
-    Pipeline->>DB: PRAGMA incremental_vacuum(50);
-
-    Note over Pipeline,Komga: 6. Destination Egress
-    Pipeline->>Komga: POST /api/v1/books (upload .cbz)
-    Pipeline->>DB: INSERT INTO egress_history (source_chapter_id, target, status, delivered_at)
-    Pipeline->>DB: UPDATE discovered_chapters SET status = 'egressed' WHERE source_chapter_id = ?
-```
+Required improvements:
+* **Rich error reporting:** Surface `sqlite3_errmsg`, `sqlite3_extended_errcode`, and the failing SQL statement. No silent `catch {}`.
+* **Full engine configuration:** `OpenOptions` + `PragmaConfig` exposing `read_only`, `create`, `full_mutex`, `busy_timeout_ms`, `foreign_keys`, `journal_mode`, `synchronous`, `auto_vacuum`, `cache_size`, `mmap_size`, `temp_store`, `journal_size_limit`, `wal_autocheckpoint`.
+* **Execution primitives:** `StmtCache` (keyed by SQL), explicit transactions (`BEGIN IMMEDIATE` / `DEFERRED`), `incrementalVacuum(pages)`, `optimize()`.
+* **Null-safe `Row`:** `text()` and `blob()` return `?[]const u8` (`null` on `SQLITE_NULL`).
 
 ---
 
-## 5. Pipeline Declarative Configuration (`configs/pipeline.yaml`)
+## 5. Layer 4 — SQLite Datasource Adapter (`extensions/datasource/sqlite/`)
 
-The database sink is bound declaratively as a first-class repository in the application pipeline:
+Thin adapter connecting `Repository` + `SchemaCatalog` + Predicate AST to `libs/sqlite/`:
 
-```yaml
-datasources:
-  # Fast RAM repository for transient step chaining
-  pipeline_memory:
-    driver: memory
+### 5.1. Declarative Configuration (Zero Hardcoding)
+All options come from `ConfigParam` in `pipeline.yaml` (interpolated via `EnvInterpolator`), with documented defaults and **no CWD fallback** to `configs/schemas.yaml`:
+* `path` (default `:memory:`), `schema` (required unless `schemaless: true`), `read_only`, `migrate` (`auto | verify | off`, default `auto`), `on_conflict` (`update | ignore | fail`, default `update`), `schemaless` (default `false`).
+* All `PragmaConfig` fields exposed as optional params (`journal_mode`, `synchronous`, `busy_timeout_ms`, `foreign_keys`, `auto_vacuum`, `cache_size`, `mmap_size`, `temp_store`, `journal_size_limit`, `wal_autocheckpoint`, `full_mutex`).
 
-  # Relational sink for persistent catalog and chapter state
-  catalog_db:
-    driver: sqlite
-    path: "${MANGADEX_DB_PATH:-./mangadex.db}"
-    schema: "${MANGADEX_SCHEMA_PATH:-./configs/schemas.yaml}"
+### 5.2. Schema Provisioning & Migrations
+* **Full DDL mapping:** `schema_provisioner.zig` maps every `SchemaCatalog` attribute (`default`, `check`, `collate`, `generated_as`, `unique_keys`, `strict`, `without_rowid`, `indexes` with `order`/`where`/`expressions`) to `DdlBuilder`.
+* **Seeds:** Inserted via parameterized `Stmt` binds (`INSERT OR IGNORE`), never SQL string concatenation.
+* **Schema tracking:** `PRAGMA user_version` + `_flowdata_schema` metadata table storing catalog version and schema hash.
+* **Phase 1 migrations (non-destructive, automatic under `migrate: auto`):**
+  * `CREATE TABLE` for new tables.
+  * `ALTER TABLE ... ADD COLUMN` for new `nullable` columns or columns with a `default`.
+  * `CREATE INDEX` / `DROP INDEX` for index changes.
+* **Destructive changes** (type changes, column drops, PK/FK modifications): **Deferred to a dedicated migration spec**; for now, detect via schema diff and abort startup with a clear diff message.
 
-pipelines:
-  main:
-    steps:
-      - id: fetch_details
-        uses: manga_catalog/fetch_series_details
-        inputs:
-          input: tracked_targets
-        outputs:
-          series_details:
-            datasource: pipeline_memory
-          catalog_series:
-            datasource: catalog_db
-
-      - id: fetch_chapters
-        uses: manga_catalog/fetch_chapters
-        inputs:
-          input: series_details
-        outputs:
-          discovered_chapters:
-            datasource: catalog_db
-
-      - id: fetch_pages
-        uses: manga_catalog/fetch_chapter_pages
-        inputs:
-          input: "slice(discovered_chapters, 0, 1)"
-        outputs:
-          discovered_pages:
-            datasource: catalog_db
-```
+### 5.3. Operation Compilation (`SqliteRepository`)
+* **Writes:**
+  * `upsert`: `INSERT INTO "t" (...) VALUES (...) ON CONFLICT("pk"...) DO UPDATE SET "col" = excluded."col", ...` touching **only** the columns present in the payload's `RecordMap`. (`INSERT OR REPLACE` is forbidden to prevent `ON DELETE CASCADE` data loss.)
+  * `append`: `INSERT INTO ...`.
+  * `update`: `UPDATE "t" SET ... WHERE "pk" = ...`.
+  * `delete`: `DELETE FROM "t" WHERE "pk" = ...`.
+  * `replace_all`: `DELETE FROM "t";` + batch `INSERT` inside the same transaction.
+  * All batch writes execute inside `BEGIN IMMEDIATE ... COMMIT` using `StmtCache`. Supports all `PayloadHandle` types via `RecordMap`, not just `DynamicRecord`.
+* **Reads:** Compile `ReadSpec` (projected columns, Predicate AST → parameterized `WHERE ?1..N`, `ORDER BY`, `LIMIT`, `OFFSET`) and return `DynamicRecord` payloads.
+* **Count:** `SELECT COUNT(*) FROM "t"` using `writeQuotedIdent` and propagating errors.
 
 ---
 
-## 6. Verification and Test Suite
+## 6. Verification & Acceptance Criteria
 
-Persistence is verified through automated test suites:
-
-1. **AST & Schema Validation** ([`pipeline_config_test.zig`](../../apps/mangadex/tests/pipeline_config_test.zig)):
-   * Confirms `pipeline.yaml` parses into `PipelineAST` with `catalog_db` driver correctly identified as `sqlite`.
-   * Verifies output channels route to their corresponding tables.
-2. **Catalog Task Execution** ([`catalog_plugin_test.zig`](../../apps/mangadex/tests/catalog_plugin_test.zig)):
-   * Verifies that `fetch_series_details`, `fetch_chapters`, and `fetch_chapter_pages` emit schema-compliant typed rows.
-3. **Engine Pragmas & Referential Integrity**:
-   * Evaluated through `zig build test` in both root Flowdata and `apps/mangadex/` test runners.
-
----
-
-## 7. Phase 2 Specification: Advanced Bidirectional Storage Engine
-
-While Phase 1 established declarative DDL provisioning and basic `DynamicRecord` sinks, real-world data pipelines require full bidirectional storage capabilities. The current `SqliteRepository` stub (`readPayload` returning `null`, lack of transactions, lack of typed mapping) must be upgraded with the following requirements:
-
-### 7.1. Full `readPayload` Implementation (`DynamicRecord` & Typed Hydration)
-* Implement `readPayload(table_name)` to dynamically construct `SELECT * FROM "table"` queries.
-* Query column metadata via `sqlite3_column_name` and `sqlite3_column_type`, reconstructing `flowdata.dataflow.DynamicRecord` instances with zero manual serialization.
-* Support schema-aware typed hydration: when a downstream task specifies a known `schema_id`, hydrate rows directly into `Lowered(T)` contiguous C-ABI memory.
-
-### 7.2. Zero-Reflection Typed `Lowered(T)` Direct Writes
-* When writing `PayloadHandle` with a static type (`Lowered(T)`), map fields directly to column bindings using compile-time or catalog offset reflection rather than requiring intermediate `DynamicRecord` allocation.
-* Eliminates double-serialization overhead for high-throughput stages (e.g. video sample tables, forensic packet records).
-
-### 7.3. Atomic Transaction Batching (`BEGIN IMMEDIATE` / `COMMIT`)
-* Wrap bulk writes in `writePayload` within an explicit `BEGIN IMMEDIATE;` and `COMMIT;` transaction block.
-* Avoids per-row implicit autocommit fsync operations, elevating write performance from ~50 rows/sec to over 50,000 rows/sec.
-* Implement rollback (`ROLLBACK;`) and error propagation on step failures.
-
-### 7.4. Filtered & Parameterized Query API
-* Support declarative query filters in task inputs:
-  ```yaml
-  inputs:
-    chapters_to_download:
-      from: catalog_db
-      table: discovered_chapters
-      filter: "status = 'discovered'"
-      limit: 10
-  ```
-* Inject filter expressions into prepared statements safely using SQLite parameter binding.
-
-### 7.5. Streaming Cursor Iterator (`next_row` Zero-RAM Inflation)
-* For large datasets (e.g. thousands of video frame boxes or image blobs), provide a streaming cursor iterator (`next_row`) that yields rows on-demand from an active `sqlite3_stmt` without materializing entire tables into RAM.
+1. **Driver Conformance Suite (core):** Shared test battery run identically against `memory` (table mode) and `sqlite`:
+   * `upsert` partial update preserves untouched columns and writes explicit `null`s.
+   * `upsert` on a parent row does **not** trigger `ON DELETE CASCADE` on child rows.
+   * `append`, `update`, `delete`, `replace_all` semantics match across drivers.
+   * `ReadSpec` with Predicate AST (`where`, `order_by`, `limit`, `offset`, projection) produces identical results.
+   * Undeclared tables fail with `UnknownTable` when `schemaless == false`.
+   * Preflight rejects type/nullability mismatches between task `TaskDescriptor_ABI` and `SchemaCatalog`.
+2. **SQLite-Specific Suite:**
+   * Strict tables reject `NULL` in PKs and enforce types.
+   * All `PragmaConfig` options from `ConfigParam` take effect and errors include `sqlite3_errmsg`.
+   * Non-destructive migration adds nullable/defaulted columns; destructive schema diff aborts cleanly.
+   * Parameterized seeds escape values safely.
