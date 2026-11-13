@@ -684,18 +684,23 @@ test "GenerateComicInfoService: generates valid ComicInfo.xml" {
     };
 
     const inputs = catalog.GenerateComicInfoInputs{
+        .item = .{
+            .source_chapter_id = "ch-101",
+            .series_id = "ser-csm",
+            .chapter_number = "101",
+            .title = "Early Bird",
+            .volume_number = "12",
+            .language = "es",
+            .page_count = 19,
+        },
         .series_title = "Chainsaw Man",
-        .chapter_number = "101",
-        .chapter_title = "Early Bird",
-        .volume_number = "12",
         .writer = "Tatsuki Fujimoto",
         .genre = "Action, Horror",
-        .page_count = 19,
-        .language = "es",
         .manga_type = "YesAndRightToLeft",
     };
 
     const out = try service.execute(test_alloc, inputs);
+    try std.testing.expectEqualStrings("101", out.chapter_number);
     try std.testing.expect(out.xml_data.len > 0);
     try std.testing.expect(std.mem.indexOf(u8, out.xml_data, "<Series>Chainsaw Man</Series>") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.xml_data, "<Number>101</Number>") != null);
@@ -739,11 +744,16 @@ test "BuildCbzArchiveService: builds readable CBZ archive with ComicInfo.xml and
         },
     };
 
-    const comic_xml = "<ComicInfo><Series>Test</Series><Number>1</Number></ComicInfo>";
+    const comic_infos = [_]catalog.ComicInfoOutput{
+        .{
+            .chapter_number = "1",
+            .xml_data = "<ComicInfo><Series>Test</Series><Number>1</Number></ComicInfo>",
+        },
+    };
 
     const outs = try service.execute(test_alloc, .{
         .pages = &pages,
-        .comic_info_xml = comic_xml,
+        .comic_infos = &comic_infos,
         .output_path = cbz_path,
     });
     try std.testing.expectEqual(@as(usize, 1), outs.len);
@@ -798,7 +808,7 @@ test "BuildCbzArchiveService: resolves {chapter} placeholder in output_dir" {
 
     const outs = try service.execute(test_alloc, .{
         .pages = &pages,
-        .comic_info_xml = "",
+        .comic_infos = &.{},
         .output_dir = "/tmp/test_dir_templating/{chapter}",
     });
     try std.testing.expectEqual(@as(usize, 1), outs.len);
@@ -829,9 +839,16 @@ test "BuildCbzArchiveService: builds in-memory CBZ archive without writing to di
         },
     };
 
+    const comic_infos = [_]catalog.ComicInfoOutput{
+        .{
+            .chapter_number = "7",
+            .xml_data = "<ComicInfo><Series>Plastic Neesan</Series></ComicInfo>",
+        },
+    };
+
     const outs = try service.execute(test_alloc, .{
         .pages = &pages,
-        .comic_info_xml = "<ComicInfo><Series>Plastic Neesan</Series></ComicInfo>",
+        .comic_infos = &comic_infos,
         .in_memory = true,
         .series_title = "Plastic Neesan",
         .library = "Seinen",

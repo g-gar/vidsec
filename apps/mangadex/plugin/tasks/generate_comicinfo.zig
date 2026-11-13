@@ -4,31 +4,31 @@ const Logger = @import("flowdata").plugin.Logger;
 const comicinfo = @import("comicinfo");
 const ComicInfo = comicinfo.ComicInfo;
 const MangaType = comicinfo.MangaType;
+const ChapterItem = @import("fetch_chapters.zig").ChapterItem;
 
 pub const GenerateComicInfoInputs = struct {
-    series_title: []const u8,
+    item: ChapterItem,
+    series_title: []const u8 = "",
     title: ?[]const u8 = null,
-    chapter_number: []const u8,
-    chapter_title: ?[]const u8 = null,
-    volume_number: ?[]const u8 = null,
     summary: ?[]const u8 = null,
     writer: ?[]const u8 = null,
     author: ?[]const u8 = null,
     genre: ?[]const u8 = null,
-    language: []const u8,
-    page_count: u32,
+    page_count: u32 = 0,
     manga_type: ?[]const u8 = null,
 };
 
 pub const ComicInfoOutput = struct {
+    chapter_number: []const u8,
     xml_data: []const u8,
 };
 
-/// Service that serializes metadata into Anansi ComicInfo XML format.
+/// Service that serializes metadata into Anansi ComicInfo XML format per chapter.
 pub const GenerateComicInfoService = struct {
     logger: Logger,
 
     pub fn execute(self: *GenerateComicInfoService, alloc: Allocator, inputs: GenerateComicInfoInputs) !ComicInfoOutput {
+        const ch = inputs.item;
         const resolved_title = if (inputs.series_title.len > 0)
             inputs.series_title
         else
@@ -39,10 +39,12 @@ pub const GenerateComicInfoService = struct {
         else
             inputs.author;
 
+        const resolved_page_count = if (inputs.page_count > 0) inputs.page_count else ch.page_count;
+
         self.logger.info("Generating ComicInfo.xml for series '{s}' (chapter: {s}, pages: {d})", .{
             resolved_title,
-            inputs.chapter_number,
-            inputs.page_count,
+            ch.chapter_number,
+            resolved_page_count,
         });
 
         var manga_enum: MangaType = .YesAndRightToLeft;
@@ -58,20 +60,21 @@ pub const GenerateComicInfoService = struct {
 
         const info = ComicInfo{
             .series = resolved_title,
-            .title = inputs.chapter_title,
-            .number = inputs.chapter_number,
-            .volume = inputs.volume_number,
+            .title = ch.title,
+            .number = ch.chapter_number,
+            .volume = ch.volume_number,
             .summary = inputs.summary,
             .writer = resolved_writer,
             .genre = inputs.genre,
-            .page_count = inputs.page_count,
-            .language_iso = if (inputs.language.len > 0) inputs.language else "en",
+            .page_count = resolved_page_count,
+            .language_iso = if (ch.language.len > 0) ch.language else "en",
             .manga = manga_enum,
         };
 
         const xml = try comicinfo.serialize(alloc, &info);
 
         return ComicInfoOutput{
+            .chapter_number = ch.chapter_number,
             .xml_data = xml,
         };
     }

@@ -4,6 +4,7 @@ const Logger = @import("flowdata").plugin.Logger;
 const zip_archive = @import("zip_archive");
 const ZipArchiveWriter = zip_archive.ZipArchiveWriter;
 const PageWithContentType = @import("detect_content_type.zig").PageWithContentType;
+const ComicInfoOutput = @import("generate_comicinfo.zig").ComicInfoOutput;
 
 const c_stat = @cImport({
     @cInclude("sys/stat.h");
@@ -41,13 +42,14 @@ fn ensureParentDirs(alloc: Allocator, path: []const u8) void {
 
 pub const BuildCbzArchiveInputs = struct {
     pages: []const PageWithContentType,
-    comic_info_xml: []const u8,
+    comic_infos: []const ComicInfoOutput,
     output_dir: []const u8 = "./output/cbz",
     output_path: ?[]const u8 = null,
     in_memory: bool = false,
     series_title: ?[]const u8 = null,
     title: ?[]const u8 = null,
     library: ?[]const u8 = null,
+    default_library: ?[]const u8 = null,
 };
 
 pub const CbzArchiveOutput = struct {
@@ -88,6 +90,15 @@ fn replacePlaceholders(alloc: Allocator, template: []const u8, chapter_num: []co
         }
     }
     return replaced.toOwnedSlice(alloc);
+}
+
+fn findComicInfoForChapter(comic_infos: []const ComicInfoOutput, chapter_num: []const u8) ?[]const u8 {
+    for (comic_infos) |ci| {
+        if (std.mem.eql(u8, ci.chapter_number, chapter_num) and ci.xml_data.len > 0) {
+            return ci.xml_data;
+        }
+    }
+    return null;
 }
 
 fn customizeComicInfo(alloc: Allocator, base_xml: []const u8, chapter_num: []const u8, page_count: u32) ![]const u8 {
@@ -151,7 +162,15 @@ pub const BuildCbzArchiveService = struct {
             }
             break :blk "";
         };
-        const resolved_library = inputs.library orelse "";
+        const resolved_library = blk: {
+            if (inputs.library) |lib| {
+                if (lib.len > 0) break :blk lib;
+            }
+            if (inputs.default_library) |dlib| {
+                if (dlib.len > 0) break :blk dlib;
+            }
+            break :blk "";
+        };
 
         const ChapterGroup = struct {
             chapter_number: []const u8,
@@ -234,8 +253,8 @@ pub const BuildCbzArchiveService = struct {
             defer writer.deinit();
 
             // 1. Add ComicInfo.xml (deflated compression)
-            if (inputs.comic_info_xml.len > 0) {
-                const tailored = try customizeComicInfo(alloc, inputs.comic_info_xml, group.chapter_number, @intCast(group.pages.items.len));
+            if (findComicInfoForChapter(inputs.comic_infos, group.chapter_number)) |base_xml| {
+                const tailored = try customizeComicInfo(alloc, base_xml, group.chapter_number, @intCast(group.pages.items.len));
                 defer alloc.free(tailored);
                 self.logger.info("Adding ComicInfo.xml to CBZ archive (chapter: {s}, {d} bytes)", .{ group.chapter_number, tailored.len });
                 try writer.addFileFromMemory("ComicInfo.xml", tailored, .default);

@@ -95,7 +95,7 @@ test "MangaDex pipeline.yaml parses and validates into PipelineAST" {
     try std.testing.expectEqualStrings("isolated", step4.primaryNetwork(ast.runtime.default_network));
     try std.testing.expectEqual(@as(usize, 0), step4.inputs.len);
     try std.testing.expect(step4.outputs.len >= 1);
-    try std.testing.expectEqualStrings("comic_info_xml", step4.outputs[0].name);
+    try std.testing.expectEqualStrings("comic_infos", step4.outputs[0].name);
     try std.testing.expectEqualStrings("pipeline_memory", step4.outputs[0].datasource);
 
     // Step 5: download_pages

@@ -28,6 +28,7 @@ pub const SourceChapter = struct {
     title: ?[]const u8 = null,
     language_iso: []const u8,
     scanlation_group: ?[]const u8 = null,
+    page_count: u32 = 0,
 };
 
 pub const SourcePageUrl = struct {

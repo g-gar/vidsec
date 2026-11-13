@@ -98,7 +98,8 @@ pub const tasks = [_]abi.TaskDescriptor_ABI{
     }),
     MangaPluginContainer.defineTaskService(GenerateComicInfoService, .{
         .name = "generate_comicinfo",
-        .description = "Generates standard Anansi ComicInfo XML metadata buffer for a chapter",
+        .description = "Generates standard Anansi ComicInfo XML metadata buffer for each chapter",
+        .lift = .elemental,
     }),
     MangaPluginContainer.defineTaskService(BuildCbzArchiveService, .{
         .name = "build_cbz_archive",

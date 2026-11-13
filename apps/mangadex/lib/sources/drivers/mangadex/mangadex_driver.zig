@@ -268,6 +268,7 @@ pub const MangaDexSource = struct {
                     .title = title,
                     .language_iso = lang_iso,
                     .scanlation_group = group,
+                    .page_count = item.attributes.pages,
                 });
             }
 

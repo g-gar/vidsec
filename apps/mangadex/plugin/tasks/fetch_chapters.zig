@@ -18,6 +18,7 @@ pub const ChapterItem = struct {
     title: ?[]const u8 = null,
     language: []const u8,
     scanlation_group: ?[]const u8 = null,
+    page_count: u32 = 0,
 };
 
 fn matchesSingleFilter(ch_num: []const u8, item: []const u8) bool {
@@ -118,6 +119,13 @@ pub const FetchChaptersService = struct {
     source: MangaSource,
     logger: Logger,
 
+    /// Only accepts `SeriesDetails`-like payloads (must carry `series_id` and `source_id` or `status`),
+    /// preventing premature activation on raw `JobSpec` records before `fetch_series_details`.
+    pub fn canHandle(payload: *const @import("flowdata").plugin.PayloadHandle_ABI) bool {
+        return payload.getReflected("series_id") != null and
+            (payload.getReflected("source_id") != null or payload.getReflected("status") != null);
+    }
+
     pub fn execute(self: *FetchChaptersService, alloc: Allocator, inputs: FetchChaptersInputs) ![]ChapterItem {
         var chapters_list: std.ArrayListUnmanaged(ChapterItem) = .empty;
 
@@ -156,6 +164,7 @@ pub const FetchChaptersService = struct {
                     .title = ch.title,
                     .language = ch.language_iso,
                     .scanlation_group = ch.scanlation_group,
+                    .page_count = ch.page_count,
                 });
             }
         }
