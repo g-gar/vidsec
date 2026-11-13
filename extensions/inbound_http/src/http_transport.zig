@@ -23,7 +23,7 @@ const c = @cImport({
 });
 
 /// High-performance HTTP REST Transport for Flowdata pipelines.
-/// Exposes daemon endpoints (`/v1/health`, `/v1/validate`, `/v1/run`, `/v1/custom/*`) and converts incoming HTTP requests
+/// Exposes daemon endpoints (`/v1/health`, `/v1/validate`, `/v1/run`, `/v1/jobs`, `/v1/custom/*`) and converts incoming HTTP requests
 /// to agnostic `InvocationRequest` envelopes.
 pub const HttpServerTransport = struct {
     comptime {
@@ -225,6 +225,39 @@ pub const HttpServerTransport = struct {
             return formatHttpResponse(allocator, status_code, if (resp.status == .ok) "OK" else "Execution Failed", resp.output_bytes);
         }
 
+        // Route: POST /v1/jobs (ARCH-019 JobEnvelope ingestion)
+        if (std.mem.eql(u8, method, "POST") and (std.mem.eql(u8, path, "/v1/jobs") or std.mem.startsWith(u8, path, "/v1/jobs?"))) {
+            if (effective_pipeline.len == 0) {
+                return formatHttpResponse(allocator, 400, "Bad Request", "{\"error\":\"missing_pipeline_path\"}\n");
+            }
+            if (body.len == 0) {
+                return formatHttpResponse(allocator, 400, "Bad Request", "{\"error\":\"empty_job_envelope\"}\n");
+            }
+
+            const payload_bytes = extractJobEnvelopePayload(allocator, body) catch |err| {
+                const err_json = switch (err) {
+                    error.MissingJobPayload => "{\"error\":\"missing_job_payload\"}\n",
+                    error.InvalidJobPayload => "{\"error\":\"invalid_job_payload\"}\n",
+                    else => "{\"error\":\"invalid_job_envelope\"}\n",
+                };
+                return formatHttpResponse(allocator, 400, "Bad Request", err_json);
+            };
+            defer allocator.free(payload_bytes);
+
+            const resp = try dispatch_fn(dispatcher_ctx, .{
+                .command = .run,
+                .format = .json,
+                .input = .{ .job_json = payload_bytes },
+                .options = .{
+                    .pipeline_yaml_path = effective_pipeline,
+                    .load_shared_modules = !skip_so,
+                },
+            });
+
+            const status_code: u16 = if (resp.status == .ok) 200 else 500;
+            return formatHttpResponse(allocator, status_code, if (resp.status == .ok) "OK" else "Execution Failed", resp.output_bytes);
+        }
+
         // Route: custom commands, e.g. POST /v1/custom/{cmd_name}
         if (std.mem.startsWith(u8, path, "/v1/custom/")) {
             const custom_name = path["/v1/custom/".len..];
@@ -240,6 +273,28 @@ pub const HttpServerTransport = struct {
         }
 
         return formatHttpResponse(allocator, 404, "Not Found", "{\"error\":\"not_found\"}\n");
+    }
+
+    /// Extracts the inner job payload bytes from a `JobEnvelope` JSON body.
+    /// Supports both `payload_raw` (ARCH-019 `JobEnvelope`) and `payload` (CLI/webhook wrappers),
+    /// encoded either as a JSON string or as an embedded JSON object/array.
+    fn extractJobEnvelopePayload(allocator: Allocator, body: []const u8) ![]u8 {
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+            return error.InvalidJobEnvelope;
+        };
+        defer parsed.deinit();
+
+        if (parsed.value != .object) return error.InvalidJobEnvelope;
+
+        const payload_val = parsed.value.object.get("payload_raw") orelse
+            parsed.value.object.get("payload") orelse
+            return error.MissingJobPayload;
+
+        return switch (payload_val) {
+            .string => |s| try allocator.dupe(u8, s),
+            .object, .array => try std.json.Stringify.valueAlloc(allocator, payload_val, .{}),
+            else => error.InvalidJobPayload,
+        };
     }
 
     /// Serves incoming HTTP connections on a POSIX socket.

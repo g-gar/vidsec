@@ -103,6 +103,80 @@ test "HttpServerTransport: REST API routing, status codes, and execution" {
     try std.testing.expect(std.mem.startsWith(u8, res_unknown, "HTTP/1.1 404 Not Found"));
 }
 
+test "HttpServerTransport: POST /v1/jobs JobEnvelope unwrapping and validation" {
+    const alloc = std.testing.allocator;
+
+    const MockDispatcher = struct {
+        last_payload: []const u8 = "",
+        call_count: usize = 0,
+        alloc: std.mem.Allocator,
+
+        fn dispatch(ctx: *anyopaque, req: host.InvocationRequest) anyerror!host.InvocationResponse {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.call_count += 1;
+            try std.testing.expectEqual(host.InvocationCommand.run, req.command);
+            switch (req.input) {
+                .job_json => |bytes| {
+                    if (self.last_payload.len > 0) self.alloc.free(self.last_payload);
+                    self.last_payload = try self.alloc.dupe(u8, bytes);
+                },
+                else => return error.ExpectedJobJson,
+            }
+            return .{
+                .status = .ok,
+                .exit_code = 0,
+                .output_bytes = "{\"status\":\"ok\"}\n",
+            };
+        }
+    };
+
+    var mock = MockDispatcher{ .alloc = alloc };
+    defer if (mock.last_payload.len > 0) alloc.free(mock.last_payload);
+
+    var http_server = host.HttpServerTransport.init(alloc, "127.0.0.1", 8080, "apps/mangadex/configs/pipeline.yaml");
+
+    // 1. Empty body -> 400
+    const res_empty = try http_server.handleHttpRequest(alloc, "POST /v1/jobs HTTP/1.1\r\nHost: localhost:8080\r\n\r\n", &mock, &MockDispatcher.dispatch);
+    defer alloc.free(res_empty);
+    try std.testing.expect(std.mem.startsWith(u8, res_empty, "HTTP/1.1 400 Bad Request"));
+    try std.testing.expect(std.mem.indexOf(u8, res_empty, "empty_job_envelope") != null);
+
+    // 2. Missing payload -> 400
+    const res_missing = try http_server.handleHttpRequest(
+        alloc,
+        "POST /v1/jobs HTTP/1.1\r\nHost: localhost:8080\r\n\r\n{\"id\":\"job_1\"}",
+        &mock,
+        &MockDispatcher.dispatch,
+    );
+    defer alloc.free(res_missing);
+    try std.testing.expect(std.mem.startsWith(u8, res_missing, "HTTP/1.1 400 Bad Request"));
+    try std.testing.expect(std.mem.indexOf(u8, res_missing, "missing_job_payload") != null);
+
+    // 3. ARCH-019 payload_raw JSON object -> 200 OK with serialized object
+    const res_raw = try http_server.handleHttpRequest(
+        alloc,
+        "POST /v1/jobs HTTP/1.1\r\nHost: localhost:8080\r\n\r\n{\"id\":\"job_2\",\"payload_raw\":{\"series_id\":\"abc\"}}",
+        &mock,
+        &MockDispatcher.dispatch,
+    );
+    defer alloc.free(res_raw);
+    try std.testing.expect(std.mem.startsWith(u8, res_raw, "HTTP/1.1 200 OK"));
+    try std.testing.expectEqual(@as(usize, 1), mock.call_count);
+    try std.testing.expectEqualStrings("{\"series_id\":\"abc\"}", mock.last_payload);
+
+    // 4. send_mangadex_job.sh payload JSON string -> 200 OK with unescaped string
+    const res_str = try http_server.handleHttpRequest(
+        alloc,
+        "POST /v1/jobs HTTP/1.1\r\nHost: localhost:8080\r\n\r\n{\"id\":\"job_3\",\"payload\":\"{\\\"series_id\\\":\\\"xyz\\\"}\"}",
+        &mock,
+        &MockDispatcher.dispatch,
+    );
+    defer alloc.free(res_str);
+    try std.testing.expect(std.mem.startsWith(u8, res_str, "HTTP/1.1 200 OK"));
+    try std.testing.expectEqual(@as(usize, 2), mock.call_count);
+    try std.testing.expectEqualStrings("{\"series_id\":\"xyz\"}", mock.last_payload);
+}
+
 test "GrpcTransport: Binary Framing and PipelineService Dispatch" {
     const alloc = std.testing.allocator;
 

@@ -46,6 +46,7 @@ pub const InputSource = union(enum) {
     none,
     file_path: []const u8,
     memory_bytes: []const u8,
+    job_json: []const u8,
 };
 
 /// Serialization/formatting requested for response output.

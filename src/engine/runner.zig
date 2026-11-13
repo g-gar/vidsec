@@ -140,7 +140,17 @@ pub const PipelineRunner = struct {
             env_interp.scheme_resolver = &S.resolve;
         }
 
-        const default_env: ?[]const u8 = if (readFileBytes(arena, ".env")) |_| ".env" else |_| null;
+        const default_env: ?[]const u8 = if (readFileBytes(arena, ".env")) |_|
+            ".env"
+        else |_| blk: {
+            if (std.fs.path.dirname(options.pipeline_yaml_path)) |dir| {
+                const sibling_env = try std.fs.path.join(arena, &.{ dir, ".env" });
+                if (readFileBytes(arena, sibling_env)) |_| {
+                    break :blk sibling_env;
+                } else |_| {}
+            }
+            break :blk null;
+        };
         const effective_env_path = options.dotenv_path orelse default_env;
         if (effective_env_path) |env_path| {
             if (readFileBytes(arena, env_path)) |env_bytes| {
@@ -276,34 +286,11 @@ pub const PipelineRunner = struct {
         options: RunnerOptions,
     ) anyerror!engine_mod.ExecutionSummary {
         _ = options;
-        if (self.options.kernel) |k| {
-            const S = struct {
-                var kernel_ptr: ?*@import("../kernel/mod.zig").KernelContext = null;
-                fn eval(fn_name: []const u8, arg: dataflow.ReflectedValue, param: []const u8) ?bool {
-                    if (kernel_ptr) |kp| {
-                        return kp.dsl.evaluatePredicate(fn_name, arg, param);
-                    }
-                    return null;
-                }
-            };
-            S.kernel_ptr = k;
-            dataflow.predicate.global_custom_predicate_evaluator = &S.eval;
-        }
-
         const file_bytes = try readFileBytes(self.allocator, input_file_path);
         defer self.allocator.free(file_bytes);
 
-        var eng = engine_mod.PipelineEngine.init(
-            self.allocator,
-            self.ast,
-            &self.registry,
-            &self.repos,
-        );
-        defer eng.deinit();
-        eng.withKernel(self.options.kernel);
-
         const input_payload = dataflow.PayloadHandle.fromSlice(u8, file_bytes);
-        return try eng.run(input_payload);
+        return try self.runWithPayload(input_payload);
     }
 
     /// Runs the pipeline on an in-memory byte slice.
@@ -313,6 +300,33 @@ pub const PipelineRunner = struct {
         options: RunnerOptions,
     ) anyerror!engine_mod.ExecutionSummary {
         _ = options;
+        const input_payload = dataflow.PayloadHandle.fromSlice(u8, bytes);
+        return try self.runWithPayload(input_payload);
+    }
+
+    /// Parses a JSON job payload into a typed `JobSpec` record and runs the pipeline.
+    /// Used by HTTP/RPC `POST /v1/jobs` so type-driven pipelines receive the same
+    /// `JobSpec` representation as `yaml_file` batch sources.
+    pub fn runJobJson(
+        self: *PipelineRunner,
+        json_bytes: []const u8,
+        options: RunnerOptions,
+    ) anyerror!engine_mod.ExecutionSummary {
+        _ = options;
+        var job_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer job_arena.deinit();
+        const a = job_arena.allocator();
+
+        const job_spec = try parseJobSpecFromJson(a, json_bytes);
+        const job_slice = try a.dupe(ast_mod.JobSpec, &.{job_spec});
+        const input_payload = dataflow.PayloadHandle.fromSlice(ast_mod.JobSpec, job_slice);
+        return try self.runWithPayload(input_payload);
+    }
+
+    fn runWithPayload(
+        self: *PipelineRunner,
+        input_payload: dataflow.PayloadHandle,
+    ) anyerror!engine_mod.ExecutionSummary {
         if (self.options.kernel) |k| {
             const S = struct {
                 var kernel_ptr: ?*@import("../kernel/mod.zig").KernelContext = null;
@@ -336,7 +350,62 @@ pub const PipelineRunner = struct {
         defer eng.deinit();
         eng.withKernel(self.options.kernel);
 
-        const input_payload = dataflow.PayloadHandle.fromSlice(u8, bytes);
         return try eng.run(input_payload);
     }
 };
+
+fn parseJobSpecFromJson(alloc: Allocator, json_bytes: []const u8) !ast_mod.JobSpec {
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, json_bytes, .{});
+    if (parsed.value != .object) return error.InvalidJobPayload;
+
+    const obj = parsed.value.object;
+    const id_str: []const u8 = if (obj.get("id")) |v|
+        (if (v == .string) try alloc.dupe(u8, v.string) else "http_job")
+    else if (obj.get("series_id")) |v|
+        (if (v == .string) try alloc.dupe(u8, v.string) else "http_job")
+    else
+        "http_job";
+
+    const ds_str: ?[]const u8 = if (obj.get("datasource")) |v|
+        (if (v == .string) try alloc.dupe(u8, v.string) else null)
+    else
+        null;
+
+    const enabled: bool = if (obj.get("enabled")) |v|
+        (if (v == .bool) v.bool else true)
+    else
+        true;
+
+    var params: std.ArrayListUnmanaged(ast_mod.KeyValueParam) = .empty;
+    var it = obj.iterator();
+    while (it.next()) |entry| {
+        const key = try alloc.dupe(u8, entry.key_ptr.*);
+        const val_str: ?[]const u8 = switch (entry.value_ptr.*) {
+            .string => |s| try alloc.dupe(u8, s),
+            .bool => |b| if (b) "true" else "false",
+            .integer => |i| try std.fmt.allocPrint(alloc, "{d}", .{i}),
+            .float => |f| try std.fmt.allocPrint(alloc, "{d}", .{f}),
+            .array => |arr| blk: {
+                var buf: std.ArrayListUnmanaged(u8) = .empty;
+                for (arr.items, 0..) |elem, idx| {
+                    if (elem == .string) {
+                        if (buf.items.len > 0 and idx > 0) try buf.append(alloc, ',');
+                        try buf.appendSlice(alloc, elem.string);
+                    }
+                }
+                break :blk if (buf.items.len > 0) buf.items else null;
+            },
+            else => null,
+        };
+        if (val_str) |vs| {
+            try params.append(alloc, .{ .key = key, .value = vs });
+        }
+    }
+
+    return .{
+        .id = id_str,
+        .datasource = ds_str,
+        .enabled = enabled,
+        .params = try params.toOwnedSlice(alloc),
+    };
+}
