@@ -75,6 +75,14 @@ pub fn build(b: *std.Build) void {
     });
     ds_yaml_file_mod.addImport("flowdata", flowdata_mod);
 
+    const ds_ssh_store_mod = b.addModule("flowdata_datasource_ssh_store", .{
+        .root_source_file = b.path("extensions/datasource/ssh_store/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    ds_ssh_store_mod.addImport("flowdata", flowdata_mod);
+
     const extensions_mod = b.addModule("flowdata_extensions", .{
         .root_source_file = b.path("extensions/mod.zig"),
         .target = target,
@@ -86,6 +94,7 @@ pub fn build(b: *std.Build) void {
     extensions_mod.addImport("flowdata_datasource_file_store", ds_file_store_mod);
     extensions_mod.addImport("flowdata_datasource_sqlite", ds_sqlite_mod);
     extensions_mod.addImport("flowdata_datasource_yaml_file", ds_yaml_file_mod);
+    extensions_mod.addImport("flowdata_datasource_ssh_store", ds_ssh_store_mod);
     extensions_mod.linkSystemLibrary("sqlite3", .{});
 
     // 5. Tests
