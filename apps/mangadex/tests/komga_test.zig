@@ -203,6 +203,13 @@ test "KomgaClient executes Library, Series and Book operations" {
     try std.testing.expectEqualStrings("ser-123", search_res.value.content[0].id);
     try std.testing.expectEqualStrings("Chainsaw Man", search_res.value.content[0].name);
 
+    var encoded_search = try client.searchSeries("The Ghostly Doctor", "lib-1");
+    defer encoded_search.deinit();
+    try std.testing.expectEqualStrings(
+        "http://127.0.0.1:25600/api/v1/series?search=The%20Ghostly%20Doctor&library_id=lib-1",
+        mock.last_url.?,
+    );
+
     // 6. Get Series & Analyze Series
     var series = try client.getSeries("ser-123");
     defer series.deinit();

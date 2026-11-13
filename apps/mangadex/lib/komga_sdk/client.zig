@@ -130,16 +130,29 @@ pub const KomgaClient = struct {
     // 3. Series
     // =========================================================================
 
+    fn appendPercentEncoded(allocator: Allocator, out: *std.ArrayListUnmanaged(u8), input: []const u8) !void {
+        const hex_chars = "0123456789ABCDEF";
+        for (input) |byte| {
+            if (std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_' or byte == '.' or byte == '~') {
+                try out.append(allocator, byte);
+            } else {
+                try out.append(allocator, '%');
+                try out.append(allocator, hex_chars[byte >> 4]);
+                try out.append(allocator, hex_chars[byte & 0x0F]);
+            }
+        }
+    }
+
     pub fn searchSeries(self: *KomgaClient, title: []const u8, library_id: ?[]const u8) !std.json.Parsed(PageDto(SeriesDto)) {
         var path_buf: std.ArrayListUnmanaged(u8) = .empty;
         defer path_buf.deinit(self.allocator);
 
         try path_buf.appendSlice(self.allocator, "/api/v1/series?search=");
-        try path_buf.appendSlice(self.allocator, title);
+        try appendPercentEncoded(self.allocator, &path_buf, title);
 
         if (library_id) |lib_id| {
             try path_buf.appendSlice(self.allocator, "&library_id=");
-            try path_buf.appendSlice(self.allocator, lib_id);
+            try appendPercentEncoded(self.allocator, &path_buf, lib_id);
         }
 
         const resp = try self.request(.GET, path_buf.items, "");
