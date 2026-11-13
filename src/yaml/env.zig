@@ -68,9 +68,8 @@ pub const EnvInterpolator = struct {
             if (key.len == 0) return error.MalformedDotEnvLine;
 
             var raw_val = std.mem.trim(u8, effective[eq_idx + 1 ..], " \t");
-            if (raw_val.len >= 2 and ((raw_val[0] == '"' and raw_val[raw_val.len - 1] == '"') or
-                (raw_val[0] == '\'' and raw_val[raw_val.len - 1] == '\'')))
-            {
+            const is_single_quoted = raw_val.len >= 2 and raw_val[0] == '\'' and raw_val[raw_val.len - 1] == '\'';
+            if (raw_val.len >= 2 and ((raw_val[0] == '"' and raw_val[raw_val.len - 1] == '"') or is_single_quoted)) {
                 raw_val = raw_val[1 .. raw_val.len - 1];
             } else if (std.mem.indexOfScalar(u8, raw_val, '#')) |comment_idx| {
                 if (comment_idx > 0 and (raw_val[comment_idx - 1] == ' ' or raw_val[comment_idx - 1] == '\t')) {
@@ -78,8 +77,13 @@ pub const EnvInterpolator = struct {
                 }
             }
 
+            const resolved_val = if (is_single_quoted)
+                raw_val
+            else
+                try self.interpolate(arena, raw_val);
+
             const owned_key_z = try arena.dupeZ(u8, key);
-            const owned_val_z = try arena.dupeZ(u8, raw_val);
+            const owned_val_z = try arena.dupeZ(u8, resolved_val);
             try self.vars.put(arena, owned_key_z, owned_val_z);
             _ = c_stdlib.setenv(owned_key_z.ptr, owned_val_z.ptr, 0);
         }
