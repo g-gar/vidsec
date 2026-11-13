@@ -17,6 +17,7 @@ pub const task_analyze = @import("tasks/analyze_image.zig");
 pub const task_comicinfo = @import("tasks/generate_comicinfo.zig");
 pub const task_cbz = @import("tasks/build_cbz_archive.zig");
 pub const task_upload_cbz = @import("tasks/upload_cbz.zig");
+pub const task_download_cover = @import("tasks/download_cover.zig");
 
 // DTOs & Services
 pub const MangaJob = task_details.MangaJob;
@@ -52,6 +53,10 @@ pub const BuildCbzArchiveService = task_cbz.BuildCbzArchiveService;
 pub const UploadCbzInputs = task_upload_cbz.UploadCbzInputs;
 pub const EgressDeliveryRecord = task_upload_cbz.EgressDeliveryRecord;
 pub const UploadCbzService = task_upload_cbz.UploadCbzService;
+
+pub const DownloadCoverInputs = task_download_cover.DownloadCoverInputs;
+pub const CoverOutput = task_download_cover.CoverOutput;
+pub const DownloadCoverService = task_download_cover.DownloadCoverService;
 
 // Backward-compatible runner functions
 pub fn runFetchSeriesDetails(alloc: Allocator, ctx: TaskContext, job: MangaJob) !SeriesDetails {
@@ -108,6 +113,10 @@ pub const tasks = [_]abi.TaskDescriptor_ABI{
     MangaPluginContainer.defineTaskService(UploadCbzService, .{
         .name = "upload_cbz",
         .description = "Synchronizes uploaded CBZ archives with a remote Komga server (library scan and series analysis)",
+    }),
+    MangaPluginContainer.defineTaskService(DownloadCoverService, .{
+        .name = "download_cover",
+        .description = "Downloads the series cover image and emits Komga-compatible local artwork (cover.jpg/png/webp)",
     }),
 };
 

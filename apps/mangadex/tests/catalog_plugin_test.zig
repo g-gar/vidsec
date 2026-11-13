@@ -11,7 +11,7 @@ test "Catalog plugin manifest conforms to Flowdata ABI" {
     try std.testing.expectEqual(abi.FLOWDATA_ABI_VERSION, manifest.abi_version);
     try std.testing.expectEqualStrings("manga_catalog", manifest.nameSlice());
     try std.testing.expectEqual(@as(u32, 1), manifest.module_version.major);
-    try std.testing.expectEqual(@as(usize, 9), manifest.tasks_len);
+    try std.testing.expectEqual(@as(usize, 10), manifest.tasks_len);
 
     // Verify task discovery
     const t_details = manifest.findTask("fetch_series_details");
@@ -922,4 +922,65 @@ test "matchesChapterFilter handles ranges, slices, and exact matches" {
     try std.testing.expect(!matches("5.1", "<=5"));
     try std.testing.expect(!matches("5", "<5"));
     try std.testing.expect(matches("4.9", "<5"));
+}
+
+test "DownloadCoverService: downloads cover and detects extension from magic bytes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const test_alloc = arena.allocator();
+
+    const MockCoverHttp = struct {
+        fn execute(_: *anyopaque, alloc: std.mem.Allocator, _: sdk.HttpMethod, _: []const u8, _: []const sdk.HttpHeader, _: []const u8) error{ InvalidUrl, NetworkFailure, OutOfMemory, RateLimited, Timeout }!sdk.HttpResponse {
+            return .{
+                .status_code = 200,
+                .body = try alloc.dupe(u8, "\x89PNG\r\n\x1a\nfake-png-cover"),
+            };
+        }
+    };
+    var dummy: u8 = 0;
+    const http = sdk.HttpTransport{
+        .ptr = &dummy,
+        .vtable = &.{ .execute = MockCoverHttp.execute },
+    };
+
+    var svc = catalog.DownloadCoverService{
+        .http = http,
+        .logger = abi.Logger.noop(),
+    };
+
+    const cbz_list = [_]catalog.CbzArchiveOutput{
+        .{
+            .filename = "chapter_15.cbz",
+            .series_id = "s-1",
+            .series = "The Ghostly Doctor",
+            .library = "manga",
+            .chapter_number = "15",
+            .total_pages = 7,
+            .file_size_bytes = 1234,
+        },
+    };
+
+    // Missing cover_url returns empty slice gracefully
+    const empty_res = try svc.execute(test_alloc, .{
+        .cbz_archive = &cbz_list,
+        .series_id = "s-1",
+        .title = "The Ghostly Doctor",
+        .cover_url = null,
+    });
+    try std.testing.expectEqual(@as(usize, 0), empty_res.len);
+
+    // Valid PNG cover_url emits CoverOutput with ext + chapter_number for pipeline.yaml routing
+    const res = try svc.execute(test_alloc, .{
+        .cbz_archive = &cbz_list,
+        .series_id = "s-1",
+        .title = "The Ghostly Doctor",
+        .cover_url = "https://uploads.mangadex.org/covers/s-1/cover.png",
+        .library = "manga",
+    });
+    try std.testing.expectEqual(@as(usize, 1), res.len);
+    try std.testing.expectEqualStrings("png", res[0].ext);
+    try std.testing.expectEqualStrings("15", res[0].chapter_number);
+    try std.testing.expectEqualStrings("The Ghostly Doctor", res[0].series);
+    try std.testing.expectEqualStrings("manga", res[0].library);
+    try std.testing.expect(std.mem.startsWith(u8, res[0].data, "\x89PNG"));
 }

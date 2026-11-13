@@ -44,11 +44,11 @@ test "MangaDex pipeline.yaml parses and validates into PipelineAST" {
     try std.testing.expectEqualStrings("manga_catalog", ast.modules[0].name);
     try std.testing.expectEqualStrings("./zig-out/lib/libmanga_catalog.so", ast.modules[0].path);
 
-    // 4. Validate entrypoint pipeline (manga_sync with 9 clean DAG steps)
+    // 4. Validate entrypoint pipeline (manga_sync with 10 clean DAG steps)
     try std.testing.expectEqualStrings("manga_sync", ast.getEntrypoint().?);
     const sync_pipe = ast.getPipeline("manga_sync");
     try std.testing.expect(sync_pipe != null);
-    try std.testing.expectEqual(@as(usize, 9), sync_pipe.?.steps.len);
+    try std.testing.expectEqual(@as(usize, 10), sync_pipe.?.steps.len);
 
     // Step 1: fetch_details
     const step1 = sync_pipe.?.steps[0].task;
@@ -160,4 +160,16 @@ test "MangaDex pipeline.yaml parses and validates into PipelineAST" {
     try std.testing.expect(step9.outputs.len >= 1);
     try std.testing.expectEqualStrings("egress_history", step9.outputs[0].name);
     try std.testing.expectEqualStrings("catalog_db", step9.outputs[0].datasource);
+
+    // Step 10: download_cover (Series cover artwork)
+    const step10 = sync_pipe.?.steps[9].task;
+    try std.testing.expectEqualStrings("download_cover", step10.id);
+    try std.testing.expectEqualStrings("manga_catalog", step10.module);
+    try std.testing.expectEqualStrings("download_cover", step10.task);
+    try std.testing.expectEqualStrings("mangadex_api", step10.primaryNetwork(ast.runtime.default_network));
+    try std.testing.expect(step10.outputs.len >= 2);
+    try std.testing.expectEqualStrings("series_cover", step10.outputs[0].name);
+    try std.testing.expectEqualStrings("komga_remote", step10.outputs[0].datasource);
+    try std.testing.expectEqualStrings("chapter_cover", step10.outputs[1].name);
+    try std.testing.expectEqualStrings("komga_remote", step10.outputs[1].datasource);
 }

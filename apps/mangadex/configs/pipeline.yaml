@@ -102,9 +102,10 @@ pipelines:
   #                         [tracked_targets (source)]
   #                                |
   #                       (1. fetch_details)
-  #                                |
-  #                       (2. fetch_chapters)
-  #                           /        \  (Fork / Fan-out)
+  #                         /            \
+  #                        /              \
+  #             (2. fetch_chapters)   (1b. download_cover) -> [komga_remote]
+  #                    /        \  (Fork / Fan-out)
   #                          /          \
   #                (3. fetch_pages)    (4. generate_comicinfo)
   #                [elemental: 4]      [elemental: 4, CPU]
@@ -253,3 +254,26 @@ pipelines:
         outputs:
           egress_history:
             datasource: catalog_db
+
+      # -----------------------------------------------------------------------
+      # STEP 10: Download Series Cover Artwork for Komga
+      # Activates on CbzArchiveOutput; uploads series cover.{ext} and
+      # per-chapter sidecar chapter_{chapter_number}.{ext} to {library}/{series}/
+      # -----------------------------------------------------------------------
+      - id: download_cover
+        uses: manga_catalog/download_cover
+        networks:
+          - mangadex_api
+        params:
+          default_library: "${KOMGA_DEFAULT_LIBRARY:-Manga}"
+        outputs:
+          series_cover:
+            datasource: komga_remote
+            params:
+              remote_dir: "{library}/{series}"
+              filename: "cover.{ext}"
+          chapter_cover:
+            datasource: komga_remote
+            params:
+              remote_dir: "{library}/{series}"
+              filename: "chapter_{chapter_number}.{ext}"
