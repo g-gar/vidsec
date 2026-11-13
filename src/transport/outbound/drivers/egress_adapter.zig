@@ -53,6 +53,22 @@ pub const EgressAdapter = struct {
     captured_packet_sink: ?PacketSink = null,
     adapter_metrics: AdapterMetrics = .{},
     clock_ms: u64 = 1000,
+    use_virtual_clock: bool = false,
+
+    fn monotonicNowMs() u64 {
+        var ts: std.c.timespec = undefined;
+        if (std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts) == 0) {
+            const sec: u64 = @intCast(@max(0, ts.sec));
+            const nsec: u64 = @intCast(@max(0, ts.nsec));
+            return sec * 1000 + nsec / 1_000_000;
+        }
+        return 1000;
+    }
+
+    fn currentNowMs(self: *const EgressAdapter) u64 {
+        if (self.use_virtual_clock) return self.clock_ms;
+        return monotonicNowMs();
+    }
 
     pub fn createHeap(
         allocator: Allocator,
@@ -107,7 +123,9 @@ pub const EgressAdapter = struct {
         try self.chain.use(try PolicyGuardMiddleware.createHeap(allocator, pol_rule));
 
         // 5. Dual Token Bucket Rate-Limiter & Backpressure Quota (`rate_limit:` + `pool:` + `backpressure:`)
-        const limiter = try DualTokenBucketStrategy.createHeap(allocator, config.rate_limit, config.pool, 1000);
+        const initial_now = monotonicNowMs();
+        self.clock_ms = initial_now;
+        const limiter = try DualTokenBucketStrategy.createHeap(allocator, config.rate_limit, config.pool, initial_now);
         try self.chain.use(try RateLimitMiddleware.createHeap(allocator, limiter, config.backpressure));
 
         // 6. Split-Tunnel Router & Multi-Strategy Proxy Failover Pool (`routes:` + `proxies:`)
@@ -169,7 +187,7 @@ pub const EgressAdapter = struct {
             .allocator = self.arena.allocator(),
             .adapter_id = self.config.id,
             .trace_tag = trace_tag,
-            .now_ms = self.clock_ms,
+            .now_ms = self.currentNowMs(),
             .original_url = raw_url,
             .effective_url = raw_url,
             .uri = uri,
@@ -284,6 +302,7 @@ pub const EgressAdapter = struct {
 
             fn doAdvanceClock(ctx: *anyopaque, delta_ms: u64) void {
                 const s: *EgressAdapter = @ptrCast(@alignCast(ctx));
+                s.use_virtual_clock = true;
                 s.clock_ms += delta_ms;
             }
 

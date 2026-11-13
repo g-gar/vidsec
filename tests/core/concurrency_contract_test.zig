@@ -391,6 +391,59 @@ test "Concurrency Contract: DualTokenBucketStrategy thread-safety under 16 concu
     try testing.expectEqual(@as(usize, 0), tb.activeInflight());
 }
 
+test "EgressAdapter + RateLimitMiddleware: paces local bursts with real monotonic clock" {
+    const EgressAdapter = flowdata.network.drivers.EgressAdapter;
+    const contracts = flowdata.network.contracts;
+
+    const allocator = testing.allocator;
+    const cfg = contracts.AdapterConfig{
+        .id = "test_pacing",
+        .rate_limit = .{
+            .requests_per_second = 50.0,
+            .burst = 2,
+        },
+        .policy = .{
+            .block_private_ranges = false,
+            .allow_rules = &.{.{
+                .schemes = &.{"https"},
+                .hosts = &.{"example.com"},
+                .operations = &.{"GET"},
+            }},
+        },
+    };
+    var proxy_reg = try flowdata.network.strategies.ProxyStrategyRegistry.init(allocator);
+    defer proxy_reg.deinit();
+    var transport_reg = contracts.TransportRegistry.init(allocator);
+    defer transport_reg.deinit();
+
+    var adapter = try EgressAdapter.createHeap(allocator, cfg, .{
+        .proxy_strategies = &proxy_reg,
+        .base_transports = &transport_reg,
+    });
+    defer adapter.deinit();
+
+    const MockTransport = struct {
+        fn handle(
+            _: ?*anyopaque,
+            _: std.mem.Allocator,
+            _: []const u8,
+            _: []const u8,
+            _: ?[]const u8,
+            _: []const u8,
+        ) anyerror!contracts.CustomTransportResult {
+            return .{ .status_code = 200, .body = "ok" };
+        }
+    };
+    adapter.setTransportHandler(null, &MockTransport.handle);
+
+    var i: usize = 0;
+    while (i < 4) : (i += 1) {
+        const res = try adapter.execute("https://example.com/page.jpg", "GET", &.{}, "", "test");
+        try testing.expectEqual(@as(u16, 200), res.status_code);
+    }
+    try testing.expectEqual(@as(u64, 0), adapter.metrics().requests_rate_limited);
+}
+
 // ============================================================================
 // 5. MemoryRepository Concurrent Multi-Channel Stress Test
 // ============================================================================

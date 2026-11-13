@@ -16,6 +16,7 @@ pub const RateLimitStrategy = struct {
 
     pub const VTable = struct {
         tryAcquire: *const fn (ctx: *anyopaque, now_ms: u64, payload_bytes: usize) AcquireDecision,
+        waitHintMs: ?*const fn (ctx: *const anyopaque, now_ms: u64, payload_bytes: usize) u64 = null,
         releaseInflight: *const fn (ctx: *anyopaque) void,
         applyRetryAfter: *const fn (ctx: *anyopaque, now_ms: u64, retry_after_ms: u64) void,
         activeInflight: *const fn (ctx: *const anyopaque) usize,
@@ -24,6 +25,13 @@ pub const RateLimitStrategy = struct {
 
     pub fn tryAcquire(self: RateLimitStrategy, now_ms: u64, payload_bytes: usize) AcquireDecision {
         return self.vtable.tryAcquire(self.ptr, now_ms, payload_bytes);
+    }
+
+    pub fn waitHintMs(self: RateLimitStrategy, now_ms: u64, payload_bytes: usize) u64 {
+        if (self.vtable.waitHintMs) |wh| {
+            return wh(self.ptr, now_ms, payload_bytes);
+        }
+        return 0;
     }
 
     pub fn releaseInflight(self: RateLimitStrategy) void {

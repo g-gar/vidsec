@@ -39,7 +39,26 @@ pub const RateLimitMiddleware = struct {
             return error.OutOfMemory;
         }
 
-        const decision = self.limiter.tryAcquire(exchange.now_ms, exchange.req_body.len);
+        var current_now = exchange.now_ms;
+        var decision = self.limiter.tryAcquire(current_now, exchange.req_body.len);
+        if (decision == .rate_limited_rps or decision == .rate_limited_bandwidth) {
+            const max_pacing_wait_ms: u64 = 30_000;
+            var waited_ms: u64 = 0;
+            while (decision == .rate_limited_rps or decision == .rate_limited_bandwidth) {
+                const hint = self.limiter.waitHintMs(current_now, exchange.req_body.len);
+                const slice_ms: u64 = @min(@max(hint, 5), 500);
+                if (waited_ms + slice_ms > max_pacing_wait_ms) break;
+
+                var ts: std.c.timespec = .{
+                    .sec = @intCast(slice_ms / 1000),
+                    .nsec = @intCast((slice_ms % 1000) * 1_000_000),
+                };
+                _ = std.c.nanosleep(&ts, null);
+                waited_ms += slice_ms;
+                current_now += slice_ms;
+                decision = self.limiter.tryAcquire(current_now, exchange.req_body.len);
+            }
+        }
         if (decision != .allowed) {
             exchange.metrics.requests_rate_limited += 1;
             return if (decision == .pool_exhausted) error.NetworkAcquireTimeout else error.NetworkRateLimited;
@@ -50,7 +69,7 @@ pub const RateLimitMiddleware = struct {
 
         const res = try next_handler.next(exchange);
         if (res.retry_after_ms > 0) {
-            self.limiter.applyRetryAfter(exchange.now_ms, res.retry_after_ms);
+            self.limiter.applyRetryAfter(current_now, res.retry_after_ms);
         }
         return res;
     }

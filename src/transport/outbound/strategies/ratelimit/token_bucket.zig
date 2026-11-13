@@ -107,6 +107,34 @@ pub const DualTokenBucketStrategy = struct {
         return .allowed;
     }
 
+    pub fn waitHintMs(self: *DualTokenBucketStrategy, now_ms: u64, payload_bytes: usize) u64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.spec.respect_retry_after and now_ms < self.cooldown_until_ms) {
+            return self.cooldown_until_ms - now_ms;
+        }
+
+        var wait_ms: u64 = 0;
+        if (self.spec.requests_per_second > 0.0 and self.req_tokens < 1.0) {
+            const deficit = 1.0 - self.req_tokens;
+            const sec = deficit / self.spec.requests_per_second;
+            const rps_wait: u64 = @intFromFloat(@ceil(sec * 1000.0));
+            wait_ms = @max(wait_ms, @max(@as(u64, 1), rps_wait));
+        }
+        if (self.spec.max_bandwidth_mbps > 0.0 and payload_bytes > 0) {
+            const needed_bytes: f64 = @floatFromInt(payload_bytes);
+            if (self.bw_bytes_tokens < needed_bytes) {
+                const bw_bytes_per_sec: f64 = (self.spec.max_bandwidth_mbps * 1_000_000.0) / 8.0;
+                const deficit = needed_bytes - self.bw_bytes_tokens;
+                const sec = deficit / bw_bytes_per_sec;
+                const bw_wait: u64 = @intFromFloat(@ceil(sec * 1000.0));
+                wait_ms = @max(wait_ms, @max(@as(u64, 1), bw_wait));
+            }
+        }
+        return wait_ms;
+    }
+
     pub fn releaseInflight(self: *DualTokenBucketStrategy) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -139,6 +167,11 @@ pub const DualTokenBucketStrategy = struct {
                 return s.tryAcquire(now_ms, payload_bytes);
             }
 
+            fn doWaitHintMs(ctx: *const anyopaque, now_ms: u64, payload_bytes: usize) u64 {
+                const s: *DualTokenBucketStrategy = @constCast(@ptrCast(@alignCast(ctx)));
+                return s.waitHintMs(now_ms, payload_bytes);
+            }
+
             fn doReleaseInflight(ctx: *anyopaque) void {
                 const s: *DualTokenBucketStrategy = @ptrCast(@alignCast(ctx));
                 s.releaseInflight();
@@ -163,6 +196,7 @@ pub const DualTokenBucketStrategy = struct {
 
             const vtable = RateLimitStrategy.VTable{
                 .tryAcquire = &doTryAcquire,
+                .waitHintMs = &doWaitHintMs,
                 .releaseInflight = &doReleaseInflight,
                 .applyRetryAfter = &doApplyRetryAfter,
                 .activeInflight = &doActiveInflight,
