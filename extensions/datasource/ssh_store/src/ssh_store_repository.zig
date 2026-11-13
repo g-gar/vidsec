@@ -190,6 +190,20 @@ pub const SshStoreRepository = struct {
         }
     }
 
+    fn readStderr(io: std.Io, alloc: Allocator, maybe_stderr: *?std.Io.File) []const u8 {
+        if (maybe_stderr.*) |*f| {
+            var out: std.ArrayListUnmanaged(u8) = .empty;
+            var buf: [4096]u8 = undefined;
+            while (true) {
+                const n = f.readStreaming(io, &.{&buf}) catch break;
+                if (n == 0) break;
+                out.appendSlice(alloc, buf[0..n]) catch break;
+            }
+            return std.mem.trim(u8, out.items, " \t\r\n");
+        }
+        return "";
+    }
+
     fn runSshCommand(self: *const SshStoreRepository, remote_cmd: []const u8, stdin_bytes: ?[]const u8) !void {
         var arena_impl = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_impl.deinit();
@@ -221,11 +235,12 @@ pub const SshStoreRepository = struct {
             }
         }
 
+        const stderr_msg = readStderr(io, arena, &child.stderr);
         const term = try child.wait(io);
         switch (term) {
             .exited => |code| {
                 if (code != 0) {
-                    std.log.err("[ssh_store] ssh command exited with code {d}: {s}", .{ code, remote_cmd });
+                    std.log.err("[ssh_store] ssh ({s}) exited with code {d}: {s} | stderr: {s}", .{ target, code, remote_cmd, stderr_msg });
                     return error.SshCommandFailed;
                 }
             },
@@ -257,11 +272,12 @@ pub const SshStoreRepository = struct {
             .stderr = .pipe,
         });
 
+        const stderr_msg = readStderr(io, arena, &child.stderr);
         const term = try child.wait(io);
         switch (term) {
             .exited => |code| {
                 if (code != 0) {
-                    std.log.err("[ssh_store] scp upload exited with code {d}: {s} -> {s}", .{ code, local_path, remote_path });
+                    std.log.err("[ssh_store] scp ({s}) exited with code {d}: {s} -> {s} | stderr: {s}", .{ target, code, local_path, remote_path, stderr_msg });
                     return error.ScpUploadFailed;
                 }
             },
