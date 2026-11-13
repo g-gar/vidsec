@@ -53,6 +53,16 @@ pub const ChannelSpec = dataflow.ChannelSpec;
 pub const DispatchedChannel = dataflow.DispatchedChannel;
 pub const dispatchStream = dataflow.dispatchStream;
 
+// 009A: Predicate AST
+pub const predicate_ast = dataflow.predicate_ast;
+pub const PredicateNode = dataflow.PredicateNode;
+pub const PredicateParser = dataflow.PredicateParser;
+pub const PredicateBuilder = dataflow.PredicateBuilder;
+pub const Literal = dataflow.Literal;
+pub const CmpOp = dataflow.CmpOp;
+pub const FieldGetter = dataflow.FieldGetter;
+pub const evalPredicateNode = dataflow.evalPredicateNode;
+
 test {
     std.testing.refAllDecls(@This());
 }

@@ -20,4 +20,5 @@ test {
     _ = @import("core/reactive_router_test.zig");
     _ = @import("core/routing_strategy_test.zig");
     _ = @import("core/collectors_test.zig");
+    _ = @import("core/repository_conformance.zig");
 }

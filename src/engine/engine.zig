@@ -21,6 +21,7 @@ pub const RoutingStrategy = routing.RoutingStrategy;
 pub const RouterRegistry = routing.RouterRegistry;
 pub const sources = @import("sources/mod.zig");
 pub const BatchSource = sources.BatchSource;
+pub const preflight = @import("preflight.zig");
 
 pub const PipelineAST = ast_mod.PipelineAST;
 pub const ModuleRegistry = modules_mod.ModuleRegistry;

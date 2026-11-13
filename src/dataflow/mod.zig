@@ -26,6 +26,16 @@ pub const evaluatePredicateHandle = predicate.evaluatePredicateHandle;
 pub const filterStream = predicate.filterStream;
 pub const filterPayload = predicate.filterPayload;
 
+// 009A: Predicate AST (parser + builder + in-memory evaluator)
+pub const predicate_ast = @import("predicate_ast.zig");
+pub const PredicateNode = predicate_ast.PredicateNode;
+pub const PredicateParser = predicate_ast.PredicateParser;
+pub const PredicateBuilder = predicate_ast.PredicateBuilder;
+pub const Literal = predicate_ast.Literal;
+pub const CmpOp = predicate_ast.CmpOp;
+pub const FieldGetter = predicate_ast.FieldGetter;
+pub const evalPredicateNode = predicate_ast.evalNode;
+
 pub const parallel = @import("parallel.zig");
 pub const parallelFor = parallel.parallelFor;
 pub const ParallelError = parallel.ParallelError;

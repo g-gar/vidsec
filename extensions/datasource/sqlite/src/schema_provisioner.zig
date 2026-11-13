@@ -12,11 +12,10 @@ const ddl = sqlite_lib.ddl;
 
 fn mapColType(t: ColumnType) ddl.StorageType {
     return switch (t) {
-        .int64, .bool => .integer,
+        .int64, .uint64, .bool, .timestamp => .integer,
         .float64 => .real,
-        .text => .text,
-        .blob => .blob,
-        .any => .any,
+        .text, .json, .enum_type, .any => .text,
+        .bytes, .blob => .blob,
     };
 }
 
@@ -137,9 +136,77 @@ fn provisionTable(allocator: Allocator, db: *Db, table_name: []const u8, tbl: *c
 
     // 5. Execute seed inserts if declared
     if (tbl.seeds.len > 0) {
-        if (try tbl.renderSeedInsertSql(allocator, table_name)) |seeds_sql| {
+        if (try renderSeedInsertSql(allocator, table_name, tbl)) |seeds_sql| {
             defer allocator.free(seeds_sql);
             try db.exec(seeds_sql);
         }
     }
+}
+
+fn renderSeedInsertSql(
+    allocator: Allocator,
+    table_name: []const u8,
+    tbl: *const TableSchema,
+) !?[]const u8 {
+    if (tbl.seeds.len == 0) return null;
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(allocator);
+
+    for (tbl.seeds) |seed_row| {
+        if (seed_row.entries.len == 0) continue;
+
+        try buf.appendSlice(allocator, "INSERT OR IGNORE INTO \"");
+        try buf.appendSlice(allocator, table_name);
+        try buf.appendSlice(allocator, "\" (");
+
+        for (seed_row.entries, 0..) |entry, i| {
+            if (i > 0) try buf.appendSlice(allocator, ", ");
+            try buf.append(allocator, '"');
+            try buf.appendSlice(allocator, entry.key);
+            try buf.append(allocator, '"');
+        }
+        try buf.appendSlice(allocator, ") VALUES (");
+
+        for (seed_row.entries, 0..) |entry, i| {
+            if (i > 0) try buf.appendSlice(allocator, ", ");
+            const col_spec = tbl.columns.get(entry.key);
+            const col_type = if (col_spec) |c| c.col_type else ColumnType.text;
+
+            const raw_val = entry.value.value;
+            if (std.mem.eql(u8, raw_val, "null") and entry.value.quote_style == .plain) {
+                try buf.appendSlice(allocator, "NULL");
+            } else switch (col_type) {
+                .int64, .uint64, .timestamp, .float64 => {
+                    try buf.appendSlice(allocator, raw_val);
+                },
+                .bool => {
+                    if (std.mem.eql(u8, raw_val, "true") or std.mem.eql(u8, raw_val, "1")) {
+                        try buf.appendSlice(allocator, "1");
+                    } else {
+                        try buf.appendSlice(allocator, "0");
+                    }
+                },
+                .text, .json, .enum_type, .bytes, .blob, .any => {
+                    try buf.append(allocator, '\'');
+                    for (raw_val) |ch| {
+                        if (ch == '\'') {
+                            try buf.appendSlice(allocator, "''");
+                        } else {
+                            try buf.append(allocator, ch);
+                        }
+                    }
+                    try buf.append(allocator, '\'');
+                },
+            }
+        }
+        try buf.appendSlice(allocator, ");\n");
+    }
+
+    if (buf.items.len == 0) {
+        buf.deinit(allocator);
+        return null;
+    }
+
+    return try buf.toOwnedSlice(allocator);
 }

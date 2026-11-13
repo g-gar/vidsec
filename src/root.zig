@@ -1,6 +1,7 @@
 const std = @import("std");
 
 pub const ast = @import("ast/ast.zig");
+pub const schema = @import("schema/mod.zig");
 pub const dataflow = @import("flowdata_dataflow");
 pub const yaml = @import("yaml/mod.zig");
 pub const repository = @import("repository/mod.zig");
@@ -23,6 +24,9 @@ pub const pipeline_ast = ast;
 // Primary Engine Exports
 pub const PipelineAST = ast.PipelineAST;
 pub const PipelineBuilder = ast.PipelineBuilder;
+pub const SchemaCatalog = schema.SchemaCatalog;
+pub const TableSchema = schema.TableSchema;
+pub const ColumnSpec = schema.ColumnSpec;
 pub const PipelineEngine = engine.PipelineEngine;
 pub const PushReactor = engine.PushReactor;
 pub const RecordEmitter = engine.RecordEmitter;
@@ -63,6 +67,14 @@ pub const Semaphore = concurrency.Semaphore;
 pub const Repository = repository.Repository;
 pub const StorageRepository = repository.StorageRepository;
 pub const RepositoryRegistry = repository.RepositoryRegistry;
+pub const Capabilities = repository.Capabilities;
+pub const WriteMode = repository.WriteMode;
+pub const WriteSpec = repository.WriteSpec;
+pub const ReadSpec = repository.ReadSpec;
+pub const RecordMap = repository.RecordMap;
+pub const RowIterator = repository.RowIterator;
+pub const SynchronizedRepository = repository.SynchronizedRepository;
+pub const AsyncBatchRepository = repository.AsyncBatchRepository;
 pub const OutboundAdapter = transport.outbound.OutboundAdapter;
 pub const OutboundRegistry = transport.outbound.OutboundRegistry;
 pub const NetworkAdapter = network.NetworkAdapter;
