@@ -189,7 +189,12 @@ pub const HttpTransport = struct {
                 .location = .{ .url = exchange.effective_url },
                 .method = method,
                 .headers = std_headers,
-                .payload = if (exchange.req_body.len > 0) exchange.req_body else null,
+                .payload = if (exchange.req_body.len > 0)
+                    exchange.req_body
+                else if (method.requestHasBody())
+                    ""
+                else
+                    null,
                 .extra_headers = extra_headers.items,
                 .response_writer = &body_writer.writer,
             }) catch |err| {
