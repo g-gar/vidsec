@@ -185,6 +185,7 @@ pub const ChannelOutputSpec = struct {
     datasource: []const u8 = "default",
     filter: ?[]const u8 = null,
     retain: bool = false,
+    params: []const KeyValueParam = &.{},
 };
 
 // =============================================================================

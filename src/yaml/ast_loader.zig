@@ -275,6 +275,7 @@ fn parseOutputs(alloc: Allocator, out_node: yaml_lib.Node) ![]const ChannelOutpu
                 const schema = if (ch.get("schema")) |s| s.asScalar() else null;
                 const filter = if (ch.get("filter")) |fl| fl.asScalar() else null;
                 const retain = if (ch.get("retain")) |r| (if (r.asScalar()) |rs| std.mem.eql(u8, rs, "true") else false) else false;
+                const params = if (ch.get("params")) |p| try parseKeyValueParams(alloc, p) else &.{};
                 try list.append(alloc, .{
                     .name = entry.key,
                     .from_field = from,
@@ -282,6 +283,7 @@ fn parseOutputs(alloc: Allocator, out_node: yaml_lib.Node) ![]const ChannelOutpu
                     .datasource = ds,
                     .filter = filter,
                     .retain = retain,
+                    .params = params,
                 });
             }
         }

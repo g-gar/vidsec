@@ -27,6 +27,7 @@ const routing_mod = @import("routing/mod.zig");
 const RoutingStrategy = routing_mod.RoutingStrategy;
 const TaskActivation = routing_mod.TaskActivation;
 const NamedPayload = routing_mod.NamedPayload;
+const repository_mod = @import("../repository/mod.zig");
 
 pub const StepArenaRecord = struct {
     arena: std.heap.ArenaAllocator,
@@ -642,7 +643,13 @@ pub const Coordinator = struct {
                 }
 
                 if (self.engine.repos.get(out_ch.datasource)) |repo| {
-                    repo.writePayload(out_ch.name, channel_payload) catch |err| {
+                    writeChannelToRepo(
+                        self.engine.allocator,
+                        repo,
+                        out_ch.name,
+                        channel_payload,
+                        out_ch.params,
+                    ) catch |err| {
                         std.log.err("[Coordinator Step '{s}'] Failed to write channel '{s}' to datasource '{s}': {s}", .{
                             task_spec.id,
                             out_ch.name,
@@ -896,3 +903,103 @@ pub const Coordinator = struct {
         }
     }
 };
+
+fn interpolateParamTemplate(alloc: Allocator, template: []const u8, payload: PayloadHandle) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, template, '{') == null) {
+        return alloc.dupe(u8, template);
+    }
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(alloc);
+
+    var i: usize = 0;
+    while (i < template.len) {
+        if (template[i] == '{') {
+            if (std.mem.indexOfScalarPos(u8, template, i + 1, '}')) |close_idx| {
+                const field_name = template[i + 1 .. close_idx];
+                if (payload.getReflected(field_name)) |rval| {
+                    switch (rval) {
+                        .string => |s| try buf.appendSlice(alloc, s),
+                        .bytes => |b| try buf.appendSlice(alloc, b),
+                        .int => |iv| {
+                            var num_buf: [32]u8 = undefined;
+                            const s = try std.fmt.bufPrint(&num_buf, "{d}", .{iv});
+                            try buf.appendSlice(alloc, s);
+                        },
+                        .uint => |uv| {
+                            var num_buf: [32]u8 = undefined;
+                            const s = try std.fmt.bufPrint(&num_buf, "{d}", .{uv});
+                            try buf.appendSlice(alloc, s);
+                        },
+                        .float => |fv| {
+                            var num_buf: [64]u8 = undefined;
+                            const s = try std.fmt.bufPrint(&num_buf, "{d}", .{fv});
+                            try buf.appendSlice(alloc, s);
+                        },
+                        .boolean => |bv| try buf.appendSlice(alloc, if (bv) "true" else "false"),
+                        .none, .unsupported => {},
+                    }
+                    i = close_idx + 1;
+                    continue;
+                }
+            }
+        }
+        try buf.append(alloc, template[i]);
+        i += 1;
+    }
+
+    return buf.toOwnedSlice(alloc);
+}
+
+fn writeSinglePayloadWithParams(
+    alloc: Allocator,
+    repo: repository_mod.StorageRepository,
+    channel_name: []const u8,
+    payload: PayloadHandle,
+    params: []const ast.KeyValueParam,
+) !void {
+    if (params.len == 0) {
+        try repo.writePayload(channel_name, payload);
+        return;
+    }
+
+    const resolved = try alloc.alloc(repository_mod.ConfigParam, params.len);
+    defer {
+        for (resolved) |r| alloc.free(r.value);
+        alloc.free(resolved);
+    }
+
+    for (params, 0..) |p, idx| {
+        resolved[idx] = .{
+            .key = p.key,
+            .value = try interpolateParamTemplate(alloc, p.value, payload),
+        };
+    }
+
+    try repo.writePayloadWithParams(channel_name, payload, resolved);
+}
+
+fn writeChannelToRepo(
+    alloc: Allocator,
+    repo: repository_mod.StorageRepository,
+    channel_name: []const u8,
+    payload: PayloadHandle,
+    params: []const ast.KeyValueParam,
+) !void {
+    if (params.len == 0) {
+        try repo.writePayload(channel_name, payload);
+        return;
+    }
+
+    if (payload.is_stream and payload.repr != .bytes and payload.element_size > 0 and payload.len > 1) {
+        var idx: usize = 0;
+        while (idx < payload.len) : (idx += 1) {
+            if (payload.elementAt(idx)) |elem| {
+                try writeSinglePayloadWithParams(alloc, repo, channel_name, elem, params);
+            }
+        }
+        return;
+    }
+
+    try writeSinglePayloadWithParams(alloc, repo, channel_name, payload, params);
+}

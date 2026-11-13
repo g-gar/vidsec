@@ -81,7 +81,10 @@ pub fn DiContainer(comptime ContextImpl: type) type {
 
         /// Compiles a declarative `Service` into a C-ABI `TaskDescriptor_ABI`.
         pub fn defineTaskService(comptime Service: type, comptime spec: anytype) TaskDescriptor_ABI {
-            comptime di.assertValidService(ContextImpl, Service);
+            comptime {
+                @setEvalBranchQuota(10000);
+                di.assertValidService(ContextImpl, Service);
+            }
 
             const ExecFnType = @TypeOf(Service.execute);
             const fn_info = @typeInfo(ExecFnType).@"fn";
@@ -373,7 +376,9 @@ pub fn DiContainer(comptime ContextImpl: type) type {
 
                             if (is_collect) {
                                 var err_count: usize = 0;
-                                for (err_slots) |e| if (e != null) { err_count += 1; };
+                                for (err_slots) |e| if (e != null) {
+                                    err_count += 1;
+                                };
                                 var compact_errs = alloc.alloc(ItemError, err_count) catch return .fatal_error;
                                 var ew: usize = 0;
                                 for (err_slots) |e| {
@@ -464,7 +469,9 @@ pub fn DiContainer(comptime ContextImpl: type) type {
 
                             if (is_collect) {
                                 var err_count: usize = 0;
-                                for (err_slots) |e| if (e != null) { err_count += 1; };
+                                for (err_slots) |e| if (e != null) {
+                                    err_count += 1;
+                                };
                                 var compact_errs = alloc.alloc(ItemError, err_count) catch return .fatal_error;
                                 var ew: usize = 0;
                                 for (err_slots) |e| {
@@ -557,7 +564,9 @@ pub fn DiContainer(comptime ContextImpl: type) type {
 
                             if (is_collect) {
                                 var err_count: usize = 0;
-                                for (err_slots) |e| if (e != null) { err_count += 1; };
+                                for (err_slots) |e| if (e != null) {
+                                    err_count += 1;
+                                };
                                 var compact_errs = alloc.alloc(ItemError, err_count) catch return .fatal_error;
                                 var ew: usize = 0;
                                 for (err_slots) |e| {

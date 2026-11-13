@@ -3,10 +3,7 @@ const Allocator = std.mem.Allocator;
 const StorageRepository = @import("storage_repository.zig").StorageRepository;
 
 /// Generic key-value configuration parameter for initializing storage datasources.
-pub const ConfigParam = struct {
-    key: []const u8,
-    value: []const u8,
-};
+pub const ConfigParam = @import("storage_repository.zig").ConfigParam;
 
 /// Open-ended datasource configuration specification.
 pub const DatasourceConfig = struct {
