@@ -21,8 +21,8 @@
   datasource: mangadex
   series_id: "e5f26bd4-c91f-4a2f-a9bc-3791c03caf0e"
   languages: ["en"]
-  chapters: "1..4"
-  enabled: false # all good
+  chapters: "1..1"
+  enabled: true # all good
 
 - title: "God of Bath"
   datasource: mangadex

@@ -10,13 +10,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Auto-source .env if present
-if [[ -f .env ]]; then
-    set -a
-    # shellcheck disable=SC1091
-    source .env
-    set +a
-fi
+# Auto-source .env if present (prefer root .env over configs/.env)
+ENV_FILE=""
+for candidate in "configs/.env" ".env"; do
+    if [[ -f "$candidate" ]]; then
+        set -a
+        # shellcheck disable=SC1090
+        source "$candidate"
+        set +a
+        ENV_FILE="$candidate"
+    fi
+done
 
 PIPELINE_PATH="configs/pipeline.yaml"
 MODE="run"
@@ -99,21 +103,26 @@ if [[ ! -f "$PIPELINE_PATH" ]]; then
     exit 1
 fi
 
+ENV_ARGS=()
+if [[ -n "$ENV_FILE" ]]; then
+    ENV_ARGS=(--env "$ENV_FILE")
+fi
+
 # 4. Dispatch selected mode
 case "$MODE" in
     validate)
         echo "==> Validating pipeline '$PIPELINE_PATH'..."
-        exec "$BIN_PATH" validate --pipeline "$PIPELINE_PATH" "${EXTRA_ARGS[@]}"
+        exec "$BIN_PATH" validate --pipeline "$PIPELINE_PATH" "${ENV_ARGS[@]}" "${EXTRA_ARGS[@]}"
         ;;
     serve)
         echo "==> Starting pipeline server with '$PIPELINE_PATH'..."
-        exec "$BIN_PATH" serve --pipeline "$PIPELINE_PATH" "${EXTRA_ARGS[@]}"
+        exec "$BIN_PATH" serve --pipeline "$PIPELINE_PATH" "${ENV_ARGS[@]}" "${EXTRA_ARGS[@]}"
         ;;
     run)
         echo "==> Validating pre-flight requirements..."
-        "$BIN_PATH" validate --pipeline "$PIPELINE_PATH"
+        "$BIN_PATH" validate --pipeline "$PIPELINE_PATH" "${ENV_ARGS[@]}"
 
         echo "==> Executing pipeline '$PIPELINE_PATH'..."
-        exec "$BIN_PATH" run --pipeline "$PIPELINE_PATH" "${EXTRA_ARGS[@]}"
+        exec "$BIN_PATH" run --pipeline "$PIPELINE_PATH" "${ENV_ARGS[@]}" "${EXTRA_ARGS[@]}"
         ;;
 esac

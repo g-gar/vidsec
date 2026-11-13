@@ -13,6 +13,7 @@
 #   -t, --title <name>         Human-readable series title
 #   -c, --chapters <selector>  Chapter selector e.g. "1", "1..5", "latest:3" (default: "1")
 #   -l, --lang <lang>          Language code (default: "en")
+#   -L, --library <name>       Target Komga library name or ID (optional)
 #   -e, --engine <url>         Flowdata Engine endpoint (default: http://127.0.0.1:8080)
 #   -h, --help                 Show this help message
 #
@@ -27,6 +28,7 @@ SERIES_ID="9d45ff11-2385-4179-8663-e0dbb0ebd792" # Low Orbit Human (Default)
 TITLE="Low Orbit Human"
 CHAPTERS="1"
 LANG="en"
+LIBRARY=""
 ENGINE_URL="${ENGINE_URL:-http://127.0.0.1:8080}"
 
 usage() {
@@ -40,6 +42,7 @@ Options:
   -t, --title <name>         Series title (default: $TITLE)
   -c, --chapters <selector>  Chapter selector: "1", "1..4", "latest:5", "all" (default: $CHAPTERS)
   -l, --lang <lang>          Language code (default: $LANG)
+  -L, --library <name>       Target Komga library name or ID (optional)
   -e, --engine <url>         Flowdata Engine URL (default: $ENGINE_URL)
   -h, --help                 Show this help message
 EOF
@@ -64,6 +67,10 @@ while [[ $# -gt 0 ]]; do
             LANG="$2"
             shift 2
             ;;
+        -L|--library)
+            LIBRARY="$2"
+            shift 2
+            ;;
         -e|--engine)
             ENGINE_URL="$2"
             shift 2
@@ -82,9 +89,14 @@ done
 TIMESTAMP_NS=$(date +%s%N)
 JOB_ID="job_${TIMESTAMP_NS}"
 
+LIBRARY_FIELD=""
+if [[ -n "$LIBRARY" ]]; then
+    LIBRARY_FIELD=",\"library\":\"${LIBRARY}\""
+fi
+
 # Build inner payload JSON string (escaped for JobEnvelope.payload)
 INNER_PAYLOAD=$(cat <<EOF
-{"series_id":"${SERIES_ID}","title":"${TITLE}","chapters":"${CHAPTERS}","languages":["${LANG}"],"datasource":"mangadex","enabled":true}
+{"series_id":"${SERIES_ID}","title":"${TITLE}","chapters":"${CHAPTERS}","languages":["${LANG}"],"datasource":"mangadex","enabled":true${LIBRARY_FIELD}}
 EOF
 )
 
