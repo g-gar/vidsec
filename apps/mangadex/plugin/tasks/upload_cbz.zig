@@ -47,6 +47,11 @@ pub const UploadCbzService = struct {
     logger: Logger,
     default_library_id: ?[]const u8 = null,
 
+    pub fn canHandle(payload: *const @import("flowdata").plugin.PayloadHandle_ABI) bool {
+        const expected = comptime @import("flowdata").plugin.types.schemaId(CbzArchiveOutput);
+        return payload.schema_id != 0 and expected != 0 and payload.schema_id == expected;
+    }
+
     pub fn execute(self: *UploadCbzService, alloc: Allocator, inputs: UploadCbzInputs) ![]EgressDeliveryRecord {
         if (inputs.cbz_archive.len == 0) {
             self.logger.warn("No CBZ archives to synchronize with Komga", .{});
