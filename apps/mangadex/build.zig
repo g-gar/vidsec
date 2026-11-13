@@ -78,6 +78,7 @@ pub fn build(b: *std.Build) void {
     });
     plugin_mod.addImport("flowdata", flowdata_mod);
     plugin_mod.addImport("mangadex_sdk", sdk_mod);
+    plugin_mod.addImport("komga_sdk", komga_sdk_mod);
     plugin_mod.addImport("zip_archive", zip_archive_mod);
     plugin_mod.addImport("comicinfo", comicinfo_mod);
     plugin_mod.addImport("sources", sources_mod);

@@ -238,3 +238,50 @@ test "KomgaClient executes Library, Series and Book operations" {
     try std.testing.expect(std.mem.indexOf(u8, mock.last_body.?, "\"copyMode\":\"MOVE\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, mock.last_body.?, "\"seriesId\":\"ser-123\"") != null);
 }
+
+test "UploadCbzService resolves library, scans, analyzes series and emits egress_history" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var mock = MockKomgaTransport{};
+    var client = KomgaClient.init(alloc, .{
+        .base_url = "http://127.0.0.1:25600",
+        .auth = .{ .api_key = "test-token" },
+    }, mock.httpTransport());
+
+    const flowdata = @import("flowdata");
+    const catalog = @import("mangadex_plugin").catalog;
+
+    var service = catalog.UploadCbzService{
+        .komga = &client,
+        .logger = flowdata.plugin.Logger.noop(),
+        .default_library_id = "lib-1",
+    };
+
+    const archives = [_]catalog.CbzArchiveOutput{
+        .{
+            .filename = "chapter_1.cbz",
+            .series_id = "md-uuid-1",
+            .series = "Chainsaw Man",
+            .library = "Manga Library",
+            .chapter_number = "1",
+            .data = "PK\x03\x04dummy",
+            .total_pages = 24,
+            .file_size_bytes = 10,
+        },
+    };
+
+    const records = try service.execute(alloc, .{
+        .cbz_archive = &archives,
+        .series_title = "Chainsaw Man",
+        .library = "Manga Library",
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expectEqualStrings("komga", records[0].target);
+    try std.testing.expectEqualStrings("ser-123", records[0].external_book_id.?);
+    try std.testing.expectEqualStrings("success", records[0].status);
+    try std.testing.expectEqual(HttpMethod.POST, mock.last_method.?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:25600/api/v1/series/ser-123/analyze", mock.last_url.?);
+}

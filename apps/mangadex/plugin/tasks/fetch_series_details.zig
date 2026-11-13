@@ -8,6 +8,7 @@ pub const MangaJob = struct {
     datasource: ?[]const u8 = null,
     languages: []const u8 = "en",
     chapters: []const u8 = "all",
+    library: ?[]const u8 = null,
 };
 
 pub const SeriesDetails = struct {
@@ -22,6 +23,7 @@ pub const SeriesDetails = struct {
     available_languages: []const u8 = "",
     summary: ?[]const u8 = null,
     target_chapters: []const u8 = "all",
+    library: ?[]const u8 = null,
 };
 
 pub const FetchSeriesDetailsService = struct {
@@ -54,6 +56,7 @@ pub const FetchSeriesDetailsService = struct {
             .available_languages = langs_buf.items,
             .summary = details.summary,
             .target_chapters = job.chapters,
+            .library = job.library,
         };
     }
 };

@@ -3,16 +3,19 @@ const Allocator = std.mem.Allocator;
 const flowdata = @import("flowdata");
 const abi = flowdata.plugin;
 const sdk = @import("mangadex_sdk");
+const komga_sdk = @import("komga_sdk");
 const sources = @import("sources");
 const adapters = @import("mangadex_app").adapters;
 const AppConfig = @import("mangadex_app").config.AppConfig;
 
 const TaskContext = abi.TaskContext;
 const MangaDexClient = sdk.MangaDexClient;
+const KomgaClient = komga_sdk.KomgaClient;
 const MangaSource = sources.MangaSource;
 const MangaDexSource = sources.MangaDexSource;
 const HtmlGenericSource = sources.HtmlGenericSource;
 const FlowdataHttpAdapter = adapters.FlowdataHttpAdapter;
+const FlowdataKomgaAdapter = adapters.FlowdataKomgaAdapter;
 
 fn createClient(alloc: Allocator, ctx: TaskContext, http_bridge: *FlowdataHttpAdapter) MangaDexClient {
     var app_cfg = AppConfig.load(alloc, "configs/.env") catch AppConfig.load(alloc, ".env") catch AppConfig{};
@@ -66,13 +69,41 @@ fn createClient(alloc: Allocator, ctx: TaskContext, http_bridge: *FlowdataHttpAd
 
 pub const MangaContext = struct {
     http: FlowdataHttpAdapter,
+    komga_http: FlowdataKomgaAdapter,
     mangadex_client: MangaDexClient,
+    komga_client: KomgaClient,
     mangadex_driver: MangaDexSource,
     html_generic_driver: HtmlGenericSource,
+    komga_library_id: ?[]const u8 = null,
 
     pub fn init(self: *MangaContext, alloc: Allocator, ctx: TaskContext) !void {
         self.http = FlowdataHttpAdapter.fromTaskContext(ctx);
+        self.komga_http = FlowdataKomgaAdapter.fromTaskContext(ctx);
         self.mangadex_client = createClient(alloc, ctx, &self.http);
+
+        const app_cfg = AppConfig.load(alloc, "configs/.env") catch AppConfig.load(alloc, ".env") catch AppConfig{};
+        var komga_url = app_cfg.komga_url;
+        if (ctx.getParam("komga_url") catch null) |url_val| {
+            if (url_val.asText()) |u| {
+                if (u.len > 0) komga_url = u;
+            }
+        }
+        var komga_auth = app_cfg.resolveKomgaAuth();
+        if (ctx.getParam("komga_api_key") catch null) |key_val| {
+            if (key_val.asText()) |k| {
+                if (k.len > 0) komga_auth = .{ .api_key = k };
+            }
+        }
+        self.komga_library_id = app_cfg.komga_library_id;
+        self.komga_client = KomgaClient.init(
+            alloc,
+            .{
+                .base_url = komga_url,
+                .auth = komga_auth,
+            },
+            self.komga_http.httpTransport(),
+        );
+
         self.mangadex_driver = MangaDexSource.init(&self.mangadex_client);
         self.html_generic_driver = HtmlGenericSource.init("html_generic", "https://visortmo.com");
     }
@@ -82,6 +113,11 @@ pub const MangaContext = struct {
     /// @Bean Factory Method: Injects HttpTransport implementation into Services declaring `http: HttpTransport`.
     pub fn provideHttpTransport(self: *MangaContext) sdk.HttpTransport {
         return self.http.httpTransport();
+    }
+
+    /// @Bean Factory Method: Injects KomgaClient into Services declaring `komga: *KomgaClient`.
+    pub fn provideKomgaClient(self: *MangaContext) *KomgaClient {
+        return &self.komga_client;
     }
 
     /// @Bean Factory Method: Automatically discovered at comptime by Flowdata's DI engine

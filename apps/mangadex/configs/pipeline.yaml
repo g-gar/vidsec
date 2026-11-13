@@ -35,11 +35,21 @@ datasources:
     path: "${MANGADEX_DB_PATH:-./output/mangadex.db}"
     schema: "${MANGADEX_SCHEMA_PATH:-./configs/schemas.yaml}"
 
-  # 4. Storage destination for compiled .cbz comic archives
-  komga_library:
+  # 4. Local temporary staging/backup store for compiled .cbz archives
+  cbz_staging:
     driver: file_store
     role: sink
-    directory: "${KOMGA_LIBRARY_DIR:-./output/cbz/}"
+    directory: "${CBZ_STAGING_DIR:-./output/cbz/}"
+
+  # 5. Remote SSH/SCP destination for uploading in-memory .cbz archives to Komga host
+  komga_remote:
+    driver: ssh_store
+    role: sink
+    host: "${KOMGA_SSH_HOST:-localhost}"
+    port: "${KOMGA_SSH_PORT:-22}"
+    user: "${KOMGA_SSH_USER:-}"
+    identity_file: "${KOMGA_SSH_KEY:-}"
+    directory: "${KOMGA_SSH_DIR:-/data/komga}"
 
 networks:
   # Isolated egress virtual network adapter with ACL rules, token-bucket rate limiter,
@@ -64,6 +74,20 @@ networks:
     rate_limit:
       requests_per_second: 30
       burst: 60
+
+  # Komga REST API egress adapter (allows local/LAN hosts)
+  komga_api:
+    driver: egress
+    headers:
+      X-API-Key: "${KOMGA_API_KEY:-}"
+    policy:
+      block_private_ranges: false
+      allow_rules:
+        - schemes: [http, https]
+          hosts:
+            - "${KOMGA_HOST:-localhost}"
+            - "127.0.0.1"
+          operations: [GET, POST]
 
 modules:
   manga_catalog:
@@ -191,13 +215,38 @@ pipelines:
 
       # -----------------------------------------------------------------------
       # STEP 8: Bundle into Standard .cbz (ZIP) Archive (Packager Join Node)
-      # Automatically waits for both `pages` and `comic_info_xml` (ARCH-024)
+      # Generates in-memory CBZ and dispatches to `komga_remote` via ssh_store
       # -----------------------------------------------------------------------
       - id: build_cbz
         uses: manga_catalog/build_cbz_archive
         params:
-          output_dir: "${MANGADEX_CBZ_DIR:-./output/cbz/}/{series}/"
+          in_memory: true
+          library: "${KOMGA_LIBRARY:-Manga}"
         outputs:
+          cbz_backup:
+            datasource: cbz_staging
+            params:
+              remote_dir: "{library}/{series}"
+              filename: "{filename}"
           cbz_archive:
-            datasource: pipeline_memory
+            datasource: komga_remote
             retain: true
+            params:
+              remote_dir: "{library}/{series}"
+              filename: "{filename}"
+
+      # -----------------------------------------------------------------------
+      # STEP 9: Synchronize Uploaded CBZ Archives with Komga REST API
+      # Resolves library, triggers scanLibrary & analyzeSeries, logs egress_history
+      # -----------------------------------------------------------------------
+      - id: upload_cbz
+        uses: manga_catalog/upload_cbz
+        networks:
+          - komga_api
+        params:
+          library: "${KOMGA_LIBRARY:-Manga}"
+          scan_deep: false
+          analyze_series: true
+        outputs:
+          egress_history:
+            datasource: catalog_db

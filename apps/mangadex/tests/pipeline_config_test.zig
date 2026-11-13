@@ -35,20 +35,20 @@ test "MangaDex pipeline.yaml parses and validates into PipelineAST" {
     try std.testing.expectEqualStrings("sqlite", ast.getDatasource("catalog_db").?.driver);
     try std.testing.expectEqual(flowdata.ast.DatasourceRole.duplex, ast.getDatasource("catalog_db").?.role);
 
-    try std.testing.expect(ast.getDatasource("komga_library") != null);
-    try std.testing.expectEqualStrings("file_store", ast.getDatasource("komga_library").?.driver);
-    try std.testing.expectEqual(flowdata.ast.DatasourceRole.sink, ast.getDatasource("komga_library").?.role);
+    try std.testing.expect(ast.getDatasource("cbz_staging") != null);
+    try std.testing.expectEqualStrings("file_store", ast.getDatasource("cbz_staging").?.driver);
+    try std.testing.expectEqual(flowdata.ast.DatasourceRole.sink, ast.getDatasource("cbz_staging").?.role);
 
     // 3. Validate declared modules
     try std.testing.expectEqual(@as(usize, 1), ast.modules.len);
     try std.testing.expectEqualStrings("manga_catalog", ast.modules[0].name);
     try std.testing.expectEqualStrings("./zig-out/lib/libmanga_catalog.so", ast.modules[0].path);
 
-    // 4. Validate entrypoint pipeline (manga_sync with 8 clean DAG steps)
+    // 4. Validate entrypoint pipeline (manga_sync with 9 clean DAG steps)
     try std.testing.expectEqualStrings("manga_sync", ast.getEntrypoint().?);
     const sync_pipe = ast.getPipeline("manga_sync");
     try std.testing.expect(sync_pipe != null);
-    try std.testing.expectEqual(@as(usize, 8), sync_pipe.?.steps.len);
+    try std.testing.expectEqual(@as(usize, 9), sync_pipe.?.steps.len);
 
     // Step 1: fetch_details
     const step1 = sync_pipe.?.steps[0].task;
@@ -143,8 +143,21 @@ test "MangaDex pipeline.yaml parses and validates into PipelineAST" {
     try std.testing.expectEqualStrings("isolated", step8.primaryNetwork(ast.runtime.default_network));
     try std.testing.expectEqual(@as(usize, 0), step8.inputs.len);
     try std.testing.expectEqual(@as(usize, 0), step8.after.len);
-    try std.testing.expect(step8.outputs.len >= 1);
-    try std.testing.expectEqualStrings("cbz_archive", step8.outputs[0].name);
-    try std.testing.expectEqualStrings("pipeline_memory", step8.outputs[0].datasource);
-    try std.testing.expectEqual(true, step8.outputs[0].retain);
+    try std.testing.expect(step8.outputs.len >= 2);
+    try std.testing.expectEqualStrings("cbz_backup", step8.outputs[0].name);
+    try std.testing.expectEqualStrings("cbz_staging", step8.outputs[0].datasource);
+    try std.testing.expectEqualStrings("cbz_archive", step8.outputs[1].name);
+    try std.testing.expectEqualStrings("komga_remote", step8.outputs[1].datasource);
+    try std.testing.expectEqual(true, step8.outputs[1].retain);
+    try std.testing.expect(step8.outputs[1].params.len >= 2);
+
+    // Step 9: upload_cbz (Komga HTTP synchronization)
+    const step9 = sync_pipe.?.steps[8].task;
+    try std.testing.expectEqualStrings("upload_cbz", step9.id);
+    try std.testing.expectEqualStrings("manga_catalog", step9.module);
+    try std.testing.expectEqualStrings("upload_cbz", step9.task);
+    try std.testing.expectEqualStrings("komga_api", step9.primaryNetwork(ast.runtime.default_network));
+    try std.testing.expect(step9.outputs.len >= 1);
+    try std.testing.expectEqualStrings("egress_history", step9.outputs[0].name);
+    try std.testing.expectEqualStrings("catalog_db", step9.outputs[0].datasource);
 }

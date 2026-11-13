@@ -44,10 +44,20 @@ pub const BuildCbzArchiveInputs = struct {
     comic_info_xml: []const u8,
     output_dir: []const u8 = "./output/cbz",
     output_path: ?[]const u8 = null,
+    in_memory: bool = false,
+    series_title: ?[]const u8 = null,
+    title: ?[]const u8 = null,
+    library: ?[]const u8 = null,
 };
 
 pub const CbzArchiveOutput = struct {
-    archive_path: []const u8,
+    archive_path: []const u8 = "",
+    filename: []const u8 = "",
+    series_id: []const u8 = "",
+    series: []const u8 = "",
+    library: []const u8 = "",
+    chapter_number: []const u8 = "",
+    data: []const u8 = "",
     total_pages: u32,
     file_size_bytes: u64,
 };
@@ -126,16 +136,22 @@ fn customizeComicInfo(alloc: Allocator, base_xml: []const u8, chapter_num: []con
 pub const BuildCbzArchiveService = struct {
     logger: Logger,
 
-    pub fn execute(self: *BuildCbzArchiveService, alloc: Allocator, inputs: BuildCbzArchiveInputs) !CbzArchiveOutput {
+    pub fn execute(self: *BuildCbzArchiveService, alloc: Allocator, inputs: BuildCbzArchiveInputs) ![]CbzArchiveOutput {
         if (inputs.pages.len == 0) {
             self.logger.warn("Cannot build CBZ archive: no pages provided", .{});
-            const fallback_path = inputs.output_path orelse inputs.output_dir;
-            return CbzArchiveOutput{
-                .archive_path = try alloc.dupe(u8, fallback_path),
-                .total_pages = 0,
-                .file_size_bytes = 0,
-            };
+            return &.{};
         }
+
+        const resolved_series = blk: {
+            if (inputs.series_title) |st| {
+                if (st.len > 0) break :blk st;
+            }
+            if (inputs.title) |t| {
+                if (t.len > 0) break :blk t;
+            }
+            break :blk "";
+        };
+        const resolved_library = inputs.library orelse "";
 
         const ChapterGroup = struct {
             chapter_number: []const u8,
@@ -173,38 +189,48 @@ pub const BuildCbzArchiveService = struct {
             }
         };
 
-        var last_archive_path: []const u8 = "";
-        var total_size_bytes: u64 = 0;
+        var results: std.ArrayListUnmanaged(CbzArchiveOutput) = .empty;
 
         for (groups.items) |*group| {
             std.mem.sort(PageWithContentType, group.pages.items, PageSortCtx{}, PageSortCtx.lessThan);
 
             const series_id = if (group.pages.items.len > 0) group.pages.items[0].series_id else "";
+            const series_label = if (resolved_series.len > 0) resolved_series else series_id;
+            const filename = try std.fmt.allocPrint(alloc, "chapter_{s}.cbz", .{group.chapter_number});
 
-            const archive_path = if (inputs.output_path) |op| blk: {
+            const archive_path: []const u8 = if (inputs.in_memory) "" else if (inputs.output_path) |op| blk: {
                 if (std.mem.indexOf(u8, op, "{chapter}") != null or std.mem.indexOf(u8, op, "{series}") != null) {
-                    break :blk try replacePlaceholders(alloc, op, group.chapter_number, series_id);
+                    break :blk try replacePlaceholders(alloc, op, group.chapter_number, series_label);
                 } else if (groups.items.len == 1 and std.mem.endsWith(u8, op, ".cbz")) {
                     break :blk try alloc.dupe(u8, op);
                 } else {
-                    const resolved_dir = try replacePlaceholders(alloc, inputs.output_dir, group.chapter_number, series_id);
+                    const resolved_dir = try replacePlaceholders(alloc, inputs.output_dir, group.chapter_number, series_label);
                     defer alloc.free(resolved_dir);
-                    break :blk try std.fmt.allocPrint(alloc, "{s}/chapter_{s}.cbz", .{ resolved_dir, group.chapter_number });
+                    break :blk try std.fmt.allocPrint(alloc, "{s}/{s}", .{ resolved_dir, filename });
                 }
             } else blk: {
-                const resolved_dir = try replacePlaceholders(alloc, inputs.output_dir, group.chapter_number, series_id);
+                const resolved_dir = try replacePlaceholders(alloc, inputs.output_dir, group.chapter_number, series_label);
                 defer alloc.free(resolved_dir);
-                break :blk try std.fmt.allocPrint(alloc, "{s}/chapter_{s}.cbz", .{ resolved_dir, group.chapter_number });
+                break :blk try std.fmt.allocPrint(alloc, "{s}/{s}", .{ resolved_dir, filename });
             };
 
-            self.logger.info("Building CBZ archive '{s}' with {d} pages", .{
-                archive_path,
-                group.pages.items.len,
-            });
+            if (inputs.in_memory) {
+                self.logger.info("Building in-memory CBZ archive '{s}' with {d} pages", .{
+                    filename,
+                    group.pages.items.len,
+                });
+            } else {
+                self.logger.info("Building CBZ archive '{s}' with {d} pages", .{
+                    archive_path,
+                    group.pages.items.len,
+                });
+                ensureParentDirs(alloc, archive_path);
+            }
 
-            ensureParentDirs(alloc, archive_path);
-
-            var writer = try ZipArchiveWriter.create(alloc, archive_path);
+            var writer = if (inputs.in_memory)
+                try ZipArchiveWriter.createInMemory(alloc)
+            else
+                try ZipArchiveWriter.create(alloc, archive_path);
             defer writer.deinit();
 
             // 1. Add ComicInfo.xml (deflated compression)
@@ -224,30 +250,45 @@ pub const BuildCbzArchiveService = struct {
                 try writer.addFileFromMemory(entry_name, page.image_data, .store);
             }
 
-            try writer.finish();
-
-            const path_z = try alloc.dupeZ(u8, archive_path);
-            defer alloc.free(path_z);
-            var st: c_stat.struct_stat = undefined;
+            var mem_bytes: []const u8 = "";
             var file_size: u64 = 0;
-            if (c_stat.stat(path_z.ptr, &st) == 0) {
-                file_size = @intCast(st.st_size);
+
+            if (inputs.in_memory) {
+                mem_bytes = try writer.finishInMemory();
+                file_size = mem_bytes.len;
+                self.logger.info("Successfully created in-memory CBZ archive '{s}' ({d} bytes, {d} pages)", .{
+                    filename,
+                    file_size,
+                    group.pages.items.len,
+                });
+            } else {
+                try writer.finish();
+                const path_z = try alloc.dupeZ(u8, archive_path);
+                defer alloc.free(path_z);
+                var st: c_stat.struct_stat = undefined;
+                if (c_stat.stat(path_z.ptr, &st) == 0) {
+                    file_size = @intCast(st.st_size);
+                }
+                self.logger.info("Successfully created CBZ archive '{s}' ({d} bytes, {d} pages)", .{
+                    archive_path,
+                    file_size,
+                    group.pages.items.len,
+                });
             }
-            total_size_bytes += file_size;
 
-            self.logger.info("Successfully created CBZ archive '{s}' ({d} bytes, {d} pages)", .{
-                archive_path,
-                file_size,
-                group.pages.items.len,
+            try results.append(alloc, .{
+                .archive_path = archive_path,
+                .filename = filename,
+                .series_id = series_id,
+                .series = series_label,
+                .library = resolved_library,
+                .chapter_number = group.chapter_number,
+                .data = mem_bytes,
+                .total_pages = @intCast(group.pages.items.len),
+                .file_size_bytes = file_size,
             });
-
-            last_archive_path = archive_path;
         }
 
-        return CbzArchiveOutput{
-            .archive_path = last_archive_path,
-            .total_pages = @intCast(inputs.pages.len),
-            .file_size_bytes = total_size_bytes,
-        };
+        return results.toOwnedSlice(alloc);
     }
 };

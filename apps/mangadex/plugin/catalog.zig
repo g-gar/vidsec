@@ -16,6 +16,7 @@ pub const task_detect = @import("tasks/detect_content_type.zig");
 pub const task_analyze = @import("tasks/analyze_image.zig");
 pub const task_comicinfo = @import("tasks/generate_comicinfo.zig");
 pub const task_cbz = @import("tasks/build_cbz_archive.zig");
+pub const task_upload_cbz = @import("tasks/upload_cbz.zig");
 
 // DTOs & Services
 pub const MangaJob = task_details.MangaJob;
@@ -47,6 +48,10 @@ pub const GenerateComicInfoService = task_comicinfo.GenerateComicInfoService;
 pub const BuildCbzArchiveInputs = task_cbz.BuildCbzArchiveInputs;
 pub const CbzArchiveOutput = task_cbz.CbzArchiveOutput;
 pub const BuildCbzArchiveService = task_cbz.BuildCbzArchiveService;
+
+pub const UploadCbzInputs = task_upload_cbz.UploadCbzInputs;
+pub const EgressDeliveryRecord = task_upload_cbz.EgressDeliveryRecord;
+pub const UploadCbzService = task_upload_cbz.UploadCbzService;
 
 // Backward-compatible runner functions
 pub fn runFetchSeriesDetails(alloc: Allocator, ctx: TaskContext, job: MangaJob) !SeriesDetails {
@@ -98,6 +103,10 @@ pub const tasks = [_]abi.TaskDescriptor_ABI{
     MangaPluginContainer.defineTaskService(BuildCbzArchiveService, .{
         .name = "build_cbz_archive",
         .description = "Bundles page images and ComicInfo.xml into a standard .cbz archive using STORE compression",
+    }),
+    MangaPluginContainer.defineTaskService(UploadCbzService, .{
+        .name = "upload_cbz",
+        .description = "Synchronizes uploaded CBZ archives with a remote Komga server (library scan and series analysis)",
     }),
 };
 

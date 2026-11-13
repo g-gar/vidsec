@@ -23,8 +23,9 @@ pub const ZipError = error{
 pub const ZipArchiveWriter = struct {
     allocator: Allocator,
     archive: *c.mz_zip_archive,
-    output_path: [:0]const u8,
+    output_path: ?[:0]const u8,
     is_open: bool,
+    is_memory: bool = false,
 
     pub fn create(allocator: Allocator, output_file_path: []const u8) ZipError!ZipArchiveWriter {
         const path_z = allocator.dupeZ(u8, output_file_path) catch return error.OutOfMemory;
@@ -44,6 +45,26 @@ pub const ZipArchiveWriter = struct {
             .archive = archive,
             .output_path = path_z,
             .is_open = true,
+            .is_memory = false,
+        };
+    }
+
+    pub fn createInMemory(allocator: Allocator) ZipError!ZipArchiveWriter {
+        const archive = allocator.create(c.mz_zip_archive) catch return error.OutOfMemory;
+        errdefer allocator.destroy(archive);
+
+        c.mz_zip_zero_struct(archive);
+
+        if (c.mz_zip_writer_init_heap(archive, 0, 0) == 0) {
+            return error.ArchiveInitFailed;
+        }
+
+        return .{
+            .allocator = allocator,
+            .archive = archive,
+            .output_path = null,
+            .is_open = true,
+            .is_memory = true,
         };
     }
 
@@ -107,12 +128,44 @@ pub const ZipArchiveWriter = struct {
         self.is_open = false;
     }
 
+    /// Finalizes an in-memory ZIP archive and returns an owned slice of its bytes.
+    pub fn finishInMemory(self: *ZipArchiveWriter) ZipError![]u8 {
+        if (!self.is_open or !self.is_memory) return error.ArchiveInitFailed;
+
+        var buf_ptr: ?*anyopaque = null;
+        var buf_len: usize = 0;
+        if (c.mz_zip_writer_finalize_heap_archive(self.archive, &buf_ptr, &buf_len) == 0) {
+            _ = c.mz_zip_writer_end(self.archive);
+            self.is_open = false;
+            return error.FinalizationFailed;
+        }
+
+        const owned = self.allocator.alloc(u8, buf_len) catch {
+            if (buf_ptr) |p| c.mz_free(p);
+            _ = c.mz_zip_writer_end(self.archive);
+            self.is_open = false;
+            return error.OutOfMemory;
+        };
+
+        if (buf_ptr) |p| {
+            const src: [*]const u8 = @ptrCast(p);
+            @memcpy(owned, src[0..buf_len]);
+            c.mz_free(p);
+        }
+
+        _ = c.mz_zip_writer_end(self.archive);
+        self.is_open = false;
+        return owned;
+    }
+
     pub fn deinit(self: *ZipArchiveWriter) void {
         if (self.is_open) {
             _ = c.mz_zip_writer_end(self.archive);
             self.is_open = false;
         }
         self.allocator.destroy(self.archive);
-        self.allocator.free(self.output_path);
+        if (self.output_path) |p| {
+            self.allocator.free(p);
+        }
     }
 };

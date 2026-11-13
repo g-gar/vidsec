@@ -11,7 +11,7 @@ test "Catalog plugin manifest conforms to Flowdata ABI" {
     try std.testing.expectEqual(abi.FLOWDATA_ABI_VERSION, manifest.abi_version);
     try std.testing.expectEqualStrings("manga_catalog", manifest.nameSlice());
     try std.testing.expectEqual(@as(u32, 1), manifest.module_version.major);
-    try std.testing.expectEqual(@as(usize, 8), manifest.tasks_len);
+    try std.testing.expectEqual(@as(usize, 9), manifest.tasks_len);
 
     // Verify task discovery
     const t_details = manifest.findTask("fetch_series_details");
@@ -41,6 +41,7 @@ test "Catalog plugin manifest conforms to Flowdata ABI" {
     try std.testing.expect(manifest.findTask("analyze_image") != null);
     try std.testing.expect(manifest.findTask("generate_comicinfo") != null);
     try std.testing.expect(manifest.findTask("build_cbz_archive") != null);
+    try std.testing.expect(manifest.findTask("upload_cbz") != null);
 }
 
 // Mock TaskContext for execution testing
@@ -740,11 +741,13 @@ test "BuildCbzArchiveService: builds readable CBZ archive with ComicInfo.xml and
 
     const comic_xml = "<ComicInfo><Series>Test</Series><Number>1</Number></ComicInfo>";
 
-    const out = try service.execute(test_alloc, .{
+    const outs = try service.execute(test_alloc, .{
         .pages = &pages,
         .comic_info_xml = comic_xml,
         .output_path = cbz_path,
     });
+    try std.testing.expectEqual(@as(usize, 1), outs.len);
+    const out = outs[0];
 
     try std.testing.expectEqualStrings(cbz_path, out.archive_path);
     try std.testing.expectEqual(@as(u32, 2), out.total_pages);
@@ -793,14 +796,56 @@ test "BuildCbzArchiveService: resolves {chapter} placeholder in output_dir" {
         },
     };
 
-    const out = try service.execute(test_alloc, .{
+    const outs = try service.execute(test_alloc, .{
         .pages = &pages,
         .comic_info_xml = "",
         .output_dir = "/tmp/test_dir_templating/{chapter}",
     });
+    try std.testing.expectEqual(@as(usize, 1), outs.len);
+    const out = outs[0];
 
     try std.testing.expectEqualStrings(expected_cbz, out.archive_path);
     try std.testing.expectEqual(@as(u32, 1), out.total_pages);
+}
+
+test "BuildCbzArchiveService: builds in-memory CBZ archive without writing to disk" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const test_alloc = arena.allocator();
+
+    var service = catalog.BuildCbzArchiveService{
+        .logger = abi.Logger.noop(),
+    };
+
+    const pages = [_]catalog.PageWithContentType{
+        .{
+            .source_chapter_id = "ch-mem-1",
+            .series_id = "ser-uuid-1",
+            .chapter_number = "7",
+            .page_number = 1,
+            .url = "https://cdn.example.com/1.png",
+            .image_data = "\x89PNG\r\n\x1a\npage-1-bytes",
+            .content_type = "image/png",
+        },
+    };
+
+    const outs = try service.execute(test_alloc, .{
+        .pages = &pages,
+        .comic_info_xml = "<ComicInfo><Series>Plastic Neesan</Series></ComicInfo>",
+        .in_memory = true,
+        .series_title = "Plastic Neesan",
+        .library = "Seinen",
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), outs.len);
+    try std.testing.expectEqualStrings("", outs[0].archive_path);
+    try std.testing.expectEqualStrings("chapter_7.cbz", outs[0].filename);
+    try std.testing.expectEqualStrings("Plastic Neesan", outs[0].series);
+    try std.testing.expectEqualStrings("Seinen", outs[0].library);
+    try std.testing.expect(outs[0].data.len > 0);
+    try std.testing.expectEqual(@as(u64, outs[0].data.len), outs[0].file_size_bytes);
+    // Standard ZIP magic header 'PK\x03\x04'
+    try std.testing.expect(std.mem.startsWith(u8, outs[0].data, "PK\x03\x04"));
 }
 
 test "matchesChapterFilter handles ranges, slices, and exact matches" {
