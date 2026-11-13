@@ -106,7 +106,8 @@ pipelines:
   #                       (2. fetch_chapters)
   #                           /        \  (Fork / Fan-out)
   #                          /          \
-  #                (3. fetch_pages)    (4. generate_comicinfo) [CPU-only]
+  #                (3. fetch_pages)    (4. generate_comicinfo)
+  #                [elemental: 4]      [elemental: 4, CPU]
   #                        |                       |
   #             (5. download_pages) [elemental: 4] |
   #                        |                       |
@@ -117,6 +118,8 @@ pipelines:
   #        [elemental: 4, CPU]    \                |
   #                                \               /
   #                                 (8. build_cbz) [Join / Fan-in, CPU-only]
+  #                                       |
+  #                                 (9. upload_cbz) [Komga REST]
   # ===========================================================================
   manga_sync:
     steps:
@@ -162,16 +165,16 @@ pipelines:
 
       # -----------------------------------------------------------------------
       # STEP 4: Generate ComicInfo.xml Metadata (CPU-Only, Runs After Chapters)
-      # Requires chapter_number from fetch_chapters; runs parallel to page download
+      # Elemental over discovered chapters; runs parallel to page download
       # -----------------------------------------------------------------------
       - id: generate_comicinfo
         uses: manga_catalog/generate_comicinfo
+        concurrency: 4
         params:
           series_title: "${MANGADEX_SERIES_TITLE:-}"
-          language: "en"
           manga_type: "YesAndRightToLeft"
         outputs:
-          comic_info_xml:
+          comic_infos:
             datasource: pipeline_memory
 
       # -----------------------------------------------------------------------
@@ -221,7 +224,7 @@ pipelines:
         uses: manga_catalog/build_cbz_archive
         params:
           in_memory: true
-          library: "${KOMGA_LIBRARY:-Manga}"
+          default_library: "${KOMGA_DEFAULT_LIBRARY:-Manga}"
         outputs:
           cbz_backup:
             datasource: cbz_staging
@@ -244,8 +247,8 @@ pipelines:
         networks:
           - komga_api
         params:
-          library: "${KOMGA_LIBRARY:-Manga}"
-          scan_deep: false
+          default_library: "${KOMGA_DEFAULT_LIBRARY:-Manga}"
+          scan_mode: normal # none | normal | deep
           analyze_series: true
         outputs:
           egress_history:

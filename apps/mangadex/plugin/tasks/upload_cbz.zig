@@ -10,7 +10,9 @@ pub const UploadCbzInputs = struct {
     series_title: ?[]const u8 = null,
     title: ?[]const u8 = null,
     library: ?[]const u8 = null,
-    scan_deep: bool = false,
+    default_library: ?[]const u8 = null,
+    /// Library scan strategy: "none", "normal" (default), or "deep"
+    scan_mode: []const u8 = "normal",
     analyze_series: bool = true,
 };
 
@@ -68,6 +70,9 @@ pub const UploadCbzService = struct {
                 if (l.len > 0) break :blk l;
             }
             if (first.library.len > 0) break :blk first.library;
+            if (inputs.default_library) |dl| {
+                if (dl.len > 0) break :blk dl;
+            }
             break :blk self.default_library_id;
         };
 
@@ -77,14 +82,25 @@ pub const UploadCbzService = struct {
 
         const library_id = findLibraryId(libs_parsed.value, requested_lib) orelse return error.KomgaLibraryNotFound;
 
-        self.logger.info("Triggering Komga library scan (library_id={s}, deep={s}) for series '{s}'", .{
-            library_id,
-            if (inputs.scan_deep) "true" else "false",
-            series_name,
-        });
+        const is_none = std.ascii.eqlIgnoreCase(inputs.scan_mode, "none");
+        const is_deep = std.ascii.eqlIgnoreCase(inputs.scan_mode, "deep");
+        const is_normal = std.ascii.eqlIgnoreCase(inputs.scan_mode, "normal");
+        if (!is_none and !is_deep and !is_normal) {
+            self.logger.err("Invalid scan_mode '{s}'; expected 'none', 'normal', or 'deep'", .{inputs.scan_mode});
+            return error.InvalidScanMode;
+        }
 
-        // 2. Scan library so Komga discovers newly uploaded CBZ files
-        try self.komga.scanLibrary(library_id, inputs.scan_deep);
+        // 2. Scan library so Komga discovers newly uploaded CBZ files (unless scan_mode == "none")
+        if (!is_none) {
+            self.logger.info("Triggering Komga library scan (library_id={s}, scan_mode={s}) for series '{s}'", .{
+                library_id,
+                inputs.scan_mode,
+                series_name,
+            });
+            try self.komga.scanLibrary(library_id, is_deep);
+        } else {
+            self.logger.info("Skipping Komga library scan (scan_mode=none) for series '{s}'", .{series_name});
+        }
 
         // 3. Optionally locate the series and trigger analysis
         var komga_series_id: ?[]const u8 = null;
