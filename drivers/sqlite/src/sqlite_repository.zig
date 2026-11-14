@@ -19,12 +19,12 @@ const Capabilities = repository.Capabilities;
 const WriteSpec = repository.WriteSpec;
 const ReadSpec = repository.ReadSpec;
 const RowIterator = repository.RowIterator;
+const sql = @import("flowdata_sql");
 const sqlite_lib = @import("flowdata_sqlite");
 const Db = sqlite_lib.Db;
 const Stmt = sqlite_lib.Stmt;
 const StmtCache = sqlite_lib.StmtCache;
 const Row = sqlite_lib.Row;
-const Value = sqlite_lib.Value;
 const OpenOptions = sqlite_lib.OpenOptions;
 const schema_provisioner = @import("schema_provisioner.zig");
 const MigrateMode = schema_provisioner.MigrateMode;
@@ -37,7 +37,7 @@ pub const SqliteRepoError = error{
     MissingPrimaryKey,
 };
 
-fn reflectedToSqlite(val: ReflectedValue) Value {
+fn reflectedToSqlValue(val: ReflectedValue) sql.SqlValue {
     return switch (val) {
         .none, .unsupported => .null_val,
         .int => |v| .{ .int64 = v },
@@ -82,9 +82,9 @@ fn appendQuotedIdent(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, ide
     try buf.append(allocator, '"');
 }
 
-/// Storage repository backed by SQLite (ARCH-009B).
-/// Synchronous, single-connection driver; concurrency is composed upstream via
-/// `ConcurrencyPolicy` (`SynchronizedRepository` / `AsyncBatchRepository`).
+/// Storage repository backed by SQLite (ARCH-009B / ARCH-009D).
+/// Synchronous, single-connection driver; DML & SELECT queries are built via
+/// portable `libs/sql/` ASTs and executed through `libs/sqlite/` `StmtCache`.
 pub const SqliteRepository = struct {
     comptime {
         StorageRepository.assertImplements(@This());
@@ -103,7 +103,7 @@ pub const SqliteRepository = struct {
         return .{
             .allocator = allocator,
             .db = db,
-            .stmt_cache = StmtCache.init(allocator, undefined), // bound on first use or initWithOptions
+            .stmt_cache = StmtCache.init(allocator, undefined),
             .schema_arena = std.heap.ArenaAllocator.init(allocator),
         };
     }
@@ -164,6 +164,27 @@ pub const SqliteRepository = struct {
         return &.{};
     }
 
+    fn buildPkWhereExpr(allocator: Allocator, pks: []const []const u8, fields: []const ReflectedField) !*const sql.Expr {
+        var root: ?*const sql.Expr = null;
+        for (pks) |pk_col| {
+            const pk_val = findFieldValue(fields, pk_col) orelse return error.MissingPrimaryKey;
+            const cmp_node = try allocator.create(sql.Expr);
+            cmp_node.* = .{ .cmp = .{
+                .column = pk_col,
+                .op = .eq,
+                .value = reflectedToSqlValue(pk_val),
+            } };
+            if (root) |prev| {
+                const and_node = try allocator.create(sql.Expr);
+                and_node.* = .{ .@"and" = .{ .left = prev, .right = cmp_node } };
+                root = and_node;
+            } else {
+                root = cmp_node;
+            }
+        }
+        return root orelse error.MissingPrimaryKey;
+    }
+
     pub fn write(self: *SqliteRepository, ws: WriteSpec) !void {
         if (!self.schemaless and !self.tables.contains(ws.table)) {
             return error.UnknownTable;
@@ -180,26 +201,22 @@ pub const SqliteRepository = struct {
             self.db.rollback() catch {};
         };
 
+        var scratch_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch_arena.deinit();
+        const scratch = scratch_arena.allocator();
+
         if (ws.mode == .replace_all) {
-            var del_buf: [256]u8 = undefined;
-            const del_sql = try std.fmt.bufPrint(&del_buf, "DELETE FROM \"{s}\";", .{ws.table});
-            try self.db.exec(del_sql);
+            const del_compiled = try sql.compileDelete(sqlite_lib.sqlite_dialect, scratch, .{ .table = ws.table });
+            var del_stmt = try sqlite_lib.prepareCompiled(&self.db, del_compiled);
+            defer del_stmt.deinit();
+            try del_stmt.execStep();
             if (ws.payload.len == 0) {
                 if (started_tx) try self.db.commit();
                 return;
             }
         }
 
-        const pks = try self.getTablePrimaryKeys(self.allocator, ws.table);
-        defer if (self.tables.get(ws.table)) |tbl| {
-            if (tbl.primary_key.len == 0) self.allocator.free(pks);
-        };
-
-        // Extract field names from row 0 via schema columns + getReflected (or DynamicRecord)
-        var scratch_arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer scratch_arena.deinit();
-        const scratch = scratch_arena.allocator();
-
+        const pks = try self.getTablePrimaryKeys(scratch, ws.table);
         const row_count = if (ws.payload.is_stream and ws.payload.repr != .bytes) ws.payload.len else 1;
         const elem0 = ws.payload.elementAt(0) orelse {
             if (started_tx) try self.db.commit();
@@ -211,23 +228,42 @@ pub const SqliteRepository = struct {
             return;
         }
 
-        // If schemaless and table wasn't declared, auto-create for dynamic payloads
         if (self.schemaless and !self.tables.contains(ws.table)) {
             try self.ensureSchemalessTable(ws.table, first_fields);
         }
 
         switch (ws.mode) {
             .append, .replace_all, .upsert => {
-                const sql = try self.buildInsertOrUpsertSql(scratch, ws.table, first_fields, pks, ws.mode == .upsert);
-                const stmt = try self.stmt_cache.acquire(sql);
+                const col_names = try scratch.alloc([]const u8, first_fields.len);
+                var upd_cols_list: std.ArrayListUnmanaged([]const u8) = .empty;
+                for (first_fields, 0..) |f, i| {
+                    col_names[i] = f.name;
+                    if (!isPkCol(pks, f.name)) {
+                        try upd_cols_list.append(scratch, f.name);
+                    }
+                }
+                const on_conflict: ?sql.OnConflict = if (ws.mode == .upsert and pks.len > 0) .{
+                    .conflict_columns = pks,
+                    .action = if (upd_cols_list.items.len > 0)
+                        .{ .do_update = upd_cols_list.items }
+                    else
+                        .do_nothing,
+                } else null;
 
+                const vals = try scratch.alloc(sql.SqlValue, first_fields.len);
                 for (0..row_count) |row_idx| {
-                    stmt.resetAndClear();
                     const elem = ws.payload.elementAt(row_idx) orelse continue;
                     const fields = try self.extractFields(scratch, ws.table, elem);
-                    for (fields, 1..) |f, col_idx| {
-                        try stmt.bindValue(col_idx, reflectedToSqlite(f.value));
+                    for (fields, 0..) |f, i| {
+                        vals[i] = reflectedToSqlValue(f.value);
                     }
+                    const compiled = try sql.compileInsert(sqlite_lib.sqlite_dialect, scratch, .{
+                        .table = ws.table,
+                        .columns = col_names,
+                        .values = vals,
+                        .on_conflict = on_conflict,
+                    });
+                    const stmt = try sqlite_lib.acquireCompiled(&self.stmt_cache, compiled);
                     stmt.execStep() catch |err| {
                         if (err == error.ConstraintViolation and ws.mode == .append) {
                             return error.DuplicatePrimaryKey;
@@ -238,44 +274,40 @@ pub const SqliteRepository = struct {
             },
             .update => {
                 if (pks.len == 0) return error.MissingPrimaryKey;
-                const sql = try self.buildUpdateSql(scratch, ws.table, first_fields, pks);
-                const stmt = try self.stmt_cache.acquire(sql);
-
                 for (0..row_count) |row_idx| {
-                    stmt.resetAndClear();
                     const elem = ws.payload.elementAt(row_idx) orelse continue;
                     const fields = try self.extractFields(scratch, ws.table, elem);
 
-                    var bind_idx: usize = 1;
-                    // SET non-PK columns
+                    var assignments: std.ArrayListUnmanaged(sql.Assignment) = .empty;
                     for (fields) |f| {
                         if (isPkCol(pks, f.name)) continue;
-                        try stmt.bindValue(bind_idx, reflectedToSqlite(f.value));
-                        bind_idx += 1;
+                        try assignments.append(scratch, .{
+                            .column = f.name,
+                            .value = reflectedToSqlValue(f.value),
+                        });
                     }
-                    // WHERE PK columns
-                    for (pks) |pk_col| {
-                        const pk_val = findFieldValue(fields, pk_col) orelse return error.MissingPrimaryKey;
-                        try stmt.bindValue(bind_idx, reflectedToSqlite(pk_val));
-                        bind_idx += 1;
-                    }
+                    const where_expr = try buildPkWhereExpr(scratch, pks, fields);
+                    const compiled = try sql.compileUpdate(sqlite_lib.sqlite_dialect, scratch, .{
+                        .table = ws.table,
+                        .assignments = assignments.items,
+                        .where = where_expr,
+                    });
+                    const stmt = try sqlite_lib.acquireCompiled(&self.stmt_cache, compiled);
                     try stmt.execStep();
                     if (self.db.changes() == 0) return error.RowNotFound;
                 }
             },
             .delete => {
                 if (pks.len == 0) return error.MissingPrimaryKey;
-                const sql = try self.buildDeleteSql(scratch, ws.table, pks);
-                const stmt = try self.stmt_cache.acquire(sql);
-
                 for (0..row_count) |row_idx| {
-                    stmt.resetAndClear();
                     const elem = ws.payload.elementAt(row_idx) orelse continue;
                     const fields = try self.extractFields(scratch, ws.table, elem);
-                    for (pks, 1..) |pk_col, bind_idx| {
-                        const pk_val = findFieldValue(fields, pk_col) orelse return error.MissingPrimaryKey;
-                        try stmt.bindValue(bind_idx, reflectedToSqlite(pk_val));
-                    }
+                    const where_expr = try buildPkWhereExpr(scratch, pks, fields);
+                    const compiled = try sql.compileDelete(sqlite_lib.sqlite_dialect, scratch, .{
+                        .table = ws.table,
+                        .where = where_expr,
+                    });
+                    const stmt = try sqlite_lib.acquireCompiled(&self.stmt_cache, compiled);
                     try stmt.execStep();
                 }
             },
@@ -334,140 +366,17 @@ pub const SqliteRepository = struct {
         try self.db.exec(ddl_buf.items);
     }
 
-    fn buildInsertOrUpsertSql(
-        self: *SqliteRepository,
-        allocator: Allocator,
-        table_name: []const u8,
-        fields: []const ReflectedField,
-        pks: []const []const u8,
-        is_upsert: bool,
-    ) ![]const u8 {
-        _ = self;
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
-        try buf.appendSlice(allocator, "INSERT INTO ");
-        try appendQuotedIdent(&buf, allocator, table_name);
-        try buf.appendSlice(allocator, " (");
-        for (fields, 0..) |f, i| {
-            if (i > 0) try buf.appendSlice(allocator, ", ");
-            try appendQuotedIdent(&buf, allocator, f.name);
-        }
-        try buf.appendSlice(allocator, ") VALUES (");
-        for (fields, 0..) |_, i| {
-            if (i > 0) try buf.appendSlice(allocator, ", ");
-            var ph_buf: [16]u8 = undefined;
-            const ph = try std.fmt.bufPrint(&ph_buf, "?{d}", .{i + 1});
-            try buf.appendSlice(allocator, ph);
-        }
-        try buf.append(allocator, ')');
-
-        if (is_upsert and pks.len > 0) {
-            try buf.appendSlice(allocator, " ON CONFLICT(");
-            for (pks, 0..) |pk, i| {
-                if (i > 0) try buf.appendSlice(allocator, ", ");
-                try appendQuotedIdent(&buf, allocator, pk);
-            }
-            // Partial update: only touch columns present in the payload struct
-            var non_pk_count: usize = 0;
-            for (fields) |f| {
-                if (isPkCol(pks, f.name)) continue;
-                if (non_pk_count == 0) {
-                    try buf.appendSlice(allocator, ") DO UPDATE SET ");
-                } else {
-                    try buf.appendSlice(allocator, ", ");
-                }
-                try appendQuotedIdent(&buf, allocator, f.name);
-                try buf.appendSlice(allocator, " = excluded.");
-                try appendQuotedIdent(&buf, allocator, f.name);
-                non_pk_count += 1;
-            }
-            if (non_pk_count == 0) {
-                try buf.appendSlice(allocator, ") DO NOTHING");
-            }
-        }
-        try buf.append(allocator, ';');
-        return try buf.toOwnedSlice(allocator);
-    }
-
-    fn buildUpdateSql(
-        self: *SqliteRepository,
-        allocator: Allocator,
-        table_name: []const u8,
-        fields: []const ReflectedField,
-        pks: []const []const u8,
-    ) ![]const u8 {
-        _ = self;
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
-        try buf.appendSlice(allocator, "UPDATE ");
-        try appendQuotedIdent(&buf, allocator, table_name);
-        try buf.appendSlice(allocator, " SET ");
-
-        var param_idx: usize = 1;
-        var set_count: usize = 0;
-        for (fields) |f| {
-            if (isPkCol(pks, f.name)) continue;
-            if (set_count > 0) try buf.appendSlice(allocator, ", ");
-            try appendQuotedIdent(&buf, allocator, f.name);
-            var ph_buf: [16]u8 = undefined;
-            const ph = try std.fmt.bufPrint(&ph_buf, " = ?{d}", .{param_idx});
-            try buf.appendSlice(allocator, ph);
-            param_idx += 1;
-            set_count += 1;
-        }
-        try buf.appendSlice(allocator, " WHERE ");
-        for (pks, 0..) |pk, i| {
-            if (i > 0) try buf.appendSlice(allocator, " AND ");
-            try appendQuotedIdent(&buf, allocator, pk);
-            var ph_buf: [16]u8 = undefined;
-            const ph = try std.fmt.bufPrint(&ph_buf, " = ?{d}", .{param_idx});
-            try buf.appendSlice(allocator, ph);
-            param_idx += 1;
-        }
-        try buf.append(allocator, ';');
-        return try buf.toOwnedSlice(allocator);
-    }
-
-    fn buildDeleteSql(
-        self: *SqliteRepository,
-        allocator: Allocator,
-        table_name: []const u8,
-        pks: []const []const u8,
-    ) ![]const u8 {
-        _ = self;
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
-        try buf.appendSlice(allocator, "DELETE FROM ");
-        try appendQuotedIdent(&buf, allocator, table_name);
-        try buf.appendSlice(allocator, " WHERE ");
-        for (pks, 0..) |pk, i| {
-            if (i > 0) try buf.appendSlice(allocator, " AND ");
-            try appendQuotedIdent(&buf, allocator, pk);
-            var ph_buf: [16]u8 = undefined;
-            const ph = try std.fmt.bufPrint(&ph_buf, " = ?{d}", .{i + 1});
-            try buf.appendSlice(allocator, ph);
-        }
-        try buf.append(allocator, ';');
-        return try buf.toOwnedSlice(allocator);
-    }
-
     fn buildSelectStmt(self: *SqliteRepository, allocator: Allocator, rs: ReadSpec) !Stmt {
-        var sql: std.ArrayListUnmanaged(u8) = .empty;
-        defer sql.deinit(allocator);
+        var arena_state = std.heap.ArenaAllocator.init(allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
 
-        try sql.appendSlice(allocator, "SELECT ");
-        switch (rs.projection) {
-            .all => try sql.append(allocator, '*'),
-            .include => |cols| {
-                if (cols.len == 0) {
-                    try sql.append(allocator, '*');
-                } else {
-                    for (cols, 0..) |col, i| {
-                        if (i > 0) try sql.appendSlice(allocator, ", ");
-                        try appendQuotedIdent(&sql, allocator, col);
-                    }
-                }
-            },
-            .exclude => |excl| {
+        const cols: []const []const u8 = switch (rs.projection) {
+            .all => &.{},
+            .include => |inc| inc,
+            .exclude => |excl| blk: {
                 if (self.tables.get(rs.table)) |tbl| {
-                    var count: usize = 0;
+                    var list: std.ArrayListUnmanaged([]const u8) = .empty;
                     for (tbl.columns.entries) |e| {
                         var is_excl = false;
                         for (excl) |ex| {
@@ -476,64 +385,37 @@ pub const SqliteRepository = struct {
                                 break;
                             }
                         }
-                        if (is_excl) continue;
-                        if (count > 0) try sql.appendSlice(allocator, ", ");
-                        try appendQuotedIdent(&sql, allocator, e.key);
-                        count += 1;
+                        if (!is_excl) try list.append(arena, e.key);
                     }
-                    if (count == 0) try sql.append(allocator, '*');
-                } else {
-                    try sql.append(allocator, '*');
+                    break :blk list.items;
                 }
+                break :blk &.{};
             },
-        }
+        };
 
-        try sql.appendSlice(allocator, " FROM ");
-        try appendQuotedIdent(&sql, allocator, rs.table);
-
-        var bindings: []const Value = &.{};
-        var compiled_opt: ?predicate_compiler.CompiledPredicate = null;
-        defer if (compiled_opt) |c| c.deinit(allocator);
-
-        if (rs.where) |w_ptr| {
+        const where_expr: ?*const sql.Expr = if (rs.where) |w_ptr| blk: {
             const node: *const PredicateNode = @ptrCast(@alignCast(w_ptr));
-            const compiled = try predicate_compiler.compile(allocator, node);
-            compiled_opt = compiled;
-            bindings = compiled.bindings;
-            try sql.appendSlice(allocator, " WHERE ");
-            try sql.appendSlice(allocator, compiled.sql_where);
+            break :blk try predicate_compiler.toSqlExpr(arena, node);
+        } else null;
+
+        const order_by = try arena.alloc(sql.OrderBy, rs.order_by.len);
+        for (rs.order_by, 0..) |ob, i| {
+            order_by[i] = .{
+                .column = ob.column,
+                .order = if (ob.order == .asc) .asc else .desc,
+            };
         }
 
-        if (rs.order_by.len > 0) {
-            try sql.appendSlice(allocator, " ORDER BY ");
-            for (rs.order_by, 0..) |ob, i| {
-                if (i > 0) try sql.appendSlice(allocator, ", ");
-                try appendQuotedIdent(&sql, allocator, ob.column);
-                try sql.appendSlice(allocator, if (ob.order == .asc) " ASC" else " DESC");
-            }
-        }
+        const compiled = try sql.compileSelect(sqlite_lib.sqlite_dialect, arena, .{
+            .table = rs.table,
+            .columns = cols,
+            .where = where_expr,
+            .order_by = order_by,
+            .limit = if (rs.limit > 0) rs.limit else null,
+            .offset = if (rs.offset > 0) rs.offset else null,
+        });
 
-        if (rs.limit > 0) {
-            var lim_buf: [32]u8 = undefined;
-            const lim_str = try std.fmt.bufPrint(&lim_buf, " LIMIT {d}", .{rs.limit});
-            try sql.appendSlice(allocator, lim_str);
-            if (rs.offset > 0) {
-                var off_buf: [32]u8 = undefined;
-                const off_str = try std.fmt.bufPrint(&off_buf, " OFFSET {d}", .{rs.offset});
-                try sql.appendSlice(allocator, off_str);
-            }
-        } else if (rs.offset > 0) {
-            var off_buf: [48]u8 = undefined;
-            const off_str = try std.fmt.bufPrint(&off_buf, " LIMIT -1 OFFSET {d}", .{rs.offset});
-            try sql.appendSlice(allocator, off_str);
-        }
-
-        try sql.append(allocator, ';');
-
-        var stmt = try self.db.prepare(sql.items);
-        errdefer stmt.deinit();
-        try stmt.bindAll(bindings);
-        return stmt;
+        return sqlite_lib.prepareCompiled(&self.db, compiled);
     }
 
     fn rowToDynamicRecord(allocator: Allocator, row: Row) !DynamicRecord {
@@ -621,9 +503,9 @@ pub const SqliteRepository = struct {
 
     pub fn recordCount(self: *SqliteRepository, table_name: []const u8) usize {
         var sql_buf: [256]u8 = undefined;
-        const sql = std.fmt.bufPrint(&sql_buf, "SELECT COUNT(*) FROM \"{s}\";", .{table_name}) catch return 0;
+        const count_sql = std.fmt.bufPrint(&sql_buf, "SELECT COUNT(*) FROM \"{s}\";", .{table_name}) catch return 0;
 
-        var stmt = self.db.prepare(sql) catch return 0;
+        var stmt = self.db.prepare(count_sql) catch return 0;
         defer stmt.deinit();
 
         const row = (stmt.step() catch return 0) orelse return 0;
@@ -775,7 +657,7 @@ pub const SqliteRepository = struct {
             } else if (std.mem.eql(u8, p.key, "busy_timeout_ms")) {
                 opts.busy_timeout_ms = std.fmt.parseInt(u32, p.value, 10) catch 5000;
             } else if (std.mem.eql(u8, p.key, "journal_mode")) {
-                if (std.mem.eql(u8, p.value, "wal")) opts.journal_mode = .wal else if (std.mem.eql(u8, p.value, "memory")) opts.journal_mode = .memory else if (std.mem.eql(u8, p.value, "delete")) opts.journal_mode = .delete;
+                if (std.mem.eql(u8, p.key, "wal")) opts.journal_mode = .wal else if (std.mem.eql(u8, p.value, "memory")) opts.journal_mode = .memory else if (std.mem.eql(u8, p.value, "delete")) opts.journal_mode = .delete;
             } else if (std.mem.eql(u8, p.key, "synchronous")) {
                 if (std.mem.eql(u8, p.value, "normal")) opts.synchronous = .normal else if (std.mem.eql(u8, p.value, "full")) opts.synchronous = .full else if (std.mem.eql(u8, p.value, "off")) opts.synchronous = .off;
             }

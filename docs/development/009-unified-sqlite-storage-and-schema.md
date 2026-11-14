@@ -6,7 +6,7 @@
 | **Type** | Master Architecture Specification |
 | **Depends On** | [`ARCH-002`](./002-open-kernel-extension-system.md), [`ARCH-016`](./016-reactive-bifurcation-parallel-expansion-and-join.md), [`ARCH-025`](./025-datasource-roles-and-batch-emission-decoupling.md) |
 | **Area** | `src/schema/`, `src/repository/`, `src/dataflow/`, `libs/sqlite/`, `extensions/datasource/` |
-| **Status** | `PARTIALLY IMPLEMENTED (009A & 009B IMPLEMENTED, 009C OPTIONAL)` |
+| **Status** | `PARTIALLY IMPLEMENTED (009A, 009B & 009D IMPLEMENTED, 009C OPTIONAL)` |
 | **Sub-Specs** | [`009A (Core Contracts)`](./009a-universal-repository-contract-and-core-schema.md) → [`009B (SQLite Driver)`](./009b-sqlite-datasource-and-engine.md) → [`009C (Optional SQLite Extensions)`](./009c-sqlite-optional-extensions.md) → [`009D (Portable SQL AST)`](./009d-portable-sql-ast-and-query-builder.md) |
 
 ---

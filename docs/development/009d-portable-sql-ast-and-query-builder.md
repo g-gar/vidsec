@@ -6,7 +6,7 @@
 | **Parent Master** | [`ARCH-009`](./009-unified-sqlite-storage-and-schema.md) |
 | **Depends On** | [`ARCH-009A`](./009a-universal-repository-contract-and-core-schema.md), [`ARCH-009B`](./009b-sqlite-datasource-and-engine.md) |
 | **Area** | `libs/sql/`, `libs/sqlite/`, `drivers/sqlite/` |
-| **Status** | `SPECIFICATION (FUTURE)` |
+| **Status** | `IMPLEMENTED` |
 
 ---
 

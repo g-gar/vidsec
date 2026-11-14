@@ -1,6 +1,8 @@
 pub const db = @import("db.zig");
 pub const ddl = @import("ddl.zig");
 pub const stmt_cache = @import("stmt_cache.zig");
+pub const sql = @import("flowdata_sql");
+pub const sql_adapter = @import("sql_adapter.zig");
 
 pub const c = db.c;
 pub const SqliteError = db.SqliteError;
@@ -17,6 +19,10 @@ pub const Savepoint = db.Savepoint;
 pub const Stmt = db.Stmt;
 pub const Row = db.Row;
 pub const StmtCache = stmt_cache.StmtCache;
+pub const sqlite_dialect = sql_adapter.sqlite_dialect;
+pub const toSqliteValue = sql_adapter.toSqliteValue;
+pub const prepareCompiled = sql_adapter.prepareCompiled;
+pub const acquireCompiled = sql_adapter.acquireCompiled;
 
 pub const DdlError = ddl.DdlError;
 pub const StorageType = ddl.StorageType;
@@ -43,5 +49,6 @@ test {
     _ = db;
     _ = ddl;
     _ = stmt_cache;
+    _ = sql_adapter;
 }
 

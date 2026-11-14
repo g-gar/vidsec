@@ -42,6 +42,13 @@ pub fn build(b: *std.Build) void {
     transport_mod.addImport("flowdata", flowdata_mod);
     b.modules.put(b.allocator, b.dupe("flowdata_network"), transport_mod) catch @panic("OOM");
 
+    // 3b-bis. Standalone Portable SQL AST & QueryBuilder (zero dependencies, ARCH-009D)
+    const sql_lib_mod = b.addModule("flowdata_sql", .{
+        .root_source_file = b.path("libs/sql/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // 3c. Standalone Pure SQLite Library (zero Flowdata dependencies, ARCH-009B)
     const sqlite_lib_mod = b.addModule("flowdata_sqlite", .{
         .root_source_file = b.path("libs/sqlite/src/root.zig"),
@@ -49,6 +56,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    sqlite_lib_mod.addImport("flowdata_sql", sql_lib_mod);
     sqlite_lib_mod.linkSystemLibrary("sqlite3", .{});
 
     // 4. Drivers: Datasource backends
@@ -76,6 +84,7 @@ pub fn build(b: *std.Build) void {
     });
     ds_sqlite_mod.addImport("flowdata", flowdata_mod);
     ds_sqlite_mod.addImport("flowdata_sqlite", sqlite_lib_mod);
+    ds_sqlite_mod.addImport("flowdata_sql", sql_lib_mod);
     ds_sqlite_mod.linkSystemLibrary("sqlite3", .{});
 
     const ds_yaml_mod = b.addModule("flowdata_datasource_yaml", .{
@@ -125,6 +134,7 @@ pub fn build(b: *std.Build) void {
     const run_abi_unit = b.addRunArtifact(b.addTest(.{ .root_module = plugin_mod }));
     const run_dataflow_unit = b.addRunArtifact(b.addTest(.{ .root_module = dataflow_mod }));
     const run_flowdata_unit = b.addRunArtifact(b.addTest(.{ .root_module = flowdata_mod }));
+    const run_libs_sql = b.addRunArtifact(b.addTest(.{ .root_module = sql_lib_mod }));
     const run_libs_sqlite = b.addRunArtifact(b.addTest(.{ .root_module = sqlite_lib_mod }));
     const run_ds_memory = b.addRunArtifact(b.addTest(.{ .root_module = ds_memory_mod }));
     const run_ds_file_store = b.addRunArtifact(b.addTest(.{ .root_module = ds_file_store_mod }));
@@ -169,6 +179,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_abi_unit.step);
     test_step.dependOn(&run_dataflow_unit.step);
     test_step.dependOn(&run_flowdata_unit.step);
+    test_step.dependOn(&run_libs_sql.step);
     test_step.dependOn(&run_libs_sqlite.step);
     test_step.dependOn(&run_ds_memory.step);
     test_step.dependOn(&run_ds_file_store.step);
