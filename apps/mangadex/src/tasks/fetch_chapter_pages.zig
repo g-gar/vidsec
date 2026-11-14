@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Logger = @import("flowdata").plugin.Logger;
-const MangaSource = @import("sources").MangaSource;
+const MangaSource = @import("../sources/mod.zig").MangaSource;
 const fetch_chapters = @import("fetch_chapters.zig");
 
 pub const ChapterItem = fetch_chapters.ChapterItem;

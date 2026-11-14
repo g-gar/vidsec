@@ -1,8 +1,6 @@
 const std = @import("std");
-const Allocator = std.mem.Allocator;
 const flowdata = @import("flowdata");
 const abi = flowdata.plugin;
-const TaskContext = abi.TaskContext;
 
 const container = @import("container.zig");
 pub const MangaContext = container.MangaContext;
@@ -57,19 +55,6 @@ pub const UploadCbzService = task_upload_cbz.UploadCbzService;
 pub const DownloadCoverInputs = task_download_cover.DownloadCoverInputs;
 pub const CoverOutput = task_download_cover.CoverOutput;
 pub const DownloadCoverService = task_download_cover.DownloadCoverService;
-
-// Backward-compatible runner functions
-pub fn runFetchSeriesDetails(alloc: Allocator, ctx: TaskContext, job: MangaJob) !SeriesDetails {
-    return MangaPluginContainer.runWithContext(FetchSeriesDetailsService, alloc, ctx, job);
-}
-
-pub fn runFetchChapters(alloc: Allocator, ctx: TaskContext, inputs: FetchChaptersInputs) ![]ChapterItem {
-    return MangaPluginContainer.runWithContext(FetchChaptersService, alloc, ctx, inputs);
-}
-
-pub fn runFetchChapterPages(alloc: Allocator, ctx: TaskContext, inputs: FetchChapterPagesInputs) ![]ChapterPageItem {
-    return MangaPluginContainer.runWithContext(FetchChapterPagesService, alloc, ctx, inputs);
-}
 
 // C-ABI Task Descriptors and Manifest assembled via MangaPluginContainer
 pub const tasks = [_]abi.TaskDescriptor_ABI{

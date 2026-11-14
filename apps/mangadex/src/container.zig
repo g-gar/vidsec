@@ -4,9 +4,9 @@ const flowdata = @import("flowdata");
 const abi = flowdata.plugin;
 const sdk = @import("mangadex_sdk");
 const komga_sdk = @import("komga_sdk");
-const sources = @import("sources");
-const adapters = @import("mangadex_app").adapters;
-const AppConfig = @import("mangadex_app").config.AppConfig;
+const sources = @import("sources/mod.zig");
+const adapters = @import("adapters/mod.zig");
+const AppConfig = @import("config.zig").AppConfig;
 
 const TaskContext = abi.TaskContext;
 const MangaDexClient = sdk.MangaDexClient;

@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Logger = @import("flowdata").plugin.Logger;
-const MangaSource = @import("sources").MangaSource;
+const MangaSource = @import("../sources/mod.zig").MangaSource;
 
 pub const MangaJob = struct {
     series_id: []const u8,

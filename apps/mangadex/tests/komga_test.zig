@@ -258,7 +258,7 @@ test "UploadCbzService resolves library, scans, analyzes series and emits egress
     }, mock.httpTransport());
 
     const flowdata = @import("flowdata");
-    const catalog = @import("mangadex_plugin").catalog;
+    const catalog = @import("mangadex_app").catalog;
 
     var service = catalog.UploadCbzService{
         .komga = &client,

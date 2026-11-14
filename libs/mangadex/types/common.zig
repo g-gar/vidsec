@@ -67,11 +67,62 @@ pub const LocalizedString = struct {
     }
 };
 
+pub const RelationshipType = enum {
+    manga,
+    chapter,
+    cover_art,
+    author,
+    artist,
+    scanlation_group,
+    tag,
+    user,
+    custom_list,
+    creator,
+
+    pub fn fromStr(s: []const u8) ?RelationshipType {
+        return std.meta.stringToEnum(RelationshipType, s);
+    }
+
+    pub fn asStr(self: RelationshipType) []const u8 {
+        return @tagName(self);
+    }
+};
+
+pub const RelationshipAttr = enum {
+    name,
+    fileName,
+
+    pub fn asStr(self: RelationshipAttr) []const u8 {
+        return @tagName(self);
+    }
+};
+
+pub const SortOrder = enum {
+    asc,
+    desc,
+
+    pub fn asStr(self: SortOrder) []const u8 {
+        return @tagName(self);
+    }
+};
+
 pub const Relationship = struct {
     id: []const u8,
     type: []const u8,
     related: ?[]const u8 = null,
     attributes: ?std.json.Value = null,
+
+    pub fn kind(self: Relationship) ?RelationshipType {
+        return RelationshipType.fromStr(self.type);
+    }
+
+    pub fn attrString(self: Relationship, attr: RelationshipAttr) ?[]const u8 {
+        const attrs = self.attributes orelse return null;
+        if (attrs != .object) return null;
+        const val = attrs.object.get(attr.asStr()) orelse return null;
+        if (val != .string) return null;
+        return val.string;
+    }
 };
 
 pub const ApiError = struct {

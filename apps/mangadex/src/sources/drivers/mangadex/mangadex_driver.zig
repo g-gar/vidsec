@@ -8,8 +8,23 @@ const SourceChapter = contract.SourceChapter;
 const SourcePageUrl = contract.SourcePageUrl;
 const sdk = @import("mangadex_sdk");
 const MangaDexClient = sdk.MangaDexClient;
+const RelationshipType = sdk.RelationshipType;
+const SortOrder = sdk.SortOrder;
 const buildPageUrl = sdk.buildPageUrl;
 const buildCoverUrl = sdk.buildCoverUrl;
+
+const source_id = "mangadex";
+const mangadex_host = "mangadex.org";
+const default_title = "Untitled";
+const default_status = "ongoing";
+const manga_includes = [_][]const u8{
+    RelationshipType.cover_art.asStr(),
+    RelationshipType.author.asStr(),
+    RelationshipType.artist.asStr(),
+};
+const chapter_includes = [_][]const u8{
+    RelationshipType.scanlation_group.asStr(),
+};
 
 pub const MangaDexSource = struct {
     client: *MangaDexClient,
@@ -37,11 +52,11 @@ pub const MangaDexSource = struct {
     }
 
     fn getSourceIdBridge(_: *anyopaque) []const u8 {
-        return "mangadex";
+        return source_id;
     }
 
     fn canHandleBridge(_: *anyopaque, identifier: []const u8) bool {
-        if (std.mem.indexOf(u8, identifier, "mangadex.org") != null) return true;
+        if (std.mem.indexOf(u8, identifier, mangadex_host) != null) return true;
         if (identifier.len == 36 and
             identifier[8] == '-' and
             identifier[13] == '-' and
@@ -58,7 +73,7 @@ pub const MangaDexSource = struct {
         var res = try self.client.searchManga(.{
             .title = query,
             .limit = 20,
-            .includes = &.{ "cover_art", "author", "artist" },
+            .includes = &manga_includes,
         });
         defer res.deinit();
 
@@ -73,27 +88,22 @@ pub const MangaDexSource = struct {
         }
 
         for (res.items, 0..) |item, idx| {
-            const canonical_title = item.attributes.title.getPrimary() orelse "Untitled";
+            const canonical_title = item.attributes.title.getPrimary() orelse default_title;
             const owned_id = try allocator.dupe(u8, item.id);
             const owned_title = try allocator.dupe(u8, canonical_title);
 
             var cover_url: ?[]const u8 = null;
             for (item.relationships) |rel| {
-                if (std.mem.eql(u8, rel.type, "cover_art")) {
-                    if (rel.attributes) |attrs| {
-                        if (attrs == .object and attrs.object.get("fileName") != null) {
-                            if (attrs.object.get("fileName").? == .string) {
-                                const fn_str = attrs.object.get("fileName").?.string;
-                                cover_url = buildCoverUrl(allocator, item.id, fn_str, .medium_512) catch null;
-                            }
-                        }
+                if (rel.kind() == .cover_art) {
+                    if (rel.attrString(.fileName)) |fn_str| {
+                        cover_url = buildCoverUrl(allocator, item.id, fn_str, .medium_512) catch null;
                     }
                     break;
                 }
             }
 
             list[idx] = .{
-                .source_id = "mangadex",
+                .source_id = source_id,
                 .source_series_id = owned_id,
                 .title = owned_title,
                 .cover_url = cover_url,
@@ -105,11 +115,11 @@ pub const MangaDexSource = struct {
 
     fn getDetailsBridge(ctx: *anyopaque, allocator: Allocator, source_series_id: []const u8) anyerror!SourceSeriesDetails {
         const self: *MangaDexSource = @ptrCast(@alignCast(ctx));
-        var res = try self.client.getManga(source_series_id, &.{ "cover_art", "author", "artist" });
+        var res = try self.client.getManga(source_series_id, &manga_includes);
         defer res.deinit();
 
         const item = res.data;
-        const title = try allocator.dupe(u8, item.attributes.title.getPrimary() orelse "Untitled");
+        const title = try allocator.dupe(u8, item.attributes.title.getPrimary() orelse default_title);
         errdefer allocator.free(title);
 
         var alt_list: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -156,7 +166,7 @@ pub const MangaDexSource = struct {
         }
         errdefer if (summary) |s| allocator.free(s);
 
-        const status = if (item.attributes.status) |st| try allocator.dupe(u8, st) else try allocator.dupe(u8, "ongoing");
+        const status = try allocator.dupe(u8, item.attributes.status orelse default_status);
         errdefer allocator.free(status);
 
         var author: ?[]const u8 = null;
@@ -164,31 +174,17 @@ pub const MangaDexSource = struct {
         var cover_url: ?[]const u8 = null;
 
         for (item.relationships) |rel| {
-            if (std.mem.eql(u8, rel.type, "author")) {
-                if (rel.attributes) |attrs| {
-                    if (attrs == .object and attrs.object.get("name") != null) {
-                        if (attrs.object.get("name").? == .string) {
-                            author = try allocator.dupe(u8, attrs.object.get("name").?.string);
-                        }
-                    }
-                }
-            } else if (std.mem.eql(u8, rel.type, "artist")) {
-                if (rel.attributes) |attrs| {
-                    if (attrs == .object and attrs.object.get("name") != null) {
-                        if (attrs.object.get("name").? == .string) {
-                            artist = try allocator.dupe(u8, attrs.object.get("name").?.string);
-                        }
-                    }
-                }
-            } else if (std.mem.eql(u8, rel.type, "cover_art")) {
-                if (rel.attributes) |attrs| {
-                    if (attrs == .object and attrs.object.get("fileName") != null) {
-                        if (attrs.object.get("fileName").? == .string) {
-                            const fn_str = attrs.object.get("fileName").?.string;
-                            cover_url = buildCoverUrl(allocator, item.id, fn_str, .original) catch null;
-                        }
-                    }
-                }
+            switch (rel.kind() orelse continue) {
+                .author => if (rel.attrString(.name)) |s| {
+                    author = try allocator.dupe(u8, s);
+                },
+                .artist => if (rel.attrString(.name)) |s| {
+                    artist = try allocator.dupe(u8, s);
+                },
+                .cover_art => if (rel.attrString(.fileName)) |fn_str| {
+                    cover_url = buildCoverUrl(allocator, item.id, fn_str, .original) catch null;
+                },
+                else => {},
             }
         }
 
@@ -228,8 +224,8 @@ pub const MangaDexSource = struct {
                 .limit = page_limit,
                 .offset = offset,
                 .translatedLanguage = &.{lang},
-                .includes = &.{"scanlation_group"},
-                .order_chapter = "asc",
+                .includes = &chapter_includes,
+                .order_chapter = SortOrder.asc.asStr(),
             });
             defer res.deinit();
 
@@ -249,13 +245,9 @@ pub const MangaDexSource = struct {
 
                 var group: ?[]const u8 = null;
                 for (item.relationships) |rel| {
-                    if (std.mem.eql(u8, rel.type, "scanlation_group")) {
-                        if (rel.attributes) |attrs| {
-                            if (attrs == .object and attrs.object.get("name") != null) {
-                                if (attrs.object.get("name").? == .string) {
-                                    group = try allocator.dupe(u8, attrs.object.get("name").?.string);
-                                }
-                            }
+                    if (rel.kind() == .scanlation_group) {
+                        if (rel.attrString(.name)) |s| {
+                            group = try allocator.dupe(u8, s);
                         }
                         break;
                     }

@@ -1,6 +1,6 @@
 const std = @import("std");
 const sdk = @import("mangadex_sdk");
-const sources = @import("sources");
+const sources = @import("mangadex_app").sources;
 const MangaSource = sources.MangaSource;
 const MangaDexSource = sources.MangaDexSource;
 const MangaDexClient = sdk.MangaDexClient;

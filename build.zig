@@ -59,6 +59,41 @@ pub fn build(b: *std.Build) void {
     sqlite_lib_mod.addImport("flowdata_sql", sql_lib_mod);
     sqlite_lib_mod.linkSystemLibrary("sqlite3", .{});
 
+    // 3d. Standalone ZIP & CBZ Archive Library
+    const zip_cflags = &.{ "-std=c99", "-O3", "-D_GNU_SOURCE" };
+    const zip_archive_lib_mod = b.addModule("flowdata_zip_archive", .{
+        .root_source_file = b.path("libs/zip_archive/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    zip_archive_lib_mod.addIncludePath(b.path("libs/zip_archive/c"));
+    zip_archive_lib_mod.addCSourceFile(.{
+        .file = b.path("libs/zip_archive/c/miniz.c"),
+        .flags = zip_cflags,
+    });
+
+    // 3e. Standalone ComicInfo XML Metadata Library
+    const comicinfo_lib_mod = b.addModule("flowdata_comicinfo", .{
+        .root_source_file = b.path("libs/comicinfo/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // 3f. Standalone Komga REST SDK Library
+    const komga_lib_mod = b.addModule("flowdata_komga", .{
+        .root_source_file = b.path("libs/komga/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // 3g. Standalone MangaDex REST SDK Library
+    const mangadex_lib_mod = b.addModule("flowdata_mangadex", .{
+        .root_source_file = b.path("libs/mangadex/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // 4. Drivers: Datasource backends
     const ds_memory_mod = b.addModule("flowdata_datasource_memory", .{
         .root_source_file = b.path("drivers/memory/src/root.zig"),
@@ -153,6 +188,10 @@ pub fn build(b: *std.Build) void {
     const run_flowdata_unit = b.addRunArtifact(b.addTest(.{ .root_module = flowdata_mod }));
     const run_libs_sql = b.addRunArtifact(b.addTest(.{ .root_module = sql_lib_mod }));
     const run_libs_sqlite = b.addRunArtifact(b.addTest(.{ .root_module = sqlite_lib_mod }));
+    const run_libs_zip_archive = b.addRunArtifact(b.addTest(.{ .root_module = zip_archive_lib_mod }));
+    const run_libs_comicinfo = b.addRunArtifact(b.addTest(.{ .root_module = comicinfo_lib_mod }));
+    const run_libs_komga = b.addRunArtifact(b.addTest(.{ .root_module = komga_lib_mod }));
+    const run_libs_mangadex = b.addRunArtifact(b.addTest(.{ .root_module = mangadex_lib_mod }));
     const run_ds_memory = b.addRunArtifact(b.addTest(.{ .root_module = ds_memory_mod }));
     const run_ds_file_store = b.addRunArtifact(b.addTest(.{ .root_module = ds_file_store_mod }));
     const run_ds_sqlite = b.addRunArtifact(b.addTest(.{ .root_module = ds_sqlite_mod }));
@@ -198,6 +237,10 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_flowdata_unit.step);
     test_step.dependOn(&run_libs_sql.step);
     test_step.dependOn(&run_libs_sqlite.step);
+    test_step.dependOn(&run_libs_zip_archive.step);
+    test_step.dependOn(&run_libs_comicinfo.step);
+    test_step.dependOn(&run_libs_komga.step);
+    test_step.dependOn(&run_libs_mangadex.step);
     test_step.dependOn(&run_ds_memory.step);
     test_step.dependOn(&run_ds_file_store.step);
     test_step.dependOn(&run_ds_sqlite.step);

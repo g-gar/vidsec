@@ -1,7 +1,7 @@
 const std = @import("std");
 const flowdata = @import("flowdata");
 const abi = flowdata.plugin;
-const plugin = @import("mangadex_plugin");
+const plugin = @import("mangadex_app");
 const catalog = plugin.catalog;
 const sdk = @import("mangadex_sdk");
 
@@ -184,7 +184,7 @@ test "Catalog tasks return typed structs and C-ABI trampoline auto-emits outputs
     const ctx = host.taskContext();
 
     // 1. Direct call returns SeriesDetails struct without manual emits
-    const details = try catalog.runFetchSeriesDetails(test_alloc, ctx, .{
+    const details = try catalog.MangaPluginContainer.runWithContext(catalog.FetchSeriesDetailsService, test_alloc, ctx, catalog.MangaJob{
         .series_id = "series-test-uuid",
     });
     try std.testing.expectEqualStrings("series-test-uuid", details.series_id);
@@ -193,7 +193,7 @@ test "Catalog tasks return typed structs and C-ABI trampoline auto-emits outputs
     try std.testing.expectEqualStrings("en,es,fr", details.available_languages);
 
     // 2. Direct call returns []ChapterItem slice without manual emits
-    const chapters = try catalog.runFetchChapters(test_alloc, ctx, .{
+    const chapters = try catalog.MangaPluginContainer.runWithContext(catalog.FetchChaptersService, test_alloc, ctx, catalog.FetchChaptersInputs{
         .series_id = "series-test-uuid",
         .languages = "es",
     });
@@ -230,42 +230,42 @@ test "Catalog dynamic datasource resolution and unknown source error" {
     const ctx = host.taskContext();
 
     // 1. Explicit 'mangadex' datasource resolves properly
-    const details = try catalog.runFetchSeriesDetails(test_alloc, ctx, .{
+    const details = try catalog.MangaPluginContainer.runWithContext(catalog.FetchSeriesDetailsService, test_alloc, ctx, catalog.MangaJob{
         .series_id = "series-test-uuid",
         .datasource = "mangadex",
     });
     try std.testing.expectEqualStrings("Chainsaw Man", details.title);
 
     // 2. Unknown datasource returns error.SourceNotFound
-    const bad_res = catalog.runFetchSeriesDetails(test_alloc, ctx, .{
+    const bad_res = catalog.MangaPluginContainer.runWithContext(catalog.FetchSeriesDetailsService, test_alloc, ctx, catalog.MangaJob{
         .series_id = "series-test-uuid",
         .datasource = "non_existent_provider",
     });
     try std.testing.expectError(error.SourceNotFound, bad_res);
 
     // 3. Generic HTML placeholder returns error.NotImplemented
-    const placeholder_res = catalog.runFetchSeriesDetails(test_alloc, ctx, .{
+    const placeholder_res = catalog.MangaPluginContainer.runWithContext(catalog.FetchSeriesDetailsService, test_alloc, ctx, catalog.MangaJob{
         .series_id = "series-test-uuid",
         .datasource = "html_generic",
     });
     try std.testing.expectError(error.NotImplemented, placeholder_res);
 
     // 4. Auto-detection when datasource is omitted: generic URL resolves html_generic
-    const auto_html = catalog.runFetchSeriesDetails(test_alloc, ctx, .{
+    const auto_html = catalog.MangaPluginContainer.runWithContext(catalog.FetchSeriesDetailsService, test_alloc, ctx, catalog.MangaJob{
         .series_id = "https://visortmo.com/library/manga/123/kingdom",
         .datasource = null,
     });
     try std.testing.expectError(error.NotImplemented, auto_html);
 
     // 5. Auto-detection when datasource is omitted: UUID or fallback resolves mangadex
-    const auto_md = try catalog.runFetchSeriesDetails(test_alloc, ctx, .{
+    const auto_md = try catalog.MangaPluginContainer.runWithContext(catalog.FetchSeriesDetailsService, test_alloc, ctx, catalog.MangaJob{
         .series_id = "series-test-uuid",
         .datasource = null,
     });
     try std.testing.expectEqualStrings("Chainsaw Man", auto_md.title);
 }
 
-const sources = @import("sources");
+const sources = @import("mangadex_app").sources;
 const MangaSource = sources.MangaSource;
 const SourceMangaSummary = sources.SourceMangaSummary;
 const SourceSeriesDetails = sources.SourceSeriesDetails;
