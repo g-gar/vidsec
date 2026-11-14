@@ -6,7 +6,7 @@
 | **Parent Master** | [`ARCH-009`](./009-unified-sqlite-storage-and-schema.md) |
 | **Depends On** | [`ARCH-002`](./002-open-kernel-extension-system.md), [`ARCH-016`](./016-reactive-bifurcation-parallel-expansion-and-join.md), [`ARCH-025`](./025-datasource-roles-and-batch-emission-decoupling.md) |
 | **Area** | `src/schema/`, `src/repository/`, `src/dataflow/`, `src/plugin/`, `src/engine/` |
-| **Status** | `SPECIFICATION (CORE)` |
+| **Status** | `PARTIALLY IMPLEMENTED (CORE COMPLETE)` |
 
 ---
 
@@ -104,4 +104,14 @@ Shared test battery run identically against `memory` and all future driver imple
 * `ReadSpec` and `readStream` with Predicate AST (`where`, `order_by`, `limit`, `offset`, projection) produce identical results.
 * Undeclared tables fail with `UnknownTable` when `schemaless == false`.
 * Preflight rejects type/nullability mismatches between task `TaskDescriptor_ABI` and `SchemaCatalog`.
+
+---
+
+## 5. Pending Follow-Ups (Post-009A)
+
+1. **Engine wiring in `PipelineRunner` (`src/engine/runner.zig`):**
+   * Automatically wrap shared `Repository` instances with `SynchronizedRepository` when `scheduler: dag` is active (and `AsyncBatchRepository` when configured).
+   * Wire `preflight.validateDirectivesCapabilities()` during pipeline preflight once drivers declare `Capabilities` in `009B`.
+2. **Legacy `ColumnType.any` & `ColumnType.blob` removal (`src/schema/types.zig`):**
+   * Currently retained as temporary backward-compatibility aliases during the `009A` → `009B` transition; remove once all existing `schemas.yaml` and driver mappings are migrated to `bytes` / explicit logical types.
 

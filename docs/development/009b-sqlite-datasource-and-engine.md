@@ -5,20 +5,25 @@
 | **ID** | `ARCH-009B` |
 | **Parent Master** | [`ARCH-009`](./009-unified-sqlite-storage-and-schema.md) |
 | **Depends On** | [`ARCH-009A`](./009a-universal-repository-contract-and-core-schema.md) |
-| **Area** | `libs/sqlite/`, `extensions/datasource/sqlite/` |
+| **Related** | [`ARCH-009C (Optional SQLite Extensions)`](./009c-sqlite-optional-extensions.md) |
+| **Area** | `libs/sqlite/`, `drivers/sqlite/` |
 | **Status** | `SPECIFICATION (DRIVER)` |
 
 ---
 
 ## 1. Purpose & Design Principles
 
-This specification implements the storage driver for **SQLite** adhering strictly to the universal repository contract defined in [`ARCH-009A`](./009a-universal-repository-contract-and-core-schema.md).
+This specification implements the runtime storage driver for **SQLite** adhering strictly to the universal repository contract defined in [`ARCH-009A`](./009a-universal-repository-contract-and-core-schema.md).
 
 Key Driver Principles:
-1. **Isolated Pure Library (`libs/sqlite/`):** Completely independent from Flowdata; zero internal engine imports. Reusable across tests, tools, and future Android native builds (`ARCH-031`).
-2. **Thin Adapter (`extensions/datasource/sqlite/`):** Connects the universal `Repository` interface and `SchemaCatalog` to `libs/sqlite/`.
-3. **Data Safety First:** Prohibits `INSERT OR REPLACE` (which resets rowids and triggers cascading deletes); enforces `ON CONFLICT (...) DO UPDATE SET` touching only specified columns.
-4. **Thread-Agnostic Core:** Operates as a single-connection engine; multi-thread DAG synchronization is handled upstream via `SynchronizedRepository` or `AsyncBatchRepository`.
+1. **Isolated Pure Library (`libs/sqlite/`):** Completely independent from Flowdata; zero internal engine imports (`src/`). Exposed as a Zig module (`flowdata_sqlite`) in `build.zig` / `build.zig.zon` (`paths` must include `"libs"`), reusable across drivers, apps, CLI tools, and future Android native builds (`ARCH-031`).
+2. **Synchronous Core:** `libs/sqlite/` and `SqliteRepository` are **100% synchronous** and single-connection (`*c.sqlite3`). Concurrency, async batching, and reactive backpressure are layered upstream via `SynchronizedRepository`, `AsyncBatchRepository`, and pull-based `RowIterator` (`ARCH-009A §2.5`).
+3. **Cohesive Runtime Driver (`drivers/sqlite/`):** Connects the universal `Repository` interface (`WriteSpec`, `ReadSpec`, `readStream`, `SchemaCatalog`, `PredicateNode` pushdown, and `migrate` provisioning) to `libs/sqlite/` as one cohesive driver unit, toggled declaratively via `ConfigParam` and `Capabilities`. Optional tooling (inspectors, profilers, backups) is **not** part of the runtime driver and lives separately in [`ARCH-009C`](./009c-sqlite-optional-extensions.md).
+4. **Data Safety First:** Prohibits `INSERT OR REPLACE` (which resets rowids and triggers cascading deletes); enforces `ON CONFLICT (...) DO UPDATE SET` touching only specified columns.
+
+### Prerequisites (Before `009B` Functional Tests)
+1. **Decouple `src/schema/` from `src/yaml/`:** Remove `../yaml/` imports from `src/schema/` (`yaml.Map`, `yaml.Scalar`, `parseYaml`) so `SchemaCatalog` is a pure in-memory AST, moving YAML decoding into `src/yaml/loaders/schema_loader.zig`.
+2. **Migrate `extensions/datasource/` → `drivers/`:** Move `memory`, `file_store`, `yaml_file`, and `ssh_store` out of `extensions/datasource/` into `drivers/<name>/` with independent driver registration in `build.zig` (avoiding forced `sqlite3` linkage when unused).
 
 ---
 
@@ -44,7 +49,7 @@ Extract and harden `db.zig` and `ddl.zig` from `extensions/datasource/sqlite/src
 
 ---
 
-## 3. Layer 2 — SQLite Datasource Adapter (`extensions/datasource/sqlite/`)
+## 3. Layer 2 — SQLite Runtime Driver (`drivers/sqlite/`)
 
 ### 3.1. Declarative Configuration
 Configured entirely via `ConfigParam` in `pipeline.yaml` (interpolated via `EnvInterpolator`), with **no CWD fallback**:
