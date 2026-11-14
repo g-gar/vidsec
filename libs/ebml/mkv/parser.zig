@@ -103,7 +103,7 @@ pub const MkvInspector = struct {
         return info;
     }
 
-    fn parseTracks(
+    pub fn parseTracks(
         self: MkvInspector,
         source: ByteSource,
         elements: []const ParsedElement,

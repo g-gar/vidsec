@@ -89,7 +89,7 @@ pub const Mp4Inspector = struct {
         };
     }
 
-    fn parseFtyp(
+    pub fn parseFtyp(
         self: Mp4Inspector,
         source: ByteSource,
         box: ParsedBox,
@@ -464,7 +464,7 @@ pub const Mp4Inspector = struct {
         }
     }
 
-    fn parseAvcC(
+    pub fn parseAvcC(
         self: Mp4Inspector,
         source: ByteSource,
         box: ParsedBox,
@@ -551,7 +551,7 @@ pub const Mp4Inspector = struct {
         };
     }
 
-    fn parseEsds(
+    pub fn parseEsds(
         self: Mp4Inspector,
         source: ByteSource,
         box: ParsedBox,

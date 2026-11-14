@@ -121,11 +121,70 @@ pipelines:
             datasource: pipeline_memory
 
       # -----------------------------------------------------------------------
-      # STAGE 1: Format-Specific Container Parsing & Lowering to `media_ir`
+      # STAGE 1a: Atomic Format-Specific & CVE Checks (Pre-Lowering)
+      # Run before IR lowering to catch format-specific CVEs and short-circuit
+      # invalid containers without paying lowering cost.
+      # -----------------------------------------------------------------------
+      - id: mp4_ftyp
+        uses: analyzer/check_mp4_ftyp
+        where: "detected_family == 'isobmff' and is_video == true and is_hostile == false"
+        outputs:
+          mp4_ftyp_check:
+            datasource: pipeline_memory
+          audit_findings:
+            datasource: audit_db
+
+      - id: mp4_codecs
+        uses: analyzer/check_mp4_codecs
+        where: "detected_family == 'isobmff' and is_video == true and is_hostile == false"
+        outputs:
+          mp4_codecs_check:
+            datasource: pipeline_memory
+          audit_findings:
+            datasource: audit_db
+
+      - id: mp4_tracks
+        uses: analyzer/check_mp4_tracks
+        where: "detected_family == 'isobmff' and is_video == true and is_hostile == false"
+        outputs:
+          mp4_tracks_check:
+            datasource: pipeline_memory
+          audit_findings:
+            datasource: audit_db
+
+      - id: ebml_header
+        uses: analyzer/check_ebml_header
+        where: "detected_family == 'ebml' and is_video == true and is_hostile == false"
+        outputs:
+          ebml_header_check:
+            datasource: pipeline_memory
+          audit_findings:
+            datasource: audit_db
+
+      - id: mkv_tracks
+        uses: analyzer/check_mkv_tracks
+        where: "detected_family == 'ebml' and is_video == true and is_hostile == false"
+        outputs:
+          mkv_tracks_check:
+            datasource: pipeline_memory
+          audit_findings:
+            datasource: audit_db
+
+      - id: riff_chunks
+        uses: analyzer/check_riff_chunks
+        where: "detected_family == 'riff' and is_video == true and is_hostile == false"
+        outputs:
+          riff_chunks_check:
+            datasource: pipeline_memory
+          audit_findings:
+            datasource: audit_db
+
+      # -----------------------------------------------------------------------
+      # STAGE 1b: Lowering to Universal `media_ir`
       # -----------------------------------------------------------------------
       - id: lower_mp4
         uses: analyzer/lower_mp4_container
-        where: "detected_family == 'isobmff' and is_video == true and is_hostile == false"
+        where: "detected_family == 'isobmff' and is_video == true and is_hostile == false and ftyp_valid == true and codec_config_valid == true and tracks_valid == true"
         outputs:
           container_metadata:
             datasource: audit_db
@@ -136,7 +195,7 @@ pipelines:
 
       - id: lower_mkv
         uses: analyzer/lower_ebml_container
-        where: "detected_family == 'ebml' and is_video == true and is_hostile == false"
+        where: "detected_family == 'ebml' and is_video == true and is_hostile == false and ebml_valid == true and tracks_valid == true"
         outputs:
           container_metadata:
             datasource: audit_db
@@ -147,39 +206,12 @@ pipelines:
 
       - id: lower_riff
         uses: analyzer/lower_riff_container
-        where: "detected_family == 'riff' and is_video == true and is_hostile == false"
+        where: "detected_family == 'riff' and is_video == true and is_hostile == false and riff_valid == true"
         outputs:
           container_metadata:
             datasource: audit_db
           ir_regions:
             datasource: pipeline_memory
-          audit_findings:
-            datasource: audit_db
-
-      - id: inspect_mp4
-        uses: analyzer/inspect_mp4_container
-        where: "detected_family == 'isobmff' and is_video == true and is_hostile == false"
-        outputs:
-          mp4_summary:
-            datasource: audit_db
-          audit_findings:
-            datasource: audit_db
-
-      - id: inspect_mkv
-        uses: analyzer/inspect_ebml_container
-        where: "detected_family == 'ebml' and is_video == true and is_hostile == false"
-        outputs:
-          mkv_summary:
-            datasource: audit_db
-          audit_findings:
-            datasource: audit_db
-
-      - id: inspect_riff
-        uses: analyzer/inspect_riff_container
-        where: "detected_family == 'riff' and is_video == true and is_hostile == false"
-        outputs:
-          riff_summary:
-            datasource: audit_db
           audit_findings:
             datasource: audit_db
 

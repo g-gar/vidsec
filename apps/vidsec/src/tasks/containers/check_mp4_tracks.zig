@@ -9,57 +9,55 @@ pub const Inputs = struct {
     stream: abi.BoundedStreamReader,
 };
 
-pub const Mp4SummaryRow = struct {
-    major_brand: []const u8,
+pub const CheckRow = struct {
     track_count: u64,
     total_samples: u64,
-    total_sample_bytes: u64,
-    total_mdat_bytes: u64,
     unreferenced_mdat_slack: u64,
-    issue_count: u64,
+    tracks_valid: bool,
 };
 
 pub const OutputsData = struct {
-    mp4_summary: Mp4SummaryRow,
+    mp4_tracks_check: CheckRow,
     audit_findings: []const media_ir.AuditFindingRow,
 };
 
 pub const Outputs = abi.Channels(OutputsData);
 
-/// Performs semantic MP4 inspection (`ftyp`, `trak`, `stbl`, `avcC`/`esds`, `mdat` slack)
-/// independently of `media_ir` lowering.
+/// Atomic ISOBMFF check: validates `trak` hierarchy, `stco`/`stsz` bounds, and `mdat` slack before IR lowering.
 pub const Service = struct {
     pub fn execute(_: *const Service, alloc: Allocator, inputs: Inputs) !Outputs {
         const source = common.streamToByteSource(&inputs.stream);
-        const parser = isobmff.box.SafeBoxParser.init(alloc);
-        const parsed = try parser.parse(source);
+        const parsed = try isobmff.box.SafeBoxParser.init(alloc).parse(source);
         defer parsed.deinit(alloc);
 
         const inspection = try isobmff.mp4.Mp4Inspector.init(alloc).inspect(source, parsed.boxes);
         defer inspection.deinit(alloc);
 
-        const major_brand = if (inspection.ftyp) |f|
-            try alloc.dupe(u8, &f.major_brand.bytes)
-        else
-            "none";
+        var track_issues = std.ArrayList(isobmff.mp4.Mp4Issue).empty;
+        defer track_issues.deinit(alloc);
 
-        const findings = try common.collectFindings(
-            alloc,
-            &.{},
-            &.{},
-            &.{},
-            inspection.issues,
-        );
+        for (inspection.issues) |iss| {
+            switch (iss.code) {
+                .ftyp_unrecognized_brand,
+                .ftyp_truncated,
+                .esds_tlv_length_overflow,
+                .esds_truncated,
+                .avcc_invalid_version,
+                .avcc_sps_length_overflow,
+                .avcc_pps_length_overflow,
+                => continue,
+                else => try track_issues.append(alloc, iss),
+            }
+        }
+
+        const findings = try common.collectFindings(alloc, &.{}, &.{}, &.{}, track_issues.items);
 
         return .{ .data = .{
-            .mp4_summary = .{
-                .major_brand = major_brand,
+            .mp4_tracks_check = .{
                 .track_count = inspection.tracks.len,
                 .total_samples = inspection.total_samples,
-                .total_sample_bytes = inspection.total_sample_bytes,
-                .total_mdat_bytes = inspection.total_mdat_bytes,
                 .unreferenced_mdat_slack = inspection.unreferenced_mdat_slack,
-                .issue_count = inspection.issues.len,
+                .tracks_valid = track_issues.items.len == 0,
             },
             .audit_findings = findings,
         } };

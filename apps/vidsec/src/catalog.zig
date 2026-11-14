@@ -52,17 +52,31 @@ const tasks = [_]abi.TaskDescriptor_ABI{
         .name = "lower_riff_container",
         .description = "Parses RIFF/AVI chunks in O(chunks) and lowers structure to media_ir regions and findings",
     }),
-    container.defineTaskService(tasks_mod.inspect_mp4_container.Service, .{
-        .name = "inspect_mp4_container",
-        .description = "Inspects MP4 ftyp/trak/stbl/avcC/esds semantics and mdat slack independently of IR lowering",
+
+    // Stage 1a: Atomic Format-Specific & CVE Checks (Pre-Lowering)
+    container.defineTaskService(tasks_mod.check_mp4_ftyp.Service, .{
+        .name = "check_mp4_ftyp",
+        .description = "Validates MP4 ftyp box presence, truncation, and recognized major brand",
     }),
-    container.defineTaskService(tasks_mod.inspect_ebml_container.Service, .{
-        .name = "inspect_ebml_container",
-        .description = "Inspects EBML/Matroska Info/Tracks/codec semantics and cluster metrics independently of IR lowering",
+    container.defineTaskService(tasks_mod.check_mp4_codecs.Service, .{
+        .name = "check_mp4_codecs",
+        .description = "Validates MP4 avcC (SPS/PPS overflows) and esds (TLV overflows) codec configs",
     }),
-    container.defineTaskService(tasks_mod.inspect_riff_container.Service, .{
-        .name = "inspect_riff_container",
-        .description = "Inspects RIFF/AVI form_type, movi/JUNK totals, and trailing slack independently of IR lowering",
+    container.defineTaskService(tasks_mod.check_mp4_tracks.Service, .{
+        .name = "check_mp4_tracks",
+        .description = "Validates MP4 trak hierarchy, stco/stsz sample bounds, and mdat slack",
+    }),
+    container.defineTaskService(tasks_mod.check_ebml_header.Service, .{
+        .name = "check_ebml_header",
+        .description = "Validates EBML header, Segment, doc_type, and VINT element size bounds",
+    }),
+    container.defineTaskService(tasks_mod.check_mkv_tracks.Service, .{
+        .name = "check_mkv_tracks",
+        .description = "Validates Matroska Tracks, track numbers, CodecID, and avcC CodecPrivate",
+    }),
+    container.defineTaskService(tasks_mod.check_riff_chunks.Service, .{
+        .name = "check_riff_chunks",
+        .description = "Validates RIFF form_type, chunk bounds, movi/JUNK totals, and trailing slack",
     }),
 };
 

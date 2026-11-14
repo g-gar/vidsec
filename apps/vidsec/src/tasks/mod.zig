@@ -13,6 +13,9 @@ pub const lower_mp4_container = @import("containers/lower_mp4_container.zig");
 pub const lower_ebml_container = @import("containers/lower_ebml_container.zig");
 pub const lower_riff_container = @import("containers/lower_riff_container.zig");
 
-pub const inspect_mp4_container = @import("containers/inspect_mp4_container.zig");
-pub const inspect_ebml_container = @import("containers/inspect_ebml_container.zig");
-pub const inspect_riff_container = @import("containers/inspect_riff_container.zig");
+pub const check_mp4_ftyp = @import("containers/check_mp4_ftyp.zig");
+pub const check_mp4_codecs = @import("containers/check_mp4_codecs.zig");
+pub const check_mp4_tracks = @import("containers/check_mp4_tracks.zig");
+pub const check_ebml_header = @import("containers/check_ebml_header.zig");
+pub const check_mkv_tracks = @import("containers/check_mkv_tracks.zig");
+pub const check_riff_chunks = @import("containers/check_riff_chunks.zig");

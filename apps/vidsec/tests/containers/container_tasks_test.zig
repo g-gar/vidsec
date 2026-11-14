@@ -5,9 +5,12 @@ const vidsec = @import("vidsec");
 const lower_mp4 = vidsec.tasks.lower_mp4_container;
 const lower_ebml = vidsec.tasks.lower_ebml_container;
 const lower_riff = vidsec.tasks.lower_riff_container;
-const inspect_mp4 = vidsec.tasks.inspect_mp4_container;
-const inspect_ebml = vidsec.tasks.inspect_ebml_container;
-const inspect_riff = vidsec.tasks.inspect_riff_container;
+const check_mp4_ftyp = vidsec.tasks.check_mp4_ftyp;
+const check_mp4_codecs = vidsec.tasks.check_mp4_codecs;
+const check_mp4_tracks = vidsec.tasks.check_mp4_tracks;
+const check_ebml_header = vidsec.tasks.check_ebml_header;
+const check_mkv_tracks = vidsec.tasks.check_mkv_tracks;
+const check_riff_chunks = vidsec.tasks.check_riff_chunks;
 
 const SliceStreamHost = struct {
     data: []const u8,
@@ -148,7 +151,46 @@ test "lower_riff_container lowers RIFF/AVI + LIST hdrl + LIST movi" {
     try std.testing.expectEqual(@as(usize, 0), out.audit_findings.len);
 }
 
-test "inspect_mp4_container extracts ftyp major_brand and mdat metrics independently" {
+test "check_mp4_ftyp validates ftyp brand independently" {
+    const data =
+        "\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isommp41" ++
+        "\x00\x00\x00\x08moov";
+
+    var host = SliceStreamHost.init(data);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const svc = check_mp4_ftyp.Service{};
+    const out = (try svc.execute(arena.allocator(), .{
+        .stream = host.reader(),
+    })).data;
+
+    try std.testing.expect(out.mp4_ftyp_check.has_ftyp);
+    try std.testing.expectEqualStrings("isom", out.mp4_ftyp_check.major_brand);
+    try std.testing.expect(out.mp4_ftyp_check.ftyp_valid);
+}
+
+test "check_mp4_codecs catches avcC SPS overflow CVE pattern" {
+    // ftyp (24) + avcC (16 bytes total: 8-byte box hdr + 8-byte avcC declaring num_sps=1, sps_len=200 > payload)
+    const data =
+        "\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isommp41" ++
+        "\x00\x00\x00\x10avcC\x01\x42\x00\x1E\xFF\xE1\x00\xC8";
+
+    var host = SliceStreamHost.init(data);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const svc = check_mp4_codecs.Service{};
+    const out = (try svc.execute(arena.allocator(), .{
+        .stream = host.reader(),
+    })).data;
+
+    try std.testing.expectEqual(@as(u64, 1), out.mp4_codecs_check.avcc_count);
+    try std.testing.expect(!out.mp4_codecs_check.codec_config_valid);
+    try std.testing.expectEqualStrings("avcc_sps_length_overflow", out.audit_findings[0].rule_id);
+}
+
+test "check_mp4_tracks validates track hierarchy and mdat slack independently" {
     const data =
         "\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isommp41" ++
         "\x00\x00\x00\x08moov" ++
@@ -158,18 +200,16 @@ test "inspect_mp4_container extracts ftyp major_brand and mdat metrics independe
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const svc = inspect_mp4.Service{};
+    const svc = check_mp4_tracks.Service{};
     const out = (try svc.execute(arena.allocator(), .{
         .stream = host.reader(),
     })).data;
 
-    try std.testing.expectEqualStrings("isom", out.mp4_summary.major_brand);
-    try std.testing.expectEqual(@as(u64, 16), out.mp4_summary.total_mdat_bytes);
-    try std.testing.expectEqual(@as(u64, 0), out.mp4_summary.track_count);
-    try std.testing.expectEqual(@as(u64, 0), out.mp4_summary.issue_count);
+    try std.testing.expectEqual(@as(u64, 0), out.mp4_tracks_check.track_count);
+    try std.testing.expect(out.mp4_tracks_check.tracks_valid);
 }
 
-test "inspect_ebml_container reports missing Tracks and cluster metrics independently" {
+test "check_ebml_header and check_mkv_tracks validate EBML/MKV independently" {
     const data =
         "\x1A\x45\xDF\xA3\x84\x42\x86\x81\x01" ++
         "\x18\x53\x80\x67\x8A" ++
@@ -179,18 +219,22 @@ test "inspect_ebml_container reports missing Tracks and cluster metrics independ
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const svc = inspect_ebml.Service{};
-    const out = (try svc.execute(arena.allocator(), .{
+    const hdr_out = (try (check_ebml_header.Service{}).execute(arena.allocator(), .{
         .stream = host.reader(),
     })).data;
+    try std.testing.expect(hdr_out.ebml_header_check.has_ebml_header);
+    try std.testing.expect(hdr_out.ebml_header_check.has_segment);
+    try std.testing.expectEqual(@as(u64, 1), hdr_out.ebml_header_check.cluster_count);
+    try std.testing.expect(hdr_out.ebml_header_check.ebml_valid);
 
-    try std.testing.expectEqual(@as(u64, 1), out.mkv_summary.cluster_count);
-    try std.testing.expectEqual(@as(u64, 10), out.mkv_summary.total_cluster_bytes);
-    try std.testing.expectEqual(@as(u64, 1), out.mkv_summary.issue_count);
-    try std.testing.expectEqualStrings("segment_missing_tracks", out.audit_findings[0].rule_id);
+    const trk_out = (try (check_mkv_tracks.Service{}).execute(arena.allocator(), .{
+        .stream = host.reader(),
+    })).data;
+    try std.testing.expect(!trk_out.mkv_tracks_check.tracks_valid);
+    try std.testing.expectEqualStrings("segment_missing_tracks", trk_out.audit_findings[0].rule_id);
 }
 
-test "inspect_riff_container extracts form_type and movi metrics independently" {
+test "check_riff_chunks validates RIFF/AVI structure independently" {
     const data =
         "RIFF\x1C\x00\x00\x00AVI " ++
         "LIST\x04\x00\x00\x00hdrl" ++
@@ -200,13 +244,11 @@ test "inspect_riff_container extracts form_type and movi metrics independently" 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const svc = inspect_riff.Service{};
-    const out = (try svc.execute(arena.allocator(), .{
+    const out = (try (check_riff_chunks.Service{}).execute(arena.allocator(), .{
         .stream = host.reader(),
     })).data;
 
-    try std.testing.expectEqualStrings("AVI ", out.riff_summary.form_type);
-    try std.testing.expectEqual(@as(u64, 28), out.riff_summary.root_size);
-    try std.testing.expectEqual(@as(u64, 0), out.riff_summary.trailing_slack_bytes);
-    try std.testing.expectEqual(@as(u64, 0), out.riff_summary.issue_count);
+    try std.testing.expectEqualStrings("AVI ", out.riff_chunks_check.form_type);
+    try std.testing.expectEqual(@as(u64, 28), out.riff_chunks_check.root_size);
+    try std.testing.expect(out.riff_chunks_check.riff_valid);
 }
