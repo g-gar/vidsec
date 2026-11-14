@@ -1,7 +1,7 @@
 # Universal Container IR Decoupling & Format-Agnostic Forensics
 
 > [!NOTE]
-> This guide documents the compiler-inspired 3-layer architecture formalized in [`035-vidsec-libs-extraction-and-rebuild-plan.md`](file:///home/ubuntu/.gemini/antigravity/scratch/vidsec/docs/development/035-vidsec-libs-extraction-and-rebuild-plan.md) (`ARCH-035`). It explains **why** `vidsec` isolates pure binary container dissectors from universal topological forensics, **how** lowering translates incompatible formats into a single interval algebra, and **how** researchers can hunt newly disclosed CVEs without recompiling the engine.
+> This guide documents the compiler-inspired 3-layer architecture formalized in [`035-vidsec-libs-extraction-and-rebuild-plan.md`](../development/035-vidsec-libs-extraction-and-rebuild-plan.md) (`ARCH-035`). It explains **why** `vidsec` isolates pure binary container dissectors from universal topological forensics, **how** lowering translates incompatible formats into a single interval algebra, and **how** researchers can hunt newly disclosed CVEs without recompiling the engine.
 
 ---
 
@@ -240,5 +240,5 @@ Notice why checking $s.\text{end\_offset} \le \text{file\_size}$ alone is insuff
 ---
 
 ## 6. Further Reading
-* **[Video Security & Forensic Analyses](file:///home/ubuntu/.gemini/antigravity/scratch/vidsec/docs/learning/video-security-and-forensic-analyses.md)** — Deep technical manual covering C/C++ video exploitation mechanics, the 4 Structural Invariant Families, format-specific binary attack surfaces, declarative CVE hunting in YAML, and Content Disarm & Reconstruction (CDR).
-* **[ARCH-035 Refactor & Rebuild Plan](file:///home/ubuntu/.gemini/antigravity/scratch/vidsec/docs/development/035-vidsec-libs-extraction-and-rebuild-plan.md)** — Concrete task-by-task implementation roadmap for `libs/isobmff`, `libs/ebml`, `libs/riff`, `libs/media_ir`, and `apps/vidsec`.
+* **[Video Security & Forensic Analyses](./video-security-and-forensic-analyses.md)** — Deep technical manual covering C/C++ video exploitation mechanics, the 4 Structural Invariant Families, format-specific binary attack surfaces, declarative CVE hunting in YAML, and Content Disarm & Reconstruction (CDR).
+* **[ARCH-035 Refactor & Rebuild Plan](../development/035-vidsec-libs-extraction-and-rebuild-plan.md)** — Concrete task-by-task implementation roadmap for `libs/isobmff`, `libs/ebml`, `libs/riff`, `libs/media_ir`, and `apps/vidsec`.

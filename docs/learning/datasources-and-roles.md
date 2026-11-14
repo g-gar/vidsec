@@ -1,57 +1,56 @@
-# Datasources y Roles en FlowData
+# Datasources and Roles in FlowData
 
-En FlowData, los **datasources** abstraen el almacenamiento y el transporte de datos fuera de la lógica de negocio de cada task. Las tasks reciben entradas tipadas y emiten salidas tipadas, mientras que el archivo `pipeline.yaml` decide **de dónde vienen** y **a dónde van** esos datos.
+In FlowData, **datasources** abstract data storage and transport out of each task's business logic. Tasks receive typed inputs and emit typed outputs, while `pipeline.yaml` decides **where that data comes from** and **where it goes**.
 
 ---
 
-## 1. Los tres roles (`DatasourceRole`)
+## 1. The Three Roles (`DatasourceRole`)
 
-Definidos en `src/ast/ast.zig` (`DatasourceRole`):
+Defined in `src/ast/ast.zig` (`DatasourceRole`):
 
-| Rol | Dirección de flujo | Uso habitual |
+| Role | Flow direction | Typical usage |
 | --- | --- | --- |
-| **`source`** | Solo lectura / entrada al pipeline | Cargar trabajos iniciales, lotes o streams de entrada (p. ej. `yaml_file` con `jobs.yaml`, o archivos de entrada). |
-| **`sink`** | Solo escritura / salida final | Guardar artefactos binarios sanitizados, archivos en cuarentena, copias en disco o envíos remotos (p. ej. `file_store`, `ssh_store`). |
-| **`duplex`** *(por defecto)* | Lectura y escritura | Canal intermedio entre pasos del DAG (`memory`) o base relacional consultable/auditada (`sqlite`). |
+| **`source`** | Read-only / pipeline input | Load initial jobs, batches, or input streams (e.g., `yaml_file` with `jobs.yaml`, or input files). |
+| **`sink`** | Write-only / final output | Persist sanitized binary artifacts, quarantined files, disk copies, or remote uploads (e.g., `file_store`, `ssh_store`). |
+| **`duplex`** *(default)* | Read and write | Intermediate channel between DAG steps (`memory`) or queryable/auditable relational store (`sqlite`). |
 
-### Por qué separar por roles
-- **Menor privilegio:** un `sink` como `quarantine` o `artifacts` nunca se consulta como entrada accidental.
-- **Sustituibilidad:** cambiar un `sink` local (`file_store`) por uno remoto (`ssh_store`) no requiere recompilar ni tocar ninguna task Zig.
-- **Encadenamiento en DAG:** un datasource `duplex` como `pipeline_memory` permite que el resultado de una task alimente a la siguiente sin tocar disco ni SQLite.
+### Why separate by roles
+- **Least privilege:** a `sink` such as `quarantine` or `artifacts` is never accidentally queried as an input.
+- **Substitutability:** swapping a local `sink` (`file_store`) for a remote one (`ssh_store`) requires no recompilation and no changes to any Zig task.
+- **DAG chaining:** a `duplex` datasource such as `pipeline_memory` lets one task's output feed the next without touching disk or SQLite.
 
 ---
 
-## 2. Drivers disponibles (`drivers/`)
+## 2. Available Drivers (`drivers/`)
 
 ### 2.1 `memory` (`drivers/memory/`)
-- **Rol habitual:** `duplex`.
-- **Propósito:** repositorio en RAM de alta velocidad para pasar structs y slices tipados entre pasos del DAG (coordinación, órdenes como `TruncateOrder` / `ZeroOutOrder`, o regiones IR).
-- **Ventaja:** cero serialización en disco; junto con `retain_all: false` en `runtime`, FlowData libera automáticamente los payloads cuando ningún paso posterior los necesita.
+- **Typical role:** `duplex`.
+- **Purpose:** high-speed in-RAM repository for passing typed structs and slices between DAG steps (coordination, orders such as `TruncateOrder` / `ZeroOutOrder`, or IR regions).
+- **Advantage:** zero disk serialization; together with `retain_all: false` in `runtime`, FlowData automatically frees payloads when no downstream step needs them.
 
 ### 2.2 `sqlite` (`drivers/sqlite/`)
-- **Rol habitual:** `duplex` o `sink`.
-- **Propósito:** almacenamiento relacional estructurado y consultable offline, provisionado automáticamente desde `schemas.yaml` (`path`, `schema`).
-- **Uso en `vidsec`:** `audit_db` guarda el rastro de auditoría (`file_triage`, `container_metadata`, `audit_findings`, `remediation_outcomes`) para inspección posterior.
+- **Typical role:** `duplex` or `sink`.
+- **Purpose:** structured relational storage queryable offline, automatically provisioned from `schemas.yaml` (`path`, `schema`).
+- **Usage in `vidsec`:** `audit_db` stores the audit trail (`file_triage`, `container_metadata`, `audit_findings`, `remediation_outcomes`) for later inspection.
 
 ### 2.3 `file_store` (`drivers/file_store/`)
-- **Rol habitual:** `sink`.
-- **Propósito:** materializar payloads binarios en un directorio local (`directory`), permitiendo parametrizar subdirectorios y nombres desde el step (`remote_dir`, `filename`).
-- **Uso en `vidsec` / `mangadex`:** guardar artefactos sanitizados (`artifacts/`), ficheros rechazados (`quarantine/`) o copias locales de `.cbz` (`cbz_staging`).
+- **Typical role:** `sink`.
+- **Purpose:** materialize binary payloads into a local directory (`directory`), allowing subdirectories and filenames to be parameterized from the step (`remote_dir`, `filename`).
+- **Usage in `vidsec` / `mangadex`:** store sanitized artifacts (`artifacts/`), rejected files (`quarantine/`), or local `.cbz` copies (`cbz_staging`).
 
 ### 2.4 `ssh_store` (`drivers/ssh_store/`)
-- **Rol habitual:** `sink`.
-- **Propósito:** subir artefactos binarios por SSH/SCP a un servidor remoto (`host`, `port`, `user`, `identity_file`, `directory`).
-- **Uso en `mangadex`:** enviar los `.cbz` y portadas directamente al servidor de Komga sin pasar por almacenamiento local permanente.
+- **Typical role:** `sink`.
+- **Purpose:** upload binary artifacts over SSH/SCP to a remote server (`host`, `port`, `user`, `identity_file`, `directory`).
+- **Usage in `mangadex`:** send `.cbz` files and covers directly to the Komga server without intermediate permanent local storage.
 
 ### 2.5 `yaml_file` (`drivers/yaml/`)
-- **Rol habitual:** `source`.
-- **Propósito:** leer una lista declarativa de trabajos o configuraciones iniciales desde un archivo YAML (`path`).
-- **Uso en `mangadex`:** `tracked_targets` lee `configs/jobs.yaml` para iniciar la sincronización por lotes.
+- **Typical role:** `source`.
+- **Purpose:** read a declarative list of jobs or initial configurations from a YAML file (`path`).
+- **Usage in `mangadex`:** `tracked_targets` reads `configs/jobs.yaml` to initiate batch synchronization.
 
 ---
 
-## 3. Regla de oro al diseñar tasks y pipelines
+## 3. Golden Rule When Designing Tasks and Pipelines
 
-- **La task** solo conoce sus `Inputs`, sus `Outputs` y (si lee streams binarios) `BoundedStreamReader`. Nunca decide si su salida va a RAM, a SQLite, a un directorio local de cuarentena o a un servidor SSH.
-- **El diseñador del `pipeline.yaml`** conecta cada canal de salida al datasource y rol adecuados según el entorno (desarrollo local en RAM/disco vs producción distribuida).
-
+- **The task** only knows its `Inputs`, its `Outputs`, and (if reading binary streams) `BoundedStreamReader`. It never decides whether its output goes to RAM, SQLite, a local quarantine directory, or an SSH server.
+- **The `pipeline.yaml` author** wires each output channel to the appropriate datasource and role according to the environment (local RAM/disk development vs. distributed production).

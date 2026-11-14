@@ -1,7 +1,7 @@
 # Video Security & Forensic Analyses: Threat Mechanics, Structural Invariants, and Active Sanitization
 
 > [!NOTE]
-> This technical manual serves two goals: explaining **how and why** seemingly passive video files (`.mp4`, `.mkv`, `.avi`, `.ts`) compromise media players and OS thumbnailers, and detailing the **multi-stage detection, zero-recompilation CVE hunting, and non-destructive Content Disarm & Reconstruction (CDR)** pipeline implemented in `vidsec` ([`ARCH-035`](file:///home/ubuntu/.gemini/antigravity/scratch/vidsec/docs/development/035-vidsec-libs-extraction-and-rebuild-plan.md)). For the compiler-inspired separation between binary dissectors and the Universal Container IR, see [`universal-container-ir-decoupling.md`](file:///home/ubuntu/.gemini/antigravity/scratch/vidsec/docs/learning/universal-container-ir-decoupling.md).
+> This technical manual serves two goals: explaining **how and why** seemingly passive video files (`.mp4`, `.mkv`, `.avi`, `.ts`) compromise media players and OS thumbnailers, and detailing the **multi-stage detection, zero-recompilation CVE hunting, and non-destructive Content Disarm & Reconstruction (CDR)** pipeline implemented in `vidsec` ([`ARCH-035`](../development/035-vidsec-libs-extraction-and-rebuild-plan.md)). For the compiler-inspired separation between binary dissectors and the Universal Container IR, see [`universal-container-ir-decoupling.md`](./universal-container-ir-decoupling.md).
 
 ---
 
