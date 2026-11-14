@@ -1,10 +1,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const yaml = @import("../yaml/lib/mod.zig");
-const EnvInterpolator = @import("../yaml/env.zig").EnvInterpolator;
+const NamedMap = @import("types.zig").NamedMap;
 const table = @import("table.zig");
 const TableSchema = table.TableSchema;
-const SeedRow = table.SeedRow;
 
 pub const SchemaError = error{
     UnsupportedSchemaVersion,
@@ -19,25 +17,15 @@ pub const SchemaError = error{
     OutOfMemory,
 };
 
-pub const DomainSchema = yaml.Map(TableSchema);
+pub const DomainSchema = NamedMap(TableSchema);
 
-/// Universal domain schema catalog decoded from declarative definitions (`schemas.yaml`).
+/// Universal, format-agnostic domain schema catalog.
+/// Can be constructed programmatically or decoded by a frontend loader (e.g. `src/yaml/loaders/schema_loader.zig`).
 pub const SchemaCatalog = struct {
     version: u32,
-    schemas: yaml.Map(DomainSchema),
+    schemas: NamedMap(DomainSchema),
 
-    pub fn parseYaml(
-        arena: Allocator,
-        yaml_src: []const u8,
-        env: ?*const EnvInterpolator,
-    ) anyerror!SchemaCatalog {
-        const opts = yaml.ParseOptions{
-            .scalar_hook = if (env) |e| e.scalarHook() else null,
-        };
-        return yaml.parse(SchemaCatalog, arena, yaml_src, opts);
-    }
-
-    pub fn validate(self: *const SchemaCatalog, arena: Allocator) SchemaError!void {
+    pub fn validate(self: *const SchemaCatalog, arena: Allocator) anyerror!void {
         if (self.version != 2) return error.UnsupportedSchemaVersion;
 
         var seen_tables: std.StringHashMapUnmanaged(TableSchema) = .empty;
@@ -46,6 +34,7 @@ pub const SchemaCatalog = struct {
                 if (seen_tables.contains(tbl_entry.key)) {
                     return error.DuplicateTableNameAcrossDomains;
                 }
+                try tbl_entry.value.validate();
                 try seen_tables.put(arena, tbl_entry.key, tbl_entry.value);
             }
         }
@@ -61,10 +50,6 @@ pub const SchemaCatalog = struct {
                 }
             }
         }
-    }
-
-    pub fn yamlValidate(self: *const SchemaCatalog, arena: Allocator) SchemaError!void {
-        return self.validate(arena);
     }
 
     pub fn getDomain(self: *const SchemaCatalog, domain_name: []const u8) ?DomainSchema {

@@ -7,7 +7,7 @@
 | **Depends On** | [`ARCH-009A`](./009a-universal-repository-contract-and-core-schema.md) |
 | **Related** | [`ARCH-009C (Optional SQLite Extensions)`](./009c-sqlite-optional-extensions.md) |
 | **Area** | `libs/sqlite/`, `drivers/sqlite/` |
-| **Status** | `SPECIFICATION (DRIVER)` |
+| **Status** | `IMPLEMENTED` |
 
 ---
 

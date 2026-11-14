@@ -286,90 +286,9 @@ pub const DdlBuilder = struct {
         try self.buf.appendSlice(self.allocator, " (\n");
 
         for (table.columns, 0..) |col, i| {
-            if (col.name.len == 0) return error.EmptyColumnName;
-            if (col.autoincrement) {
-                if (!col.primary_key or col.storage_type != .integer) {
-                    return error.AutoincrementRequiresIntegerPrimaryKey;
-                }
-                if (table.without_rowid) {
-                    return error.WithoutRowidIncompatibleWithAutoincrement;
-                }
-            }
-
             if (i > 0) try self.buf.appendSlice(self.allocator, ",\n");
             try self.buf.appendSlice(self.allocator, "  ");
-            try writeQuotedIdent(&self.buf, self.allocator, col.name);
-            try self.buf.append(self.allocator, ' ');
-            try self.buf.appendSlice(self.allocator, col.storage_type.toSql());
-
-            if (col.generated) |gen| {
-                try self.buf.appendSlice(self.allocator, " GENERATED ALWAYS AS (");
-                try self.buf.appendSlice(self.allocator, gen.expr);
-                try self.buf.appendSlice(self.allocator, ") ");
-                try self.buf.appendSlice(self.allocator, gen.storage.toSql());
-            }
-
-            if (col.primary_key) {
-                try self.buf.appendSlice(self.allocator, " PRIMARY KEY");
-                if (col.pk_order) |ord| {
-                    try self.buf.append(self.allocator, ' ');
-                    try self.buf.appendSlice(self.allocator, ord.toSql());
-                }
-                if (col.pk_conflict) |conf| {
-                    try self.buf.appendSlice(self.allocator, " ON CONFLICT ");
-                    try self.buf.appendSlice(self.allocator, conf.toSql());
-                }
-                if (col.autoincrement) {
-                    try self.buf.appendSlice(self.allocator, " AUTOINCREMENT");
-                }
-            }
-
-            if (col.not_null and !col.primary_key) {
-                try self.buf.appendSlice(self.allocator, " NOT NULL");
-            }
-
-            if (col.unique and !col.primary_key) {
-                try self.buf.appendSlice(self.allocator, " UNIQUE");
-                if (col.unique_conflict) |conf| {
-                    try self.buf.appendSlice(self.allocator, " ON CONFLICT ");
-                    try self.buf.appendSlice(self.allocator, conf.toSql());
-                }
-            }
-
-            if (col.collate) |coll| {
-                try self.buf.appendSlice(self.allocator, " COLLATE ");
-                try writeQuotedIdent(&self.buf, self.allocator, coll);
-            }
-
-            if (col.default_val) |def_val| {
-                try self.buf.appendSlice(self.allocator, " DEFAULT ");
-                try writeDefaultSpec(&self.buf, self.allocator, def_val);
-            }
-
-            if (col.check_expr) |chk| {
-                try self.buf.appendSlice(self.allocator, " CHECK (");
-                try self.buf.appendSlice(self.allocator, chk);
-                try self.buf.append(self.allocator, ')');
-            }
-
-            if (col.references) |fk| {
-                try self.buf.appendSlice(self.allocator, " REFERENCES ");
-                try writeQuotedIdent(&self.buf, self.allocator, fk.table);
-                try self.buf.append(self.allocator, '(');
-                try writeQuotedIdent(&self.buf, self.allocator, fk.column);
-                try self.buf.append(self.allocator, ')');
-                if (fk.on_delete) |act| {
-                    try self.buf.appendSlice(self.allocator, " ON DELETE ");
-                    try self.buf.appendSlice(self.allocator, act.toSql());
-                }
-                if (fk.on_update) |act| {
-                    try self.buf.appendSlice(self.allocator, " ON UPDATE ");
-                    try self.buf.appendSlice(self.allocator, act.toSql());
-                }
-                if (fk.deferrable_initially_deferred) {
-                    try self.buf.appendSlice(self.allocator, " DEFERRABLE INITIALLY DEFERRED");
-                }
-            }
+            try self.writeColumnDef(col, table.without_rowid);
         }
 
         for (table.constraints) |constraint| {
@@ -386,6 +305,100 @@ pub const DdlBuilder = struct {
             try self.buf.appendSlice(self.allocator, " WITHOUT ROWID;\n");
         } else {
             try self.buf.appendSlice(self.allocator, ";\n");
+        }
+    }
+
+    pub fn addAlterTableAddColumn(self: *DdlBuilder, table_name: []const u8, col: ColumnDef) DdlError!void {
+        if (table_name.len == 0) return error.EmptyTableName;
+        try self.buf.appendSlice(self.allocator, "ALTER TABLE ");
+        try writeQuotedIdent(&self.buf, self.allocator, table_name);
+        try self.buf.appendSlice(self.allocator, " ADD COLUMN ");
+        try self.writeColumnDef(col, false);
+        try self.buf.appendSlice(self.allocator, ";\n");
+    }
+
+    fn writeColumnDef(self: *DdlBuilder, col: ColumnDef, without_rowid: bool) DdlError!void {
+        if (col.name.len == 0) return error.EmptyColumnName;
+        if (col.autoincrement) {
+            if (!col.primary_key or col.storage_type != .integer) {
+                return error.AutoincrementRequiresIntegerPrimaryKey;
+            }
+            if (without_rowid) {
+                return error.WithoutRowidIncompatibleWithAutoincrement;
+            }
+        }
+
+        try writeQuotedIdent(&self.buf, self.allocator, col.name);
+        try self.buf.append(self.allocator, ' ');
+        try self.buf.appendSlice(self.allocator, col.storage_type.toSql());
+
+        if (col.generated) |gen| {
+            try self.buf.appendSlice(self.allocator, " GENERATED ALWAYS AS (");
+            try self.buf.appendSlice(self.allocator, gen.expr);
+            try self.buf.appendSlice(self.allocator, ") ");
+            try self.buf.appendSlice(self.allocator, gen.storage.toSql());
+        }
+
+        if (col.primary_key) {
+            try self.buf.appendSlice(self.allocator, " PRIMARY KEY");
+            if (col.pk_order) |ord| {
+                try self.buf.append(self.allocator, ' ');
+                try self.buf.appendSlice(self.allocator, ord.toSql());
+            }
+            if (col.pk_conflict) |conf| {
+                try self.buf.appendSlice(self.allocator, " ON CONFLICT ");
+                try self.buf.appendSlice(self.allocator, conf.toSql());
+            }
+            if (col.autoincrement) {
+                try self.buf.appendSlice(self.allocator, " AUTOINCREMENT");
+            }
+        }
+
+        if (col.not_null and !col.primary_key) {
+            try self.buf.appendSlice(self.allocator, " NOT NULL");
+        }
+
+        if (col.unique and !col.primary_key) {
+            try self.buf.appendSlice(self.allocator, " UNIQUE");
+            if (col.unique_conflict) |conf| {
+                try self.buf.appendSlice(self.allocator, " ON CONFLICT ");
+                try self.buf.appendSlice(self.allocator, conf.toSql());
+            }
+        }
+
+        if (col.collate) |coll| {
+            try self.buf.appendSlice(self.allocator, " COLLATE ");
+            try writeQuotedIdent(&self.buf, self.allocator, coll);
+        }
+
+        if (col.default_val) |def_val| {
+            try self.buf.appendSlice(self.allocator, " DEFAULT ");
+            try writeDefaultSpec(&self.buf, self.allocator, def_val);
+        }
+
+        if (col.check_expr) |chk| {
+            try self.buf.appendSlice(self.allocator, " CHECK (");
+            try self.buf.appendSlice(self.allocator, chk);
+            try self.buf.append(self.allocator, ')');
+        }
+
+        if (col.references) |fk| {
+            try self.buf.appendSlice(self.allocator, " REFERENCES ");
+            try writeQuotedIdent(&self.buf, self.allocator, fk.table);
+            try self.buf.append(self.allocator, '(');
+            try writeQuotedIdent(&self.buf, self.allocator, fk.column);
+            try self.buf.append(self.allocator, ')');
+            if (fk.on_delete) |act| {
+                try self.buf.appendSlice(self.allocator, " ON DELETE ");
+                try self.buf.appendSlice(self.allocator, act.toSql());
+            }
+            if (fk.on_update) |act| {
+                try self.buf.appendSlice(self.allocator, " ON UPDATE ");
+                try self.buf.appendSlice(self.allocator, act.toSql());
+            }
+            if (fk.deferrable_initially_deferred) {
+                try self.buf.appendSlice(self.allocator, " DEFERRABLE INITIALLY DEFERRED");
+            }
         }
     }
 

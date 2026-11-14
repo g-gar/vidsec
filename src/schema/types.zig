@@ -1,5 +1,38 @@
 const std = @import("std");
-const yaml = @import("../yaml/lib/mod.zig");
+
+/// Generic ordered key-value map for engine-agnostic schema definitions.
+pub fn NamedMap(comptime V: type) type {
+    return struct {
+        entries: []const Entry = &.{},
+
+        pub const Entry = struct {
+            key: []const u8,
+            value: V,
+        };
+
+        pub fn get(self: @This(), key: []const u8) ?V {
+            for (self.entries) |e| {
+                if (std.mem.eql(u8, e.key, key)) return e.value;
+            }
+            return null;
+        }
+
+        pub fn contains(self: @This(), key: []const u8) bool {
+            return self.get(key) != null;
+        }
+
+        pub fn count(self: @This()) usize {
+            return self.entries.len;
+        }
+    };
+}
+
+/// Scalar value in a declarative seed row, preserving whether it was unquoted (`plain`)
+/// so literal `null` can be distinguished from the string `"null"`.
+pub const SeedScalar = struct {
+    value: []const u8,
+    quote_style: enum { plain, quoted } = .plain,
+};
 
 /// Universal column logical types supported across all Flowdata storage engines.
 pub const ColumnType = enum {
@@ -56,26 +89,8 @@ pub const ForeignKeyAction = enum {
     cascade,
 };
 
-/// Custom scalar reference for `ref: <table_name>.<column_name>`.
+/// Reference to `<table_name>.<column_name>`.
 pub const ForeignKeyRef = struct {
     table: []const u8,
     column: []const u8,
-
-    pub fn yamlParseScalar(
-        arena: std.mem.Allocator,
-        scalar: yaml.Scalar,
-        _: yaml.SourceLoc,
-    ) !ForeignKeyRef {
-        const s = scalar.value;
-        const dot_idx = std.mem.indexOfScalar(u8, s, '.') orelse return error.InvalidForeignKeyRef;
-        const ref_tbl = s[0..dot_idx];
-        const ref_col = s[dot_idx + 1 ..];
-        if (ref_tbl.len == 0 or ref_col.len == 0 or std.mem.indexOfScalar(u8, ref_col, '.') != null) {
-            return error.InvalidForeignKeyRef;
-        }
-        return ForeignKeyRef{
-            .table = try arena.dupe(u8, ref_tbl),
-            .column = try arena.dupe(u8, ref_col),
-        };
-    }
 };

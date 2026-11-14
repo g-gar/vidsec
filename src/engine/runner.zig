@@ -233,8 +233,7 @@ pub const PipelineRunner = struct {
         if (schemas_path) |s_path| {
             const arena = self.config_arena.allocator();
             const schema_yaml_bytes = try readFileBytes(arena, s_path);
-            const catalog = try yaml_core.SchemaCatalog.parseYaml(arena, schema_yaml_bytes, &self.env_interp);
-            try catalog.yamlValidate(arena);
+            const catalog = try yaml_core.parseSchemaCatalog(arena, schema_yaml_bytes, &self.env_interp);
             loaded_catalog = catalog;
         }
 

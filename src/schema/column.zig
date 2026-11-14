@@ -21,11 +21,6 @@ pub const ColumnSpec = struct {
     on_delete: ?ForeignKeyAction = null,
     on_update: ?ForeignKeyAction = null,
 
-    pub const yaml_fields = .{
-        .col_type = "type",
-        .default_raw = "default",
-    };
-
     pub fn parsedDefault(self: ColumnSpec) !?DefaultValue {
         if (self.default_expr) |expr| {
             if (expr.len == 0) return error.InvalidDefaultValue;
@@ -49,7 +44,7 @@ pub const ColumnSpec = struct {
         };
     }
 
-    pub fn yamlValidate(self: *const ColumnSpec, _: std.mem.Allocator) !void {
+    pub fn validate(self: *const ColumnSpec) !void {
         if (self.default_raw != null and self.default_expr != null) {
             return error.InvalidDefaultValue;
         }

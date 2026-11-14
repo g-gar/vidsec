@@ -4,6 +4,7 @@ const Allocator = std.mem.Allocator;
 const flowdata = @import("flowdata");
 const extensions = @import("flowdata_extensions");
 const MemoryRepository = extensions.datasource.memory.MemoryRepository;
+const SqliteRepository = extensions.datasource.sqlite.SqliteRepository;
 const Repository = flowdata.Repository;
 const ConfigParam = flowdata.repository.ConfigParam;
 const WriteSpec = flowdata.WriteSpec;
@@ -46,8 +47,7 @@ pub fn runConformanceSuite(allocator: Allocator, makeRepo: RepoFactoryFn) !void 
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const catalog = try SchemaCatalog.parseYaml(arena, TestSchemaYaml, null);
-    try catalog.yamlValidate(arena);
+    const catalog = try flowdata.yaml.parseSchemaCatalog(arena, TestSchemaYaml, null);
 
     const strict_params = [_]ConfigParam{.{ .key = "schemaless", .value = "false" }};
     var repo = try makeRepo(allocator, &strict_params);
@@ -224,8 +224,7 @@ test "ARCH-009A: SynchronizedRepository and AsyncBatchRepository decorators" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const catalog = try SchemaCatalog.parseYaml(arena, TestSchemaYaml, null);
-    try catalog.yamlValidate(arena);
+    const catalog = try flowdata.yaml.parseSchemaCatalog(arena, TestSchemaYaml, null);
 
     const mem = try MemoryRepository.createHeap(testing.allocator, &.{});
     var synced = SynchronizedRepository.init(testing.allocator, mem);
@@ -258,8 +257,7 @@ test "ARCH-009A: Preflight TaskDescriptor_ABI metadata & SchemaCatalog validatio
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const catalog = try SchemaCatalog.parseYaml(arena, TestSchemaYaml, null);
-    try catalog.yamlValidate(arena);
+    const catalog = try flowdata.yaml.parseSchemaCatalog(arena, TestSchemaYaml, null);
     const users_tbl = catalog.getTable("users").?;
 
     // Valid output struct
@@ -333,4 +331,70 @@ test "ARCH-009A: ConcurrencyPolicy & ManagedRepository explicit policy selection
         });
         try testing.expectEqual(@as(usize, 1), repo.count("items"));
     }
+}
+
+test "ARCH-009B: SqliteRepository passes 009A conformance suite" {
+    try runConformanceSuite(testing.allocator, SqliteRepository.createHeap);
+}
+
+test "ARCH-009B: strict tables, parameterized seeds, and Phase 1 non-destructive migrations" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const v1_yaml =
+        \\version: 2
+        \\schemas:
+        \\  core:
+        \\    items:
+        \\      columns:
+        \\        id: { type: int64, pk: true }
+        \\        code: { type: text, unique: true }
+        \\        note: { type: text, nullable: true }
+        \\      seeds:
+        \\        - { id: 1, code: "a'b", note: null }
+    ;
+    const cat_v1 = try flowdata.yaml.parseSchemaCatalog(arena, v1_yaml, null);
+
+    const strict_params = [_]ConfigParam{.{ .key = "schemaless", .value = "false" }};
+    var repo = try SqliteRepository.createHeap(testing.allocator, &strict_params);
+    defer repo.deinit();
+
+    try repo.ensureSchema(&cat_v1);
+    try testing.expectEqual(@as(usize, 1), repo.count("items"));
+
+    // Read back seeded row and verify SQL injection-safe escaping + NULL handling
+    const res = try repo.read(arena, .{ .table = "items" });
+    try testing.expectEqual(@as(usize, 1), res.len);
+    const rec = res.elementAt(0).?;
+    try testing.expectEqualStrings("a'b", rec.getReflected("code").?.string);
+    try testing.expect(rec.getReflected("note").? == .none);
+
+    // Phase 1 non-destructive migration: add a nullable column
+    const v2_yaml =
+        \\version: 2
+        \\schemas:
+        \\  core:
+        \\    items:
+        \\      columns:
+        \\        id: { type: int64, pk: true }
+        \\        code: { type: text, unique: true }
+        \\        note: { type: text, nullable: true }
+        \\        extra: { type: int64, default: "0" }
+    ;
+    const cat_v2 = try flowdata.yaml.parseSchemaCatalog(arena, v2_yaml, null);
+    try repo.ensureSchema(&cat_v2);
+
+    // Destructive drift: drop a column -> must fail loudly
+    const v3_bad_yaml =
+        \\version: 2
+        \\schemas:
+        \\  core:
+        \\    items:
+        \\      columns:
+        \\        id: { type: int64, pk: true }
+        \\        code: { type: text, unique: true }
+    ;
+    const cat_v3 = try flowdata.yaml.parseSchemaCatalog(arena, v3_bad_yaml, null);
+    try testing.expectError(error.DestructiveSchemaDrift, repo.ensureSchema(&cat_v3));
 }

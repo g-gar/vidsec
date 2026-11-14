@@ -1,5 +1,7 @@
-pub const lib = @import("sqlite_lib/mod.zig");
+pub const lib = @import("flowdata_sqlite");
 pub const repository = @import("sqlite_repository.zig");
+pub const schema_provisioner = @import("schema_provisioner.zig");
+pub const predicate_compiler = @import("predicate_compiler.zig");
 
 pub const SqliteRepository = repository.SqliteRepository;
 pub const Db = lib.Db;

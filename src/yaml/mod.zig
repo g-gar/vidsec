@@ -12,6 +12,7 @@ pub const YamlNode = yaml_lib.Node;
 
 // Declarative Schema Catalog (schemas.yaml)
 pub const SchemaCatalog = schema_loader.SchemaCatalog;
+pub const parseSchemaCatalog = schema_loader.parseYaml;
 pub const DomainSchema = schema_loader.DomainSchema;
 pub const TableSchema = schema_loader.TableSchema;
 pub const ColumnSpec = schema_loader.ColumnSpec;

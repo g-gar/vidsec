@@ -72,6 +72,34 @@ pub const SynchronousMode = enum {
     extra,
 };
 
+pub const AutoVacuumMode = enum {
+    none,
+    full,
+    incremental,
+};
+
+pub const TempStoreMode = enum {
+    default,
+    file,
+    memory,
+};
+
+pub const PragmaConfig = struct {
+    auto_vacuum: ?AutoVacuumMode = null,
+    cache_size: ?i64 = null,
+    mmap_size: ?u64 = null,
+    temp_store: ?TempStoreMode = null,
+    journal_size_limit: ?i64 = null,
+    wal_autocheckpoint: ?u32 = null,
+};
+
+pub const ErrorDetail = struct {
+    err: SqliteError,
+    extended_code: c_int,
+    message: []const u8,
+    sql: ?[]const u8 = null,
+};
+
 pub const OpenOptions = struct {
     read_only: bool = false,
     create: bool = true,
@@ -80,6 +108,7 @@ pub const OpenOptions = struct {
     foreign_keys: bool = true,
     journal_mode: ?JournalMode = null,
     synchronous: ?SynchronousMode = null,
+    pragma: PragmaConfig = .{},
 };
 
 /// Idiomatic Zig wrapper around `*c.sqlite3`.
@@ -166,6 +195,7 @@ pub const Db = struct {
         if (options.synchronous) |sync_mode| {
             try db.setSynchronous(sync_mode);
         }
+        try db.applyPragmaConfig(options.pragma);
 
         return db;
     }
@@ -182,6 +212,81 @@ pub const Db = struct {
 
     pub fn lastExtendedErrorCode(self: *const Db) c_int {
         return c.sqlite3_extended_errcode(self.handle);
+    }
+
+    pub fn lastErrorDetail(self: *const Db, err: SqliteError, sql: ?[]const u8) ErrorDetail {
+        return .{
+            .err = err,
+            .extended_code = self.lastExtendedErrorCode(),
+            .message = self.lastErrorMessage(),
+            .sql = sql,
+        };
+    }
+
+    pub fn applyPragmaConfig(self: *Db, pragma: PragmaConfig) SqliteError!void {
+        var buf: [128]u8 = undefined;
+        if (pragma.auto_vacuum) |av| {
+            const sql: [:0]const u8 = switch (av) {
+                .none => "PRAGMA auto_vacuum = NONE;",
+                .full => "PRAGMA auto_vacuum = FULL;",
+                .incremental => "PRAGMA auto_vacuum = INCREMENTAL;",
+            };
+            try self.execZ(sql);
+        }
+        if (pragma.cache_size) |cs| {
+            const sql = std.fmt.bufPrint(&buf, "PRAGMA cache_size = {d};", .{cs}) catch return error.TooBig;
+            try self.exec(sql);
+        }
+        if (pragma.mmap_size) |ms| {
+            const sql = std.fmt.bufPrint(&buf, "PRAGMA mmap_size = {d};", .{ms}) catch return error.TooBig;
+            try self.exec(sql);
+        }
+        if (pragma.temp_store) |ts| {
+            const sql: [:0]const u8 = switch (ts) {
+                .default => "PRAGMA temp_store = DEFAULT;",
+                .file => "PRAGMA temp_store = FILE;",
+                .memory => "PRAGMA temp_store = MEMORY;",
+            };
+            try self.execZ(sql);
+        }
+        if (pragma.journal_size_limit) |jsl| {
+            const sql = std.fmt.bufPrint(&buf, "PRAGMA journal_size_limit = {d};", .{jsl}) catch return error.TooBig;
+            try self.exec(sql);
+        }
+        if (pragma.wal_autocheckpoint) |wac| {
+            const sql = std.fmt.bufPrint(&buf, "PRAGMA wal_autocheckpoint = {d};", .{wac}) catch return error.TooBig;
+            try self.exec(sql);
+        }
+    }
+
+    pub fn beginImmediate(self: *Db) SqliteError!void {
+        try self.execZ("BEGIN IMMEDIATE;");
+    }
+
+    pub fn beginDeferred(self: *Db) SqliteError!void {
+        try self.execZ("BEGIN DEFERRED;");
+    }
+
+    pub fn commit(self: *Db) SqliteError!void {
+        try self.execZ("COMMIT;");
+    }
+
+    pub fn rollback(self: *Db) SqliteError!void {
+        try self.execZ("ROLLBACK;");
+    }
+
+    pub fn incrementalVacuum(self: *Db, pages: ?u32) SqliteError!void {
+        if (pages) |p| {
+            var buf: [64]u8 = undefined;
+            const sql = std.fmt.bufPrint(&buf, "PRAGMA incremental_vacuum({d});", .{p}) catch return error.TooBig;
+            try self.exec(sql);
+        } else {
+            try self.execZ("PRAGMA incremental_vacuum;");
+        }
+    }
+
+    pub fn optimize(self: *Db) SqliteError!void {
+        try self.execZ("PRAGMA optimize;");
     }
 
     pub fn changes(self: *const Db) usize {
@@ -510,12 +615,22 @@ pub const Row = struct {
         return self.int64(col_idx) != 0;
     }
 
+    pub fn optText(self: Row, col_idx: usize) ?[]const u8 {
+        if (self.isNull(col_idx)) return null;
+        return self.text(col_idx);
+    }
+
     pub fn text(self: Row, col_idx: usize) []const u8 {
         const ptr = c.sqlite3_column_text(self.stmt, @intCast(col_idx));
         if (ptr == null) return "";
         const len_c = c.sqlite3_column_bytes(self.stmt, @intCast(col_idx));
         if (len_c <= 0) return "";
         return ptr[0..@intCast(len_c)];
+    }
+
+    pub fn optBlob(self: Row, col_idx: usize) ?[]const u8 {
+        if (self.isNull(col_idx)) return null;
+        return self.blob(col_idx);
     }
 
     pub fn blob(self: Row, col_idx: usize) []const u8 {

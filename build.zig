@@ -42,9 +42,18 @@ pub fn build(b: *std.Build) void {
     transport_mod.addImport("flowdata", flowdata_mod);
     b.modules.put(b.allocator, b.dupe("flowdata_network"), transport_mod) catch @panic("OOM");
 
-    // 4. Extensions: Datasource drivers
+    // 3c. Standalone Pure SQLite Library (zero Flowdata dependencies, ARCH-009B)
+    const sqlite_lib_mod = b.addModule("flowdata_sqlite", .{
+        .root_source_file = b.path("libs/sqlite/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    sqlite_lib_mod.linkSystemLibrary("sqlite3", .{});
+
+    // 4. Drivers: Datasource backends
     const ds_memory_mod = b.addModule("flowdata_datasource_memory", .{
-        .root_source_file = b.path("extensions/datasource/memory/src/root.zig"),
+        .root_source_file = b.path("drivers/memory/src/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -52,7 +61,7 @@ pub fn build(b: *std.Build) void {
     ds_memory_mod.addImport("flowdata", flowdata_mod);
 
     const ds_file_store_mod = b.addModule("flowdata_datasource_file_store", .{
-        .root_source_file = b.path("extensions/datasource/file_store/src/root.zig"),
+        .root_source_file = b.path("drivers/file_store/src/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -60,28 +69,42 @@ pub fn build(b: *std.Build) void {
     ds_file_store_mod.addImport("flowdata", flowdata_mod);
 
     const ds_sqlite_mod = b.addModule("flowdata_datasource_sqlite", .{
-        .root_source_file = b.path("extensions/datasource/sqlite/src/root.zig"),
+        .root_source_file = b.path("drivers/sqlite/src/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
     ds_sqlite_mod.addImport("flowdata", flowdata_mod);
+    ds_sqlite_mod.addImport("flowdata_sqlite", sqlite_lib_mod);
     ds_sqlite_mod.linkSystemLibrary("sqlite3", .{});
 
-    const ds_yaml_file_mod = b.addModule("flowdata_datasource_yaml_file", .{
-        .root_source_file = b.path("extensions/datasource/yaml_file/src/root.zig"),
+    const ds_yaml_mod = b.addModule("flowdata_datasource_yaml", .{
+        .root_source_file = b.path("drivers/yaml/src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    ds_yaml_file_mod.addImport("flowdata", flowdata_mod);
+    ds_yaml_mod.addImport("flowdata", flowdata_mod);
 
     const ds_ssh_store_mod = b.addModule("flowdata_datasource_ssh_store", .{
-        .root_source_file = b.path("extensions/datasource/ssh_store/src/root.zig"),
+        .root_source_file = b.path("drivers/ssh_store/src/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
     ds_ssh_store_mod.addImport("flowdata", flowdata_mod);
+
+    const drivers_mod = b.addModule("flowdata_drivers", .{
+        .root_source_file = b.path("drivers/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    drivers_mod.addImport("flowdata", flowdata_mod);
+    drivers_mod.addImport("flowdata_datasource_memory", ds_memory_mod);
+    drivers_mod.addImport("flowdata_datasource_file_store", ds_file_store_mod);
+    drivers_mod.addImport("flowdata_datasource_sqlite", ds_sqlite_mod);
+    drivers_mod.addImport("flowdata_datasource_yaml", ds_yaml_mod);
+    drivers_mod.addImport("flowdata_datasource_ssh_store", ds_ssh_store_mod);
 
     const extensions_mod = b.addModule("flowdata_extensions", .{
         .root_source_file = b.path("extensions/mod.zig"),
@@ -90,10 +113,11 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     extensions_mod.addImport("flowdata", flowdata_mod);
+    extensions_mod.addImport("flowdata_drivers", drivers_mod);
     extensions_mod.addImport("flowdata_datasource_memory", ds_memory_mod);
     extensions_mod.addImport("flowdata_datasource_file_store", ds_file_store_mod);
     extensions_mod.addImport("flowdata_datasource_sqlite", ds_sqlite_mod);
-    extensions_mod.addImport("flowdata_datasource_yaml_file", ds_yaml_file_mod);
+    extensions_mod.addImport("flowdata_datasource_yaml", ds_yaml_mod);
     extensions_mod.addImport("flowdata_datasource_ssh_store", ds_ssh_store_mod);
     extensions_mod.linkSystemLibrary("sqlite3", .{});
 
@@ -101,10 +125,11 @@ pub fn build(b: *std.Build) void {
     const run_abi_unit = b.addRunArtifact(b.addTest(.{ .root_module = plugin_mod }));
     const run_dataflow_unit = b.addRunArtifact(b.addTest(.{ .root_module = dataflow_mod }));
     const run_flowdata_unit = b.addRunArtifact(b.addTest(.{ .root_module = flowdata_mod }));
+    const run_libs_sqlite = b.addRunArtifact(b.addTest(.{ .root_module = sqlite_lib_mod }));
     const run_ds_memory = b.addRunArtifact(b.addTest(.{ .root_module = ds_memory_mod }));
     const run_ds_file_store = b.addRunArtifact(b.addTest(.{ .root_module = ds_file_store_mod }));
     const run_ds_sqlite = b.addRunArtifact(b.addTest(.{ .root_module = ds_sqlite_mod }));
-    const run_ds_yaml_file = b.addRunArtifact(b.addTest(.{ .root_module = ds_yaml_file_mod }));
+    const run_ds_yaml = b.addRunArtifact(b.addTest(.{ .root_module = ds_yaml_mod }));
 
     const test_suite_mod = b.createModule(.{
         .root_source_file = b.path("tests/main.zig"),
@@ -144,10 +169,11 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_abi_unit.step);
     test_step.dependOn(&run_dataflow_unit.step);
     test_step.dependOn(&run_flowdata_unit.step);
+    test_step.dependOn(&run_libs_sqlite.step);
     test_step.dependOn(&run_ds_memory.step);
     test_step.dependOn(&run_ds_file_store.step);
     test_step.dependOn(&run_ds_sqlite.step);
-    test_step.dependOn(&run_ds_yaml_file.step);
+    test_step.dependOn(&run_ds_yaml.step);
     test_step.dependOn(&run_test_suite.step);
 
     // 6. Standalone Collector Executables (ARCH-019)
