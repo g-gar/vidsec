@@ -1,22 +1,22 @@
-# Especificación de Hito M1: Reconstrucción del `ContainerIR` en SQLite, Gramáticas YAML de Formato y Walkers (`ISOBMFF` + `EBML`)
+# Milestone M1 Specification: `ContainerIR` Reconstruction in SQLite, YAML Format Grammars, and Walkers (`ISOBMFF` + `EBML`)
 
-> **Directivas Globales:** Ver [`../AGENTS.md`](../AGENTS.md) antes de implementar este hito.
+> **Global Directives:** See [`../AGENTS.md`](../AGENTS.md) before implementing this milestone.
 
 ---
 
-## 1. Alcance Funcional y Contratos de Compatibilidad
+## 1. Functional Scope and Compatibility Contracts
 
-### Objetivo del Hito
-Implementar el subsistema de reconstrucción estructural multi-formato (`M1`), compilado como plugin dinámico bajo `zig-out/lib/plugins/parsers/libm1_ir_builder.so`. Su responsabilidad es:
-1. Detectar la firma mágica real del archivo (`MagicKind`) en los primeros 64 bytes (`MZ`, `ELF`, `ISOBMFF`, `EBML`, `RIFF`, `MPEG_TS`, etc.).
-2. Crear en la instancia `ctx.sqlite_db` las tablas del dominio de esquema **`"ir_core"` (`v1`)**: `container_metadata` e `ir_regions` con sus índices B-Tree.
-3. Cargar las gramáticas declarativas de cada formato habilitado desde el archivo opcional `ctx.plugin_config_path_ptr` (`configs/stages/m1_parsers.yaml` $\rightarrow$ `configs/formats/isobmff.yaml` y `configs/formats/ebml.yaml`).
-4. Recorrer sin copia en RAM el árbol de cajas/elementos de contenedores **MP4/MOV (`ISOBMFF`)** y **MKV/WebM (`EBML`)**, insertando cada región en `ir_regions` dentro de una única transacción SQLite (`BEGIN IMMEDIATE` ... `COMMIT`) usando una sentencia preparada reutilizable (`sqlite3_stmt`).
+### Milestone Objective
+Implement the multi-format structural reconstruction subsystem (`M1`), compiled as a dynamic plugin under `zig-out/lib/plugins/parsers/libm1_ir_builder.so`. Its responsibilities are:
+1. Detect the true magic signature of the file (`MagicKind`) in the first 64 bytes (`MZ`, `ELF`, `ISOBMFF`, `EBML`, `RIFF`, `MPEG_TS`, etc.).
+2. Create in the `ctx.sqlite_db` instance the tables of the **`"ir_core"` (`v1`)** schema domain: `container_metadata` and `ir_regions` with their B-Tree indexes.
+3. Load the declarative grammars for each enabled format from the optional `ctx.plugin_config_path_ptr` file (`configs/stages/m1_parsers.yaml` $\rightarrow$ `configs/formats/isobmff.yaml` and `configs/formats/ebml.yaml`).
+4. Walk the box/element tree of **MP4/MOV (`ISOBMFF`)** and **MKV/WebM (`EBML`)** containers without copying into RAM, inserting each region into `ir_regions` within a single SQLite transaction (`BEGIN IMMEDIATE` ... `COMMIT`) using a reusable prepared statement (`sqlite3_stmt`).
 
-### Contrato de Versionado y Dependencias del Plugin (`VidsecPluginABI`)
+### Plugin Versioning and Dependency Contract (`VidsecPluginABI`)
 ```zig
 const required_schemas = [_]abi.SchemaContract_ABI{
-    .{ .domain = "ir_core", .version = 1, .writable = true }, // M0 carga configs/schemas/ir_core_v1.sql y habilita escritura
+    .{ .domain = "ir_core", .version = 1, .writable = true }, // M0 loads configs/schemas/ir_core_v1.sql and enables writing
 };
 
 export const vidsec_plugin_descriptor = abi.VidsecPluginABI{
@@ -25,7 +25,7 @@ export const vidsec_plugin_descriptor = abi.VidsecPluginABI{
     .plugin_version = .{ .major = 1, .minor = 0, .patch = 0 },
     .requires_schemas_ptr = &required_schemas,
     .requires_schemas_len = required_schemas.len,
-    .requires_plugins_ptr = null,          // Sin dependencias de plugins previos (Raíz de análisis)
+    .requires_plugins_ptr = null,          // No prior plugin dependencies (Analysis root)
     .requires_plugins_len = 0,
     .execute_step = &IrBuilderPlugin.execute,
 };
@@ -33,7 +33,7 @@ export const vidsec_plugin_descriptor = abi.VidsecPluginABI{
 
 ---
 
-## 2. Arquitectura UML del Hito (`classDiagram`)
+## 2. Milestone UML Architecture (`classDiagram`)
 
 ```mermaid
 classDiagram
@@ -105,9 +105,9 @@ classDiagram
 
 ---
 
-## 3. Contratos de Tipos en Zig y Esquema SQLite (`DDL / Queries`)
+## 3. Zig Type Contracts and SQLite Schema (`DDL / Queries`)
 
-### 3.A. Tipos, Errores y Estructuras en Zig (`src/core/ir_types.zig` y `src/m1_parsers/`)
+### 3.A. Zig Types, Errors, and Structures (`src/core/ir_types.zig` and `src/m1_parsers/`)
 
 ```zig
 const std = @import("std");
@@ -120,7 +120,7 @@ pub const MagicKind = enum(u8) {
     ebml_mkv_webm = 2,
     riff_avi_webp = 3,
     mpeg_ts = 4,
-    // Firmas hostiles / suplantación (evaluadas por R01 en M2):
+    // Hostile / spoofing signatures (evaluated by R01 in M2):
     pe_mz_executable = 10,
     elf_executable = 11,
     macho_executable = 12,
@@ -190,29 +190,29 @@ pub const DriverError = error{
 
 ---
 
-### 3.B. Banco DDL SQLite `"ir_core"` (`configs/schemas/ir_core_v1.sql`)
+### 3.B. SQLite DDL Bank `"ir_core"` (`configs/schemas/ir_core_v1.sql`)
 
-Al cargarse `vidsec.m1.ir_builder` (o cualquier plugin que solicite el banco `"ir_core"` v1), `M0` aprovisiona las tablas de `configs/schemas/ir_core_v1.sql`.
+When `vidsec.m1.ir_builder` (or any plugin requesting the `"ir_core"` v1 bank) is loaded, `M0` provisions the tables from `configs/schemas/ir_core_v1.sql`.
 > [!TIP]
-> **Propiedad de *Nested Set* Natural (`ADR-006`):** En lugar de punteros recursivos `parent_region_id`, las coordenadas físicas `header_offset`, `payload_offset` y `effective_end_offset` actúan como un *Nested Set* natural: cualquier caja hija (`stco`, `stsz`, `tkhd`, `avcC`) pertenece a una pista `trak` si y solo si `child.header_offset >= trak.payload_offset AND child.effective_end_offset <= trak.effective_end_offset`.
+> **Natural *Nested Set* Property (`ADR-006`):** Instead of recursive `parent_region_id` pointers, the physical coordinates `header_offset`, `payload_offset`, and `effective_end_offset` act as a natural *Nested Set*: any child box (`stco`, `stsz`, `tkhd`, `avcC`) belongs to a `trak` track if and only if `child.header_offset >= trak.payload_offset AND child.effective_end_offset <= trak.effective_end_offset`.
 
 ```sql
--- 1. Cabecera global del contenedor analizado (1 única fila)
+-- 1. Global header of the analyzed container (1 single row)
 CREATE TABLE IF NOT EXISTS container_metadata (
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    true_magic INTEGER NOT NULL,                -- Enum MagicKind (ej. 1=isobmff, 10=pe_mz_executable)
-    true_magic_name TEXT NOT NULL,              -- Ej. "isobmff_mp4_mov", "pe_mz_executable"
-    detected_format INTEGER NOT NULL,           -- Enum FormatKind (0=unknown, 1=isobmff, 2=ebml, 3=riff)
+    true_magic INTEGER NOT NULL,                -- MagicKind enum (e.g. 1=isobmff, 10=pe_mz_executable)
+    true_magic_name TEXT NOT NULL,              -- E.g. "isobmff_mp4_mov", "pe_mz_executable"
+    detected_format INTEGER NOT NULL,           -- FormatKind enum (0=unknown, 1=isobmff, 2=ebml, 3=riff)
     file_size INTEGER NOT NULL,
-    highest_root_end_offset INTEGER NOT NULL,   -- Fin de la última región raíz (depth = 0) válida
+    highest_root_end_offset INTEGER NOT NULL,   -- End of the last valid root region (depth = 0)
     total_regions INTEGER NOT NULL
 );
 
--- 2. Árbol universal de regiones/cajas/elementos (ISOBMFF, EBML, RIFF)
+-- 2. Universal tree of regions/boxes/elements (ISOBMFF, EBML, RIFF)
 CREATE TABLE IF NOT EXISTS ir_regions (
     region_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    tag_name TEXT NOT NULL,                     -- Ej. "moov", "stsz" (MP4) | "18538067", "EC" (MKV)
-    symbolic_name TEXT NOT NULL,                -- Ej. "MovieBox", "SampleSizeBox", "Segment", "Void"
+    tag_name TEXT NOT NULL,                     -- E.g. "moov", "stsz" (MP4) | "18538067", "EC" (MKV)
+    symbolic_name TEXT NOT NULL,                -- E.g. "MovieBox", "SampleSizeBox", "Segment", "Void"
     role TEXT NOT NULL,                         -- "container", "index_table", "media_payload", "padding", etc.
     header_offset INTEGER NOT NULL,
     payload_offset INTEGER NOT NULL,
@@ -220,16 +220,16 @@ CREATE TABLE IF NOT EXISTS ir_regions (
     effective_end_offset INTEGER NOT NULL,      -- min(payload_offset + declared_payload_size, parent_limit)
     parent_limit INTEGER NOT NULL,
     depth INTEGER NOT NULL,
-    is_truncated_or_overflow INTEGER NOT NULL   -- 0 = íntegro, 1 = desborda parent_limit / EOF / u64
+    is_truncated_or_overflow INTEGER NOT NULL   -- 0 = intact, 1 = overflows parent_limit / EOF / u64
 );
 
--- Índices B-Tree para acelerar las consultas de M2, M3 y M4 en archivos grandes:
+-- B-Tree indexes to accelerate M2, M3, and M4 queries on large files:
 CREATE INDEX IF NOT EXISTS idx_regions_role ON ir_regions(role);
 CREATE INDEX IF NOT EXISTS idx_regions_overflow ON ir_regions(is_truncated_or_overflow) WHERE is_truncated_or_overflow = 1;
 CREATE INDEX IF NOT EXISTS idx_regions_media_bounds ON ir_regions(payload_offset, effective_end_offset) WHERE role = 'media_payload';
 ```
 
-#### Sentencia Preparada de Inserción Masiva en `M1` (`IrSqlWriter.insertRegion`)
+#### Bulk Insert Prepared Statement in `M1` (`IrSqlWriter.insertRegion`)
 ```sql
 INSERT INTO ir_regions (
     tag_name, symbolic_name, role,
@@ -240,28 +240,28 @@ INSERT INTO ir_regions (
 
 ---
 
-## 4. Modelo de Memoria, Arenas y Transacciones SQLite
+## 4. Memory Model, Arenas, and SQLite Transactions
 
-| Recurso / Estructura | Propietario / Almacenamiento | Tiempo de Vida (Lifetime) | Quién libera / cierra |
+| Resource / Structure | Owner / Storage | Lifetime | Who Frees / Closes |
 | :--- | :--- | :--- | :--- |
-| Regiones del contenedor (`ir_regions`) y metadatos (`container_metadata`) | Tablas SQLite en `ctx.sqlite_db` | Toda la ejecución del pipeline sobre el archivo actual. | `StateDatabase.deinit()` en el motor `M0`. |
-| Sentencia preparada `insert_region_stmt` (`*sqlite3_stmt`) | `IrSqlWriter` | Mientras dura `IrBuilderPlugin.execute`. | `sqlite3_finalize(stmt)` en `finalizeAndCommit()` o `rollbackAndDeinit()`. |
-| Diccionarios YAML (`FormatGrammar`) | `ArenaAllocator` local dentro de `IrBuilderPlugin.execute` | Solo durante `IrBuilderPlugin.execute`. | `defer local_arena.deinit()`. |
+| Container regions (`ir_regions`) and metadata (`container_metadata`) | SQLite tables in `ctx.sqlite_db` | Entire pipeline execution on the current file. | `StateDatabase.deinit()` in the `M0` engine. |
+| Prepared statement `insert_region_stmt` (`*sqlite3_stmt`) | `IrSqlWriter` | Duration of `IrBuilderPlugin.execute`. | `sqlite3_finalize(stmt)` in `finalizeAndCommit()` or `rollbackAndDeinit()`. |
+| YAML dictionaries (`FormatGrammar`) | Local `ArenaAllocator` inside `IrBuilderPlugin.execute` | Only during `IrBuilderPlugin.execute`. | `defer local_arena.deinit()`. |
 
-### Invariantes de Rendimiento y Seguridad en SQLite
-- **Transacción Única e Índices Diferidos por Contenedor:**
-  1. `IrSqlWriter.initSchemaAndBeginTx` ejecuta `BEGIN IMMEDIATE TRANSACTION;` y crea las tablas `container_metadata` e `ir_regions` (sin índices aún).
-  2. Durante el recorrido del árbol, reutiliza el mismo `*sqlite3_stmt` llamando a `sqlite3_bind_*` $\rightarrow$ `sqlite3_step` $\rightarrow$ `sqlite3_reset` $\rightarrow$ `sqlite3_clear_bindings`.
-  3. Al finalizar el recorrido en `finalizeAndCommit`, crea los índices B-Tree (`idx_regions_role`, `idx_regions_overflow`, `idx_regions_media_bounds`), inserta la fila resumen en `container_metadata` y ejecuta `COMMIT;`. Construir los índices al final evita rebalancear el B-Tree en cada `INSERT` y permite volcar 100.000 regiones en `:memory:` en menos de 15 ms con huella de RAM constante.
-- **Límites Duros contra DoS:**
+### SQLite Performance and Security Invariants
+- **Single Transaction and Deferred Indexes per Container:**
+  1. `IrSqlWriter.initSchemaAndBeginTx` executes `BEGIN IMMEDIATE TRANSACTION;` and creates the `container_metadata` and `ir_regions` tables (without indexes yet).
+  2. During the tree walk, it reuses the same `*sqlite3_stmt` by calling `sqlite3_bind_*` $\rightarrow$ `sqlite3_step` $\rightarrow$ `sqlite3_reset` $\rightarrow$ `sqlite3_clear_bindings`.
+  3. At the end of the walk in `finalizeAndCommit`, it creates the B-Tree indexes (`idx_regions_role`, `idx_regions_overflow`, `idx_regions_media_bounds`), inserts the summary row into `container_metadata`, and executes `COMMIT;`. Building indexes at the end avoids rebalancing the B-Tree on every `INSERT` and enables dumping 100,000 regions into `:memory:` in under 15 ms with a constant RAM footprint.
+- **Hard DoS Limits:**
   - `max_depth: u8 = 32`
-  - `max_regions: u32 = 250_000` (si se supera, se hace `ROLLBACK` o commit parcial con hallazgo crítico y se devuelve `StepVerdict_ABI.abort_threat`).
+  - `max_regions: u32 = 250_000` (if exceeded, performs `ROLLBACK` or partial commit with a critical finding and returns `StepVerdict_ABI.abort_threat`).
 
 ---
 
-## 5. Flujo Algorítmico (`sequenceDiagram`) y Casos Borde
+## 5. Algorithmic Flow (`sequenceDiagram`) and Edge Cases
 
-### 5.1. Secuencia de Reconstrucción en SQLite
+### 5.1. Reconstruction Sequence in SQLite
 
 ```mermaid
 sequenceDiagram
@@ -280,16 +280,16 @@ sequenceDiagram
     Plugin->>Magic: detect(header_buf)
     Magic-->>Plugin: MagicResult{ true_magic, detected_format }
 
-    alt detected_format == .isobmff o .ebml
-        Plugin->>Grammar: loadFromYaml("configs/formats/isobmff.yaml" o "ebml.yaml")
+    alt detected_format == .isobmff or .ebml
+        Plugin->>Grammar: loadFromYaml("configs/formats/isobmff.yaml" or "ebml.yaml")
         Plugin->>Driver: walk(cursor, &grammar, limits, &writer)
-        loop Cada caja/elemento del árbol (sin cargar mdat/Cluster en RAM)
+        loop Each box/element in the tree (without loading mdat/Cluster into RAM)
             Driver->>Grammar: classifyTag(raw_tag)
             Driver->>Writer: insertRegion(GenericRegion)
             Writer->>Writer: sqlite3_bind_* + sqlite3_step + sqlite3_reset
-            alt is_container == true y !is_truncated_or_overflow
+            alt is_container == true and !is_truncated_or_overflow
                 Driver->>Driver: pushLimit -> walk(depth + 1) -> popLimit
-            else Caja hoja (ej. mdat)
+            else Leaf box (e.g. mdat)
                 Driver->>Driver: seekTo(effective_end_offset)
             end
         end
@@ -298,36 +298,36 @@ sequenceDiagram
     Plugin->>Writer: finalizeAndCommit(true_magic, detected_format, file_size)
     Writer->>Writer: INSERT INTO container_metadata + COMMIT
     Plugin-->>Host: StepVerdict_ABI.proceed
-    Note over Host,Writer: PipelineEngine (M0) registra ("ir_core", 1) en schema_registry tras éxito del step
+    Note over Host,Writer: PipelineEngine (M0) registers ("ir_core", 1) in schema_registry after step success
 ```
 
-### 5.2. Reglas de Recorrido Binario (`IsobmffDriver` y `EbmlDriver`)
+### 5.2. Binary Traversal Rules (`IsobmffDriver` and `EbmlDriver`)
 1. **`IsobmffDriver` (`.mp4`, `.mov`, `.m4v`):**
-   - Soporta `size32 == 1` (`largesize` 64 bits, cabecera de 16B), `size32 == 0` (hasta `currentLimit()`), y `FullBox` (`fullbox_skip_bytes = 4` en cajas como `meta` según `isobmff.yaml`).
-   - Si `size32 > 1 and size32 < 8` o si `payload_offset + declared_payload_size > cursor.currentLimit()`, inserta la fila en `ir_regions` con `is_truncated_or_overflow = 1` y `effective_end_offset = cursor.currentLimit()`, y avanza el cursor a `cursor.currentLimit()` sin abortar el proceso.
+   - Supports `size32 == 1` (64-bit `largesize`, 16B header), `size32 == 0` (until `currentLimit()`), and `FullBox` (`fullbox_skip_bytes = 4` in boxes like `meta` according to `isobmff.yaml`).
+   - If `size32 > 1 and size32 < 8` or if `payload_offset + declared_payload_size > cursor.currentLimit()`, inserts the row into `ir_regions` with `is_truncated_or_overflow = 1` and `effective_end_offset = cursor.currentLimit()`, and advances the cursor to `cursor.currentLimit()` without aborting the process.
 2. **`EbmlDriver` (`.mkv`, `.webm`):**
-   - Decodifica `VINT` usando `@clz(b0) + 1`.
-   - En `Element ID` conserva el bit marcador y formatea en Hex mayúsculas (`"1A45DFA3"`, `"18538067"`, `"EC"`).
-   - En `Data Size` limpia el bit marcador; si todos los bits de datos son `1` (*Unknown-Size*), toma como límite `cursor.currentLimit()`.
+   - Decodes `VINT` using `@clz(b0) + 1`.
+   - In `Element ID`, preserves the marker bit and formats as uppercase Hex (`"1A45DFA3"`, `"18538067"`, `"EC"`).
+   - In `Data Size`, clears the marker bit; if all data bits are `1` (*Unknown-Size*), uses `cursor.currentLimit()` as the bound.
 
 ---
 
-## 6. Declaración en `pipeline.yaml` y Gramáticas de Formato (`configs/formats/*.yaml`)
+## 6. Declaration in `pipeline.yaml` and Format Grammars (`configs/formats/*.yaml`)
 
-### 6.1. Configuración Opcional del Plugin (`configs/stages/m1_parsers.yaml`)
-Referenciado en el bloque `plugins:` de `configs/pipeline.yaml` mediante `config: "configs/stages/m1_parsers.yaml"`:
+### 6.1. Optional Plugin Configuration (`configs/stages/m1_parsers.yaml`)
+Referenced in the `plugins:` block of `configs/pipeline.yaml` via `config: "configs/stages/m1_parsers.yaml"`:
 ```yaml
 enabled_formats: "isobmff,ebml"
 format_spec_isobmff: "configs/formats/isobmff.yaml"
 format_spec_ebml: "configs/formats/ebml.yaml"
 ```
-*(Los diccionarios `configs/formats/isobmff.yaml` y `configs/formats/ebml.yaml` mantienen el catálogo declarativo `tag` $\rightarrow$ `name`, `role`, `container`, `fullbox_skip`).*
+*(The dictionaries `configs/formats/isobmff.yaml` and `configs/formats/ebml.yaml` maintain the declarative catalog `tag` $\rightarrow$ `name`, `role`, `container`, `fullbox_skip`.)*
 
 ---
 
-## 7. Vectores Binarios en Crudo y Suite de Tests de Aceptación (`zig build test`)
+## 7. Raw Binary Vectors and Acceptance Test Suite (`zig build test`)
 
-### Test 1: Reconstrucción de `ISOBMFF` (`.mp4`) y Consulta SQL en `ir_regions`
+### Test 1: `ISOBMFF` (`.mp4`) Reconstruction and SQL Query on `ir_regions`
 ```zig
 test "M1.1: IsobmffDriver populates ir_regions and container_metadata in SQLite" {
     const mp4_bytes = [_]u8{
@@ -342,7 +342,7 @@ test "M1.1: IsobmffDriver populates ir_regions and container_metadata in SQLite"
         // mdat (size = 16, role = media_payload)
         0x00, 0x00, 0x00, 0x10, 'm', 'd', 'a', 't', 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE,
     };
-    // Consultas SQL de verificación sobre ctx.sqlite_db:
+    // Verification SQL queries on ctx.sqlite_db:
     // 1. SELECT true_magic_name, highest_root_end_offset, total_regions FROM container_metadata WHERE id = 1;
     //    -> ("isobmff_mp4_mov", 64, 5)
     // 2. SELECT COUNT(*) FROM ir_regions WHERE depth = 1 AND role = 'padding' AND tag_name = 'free';
@@ -352,7 +352,7 @@ test "M1.1: IsobmffDriver populates ir_regions and container_metadata in SQLite"
 }
 ```
 
-### Test 2: Reconstrucción de `EBML` (`.mkv`) en SQLite
+### Test 2: `EBML` (`.mkv`) Reconstruction in SQLite
 ```zig
 test "M1.2: EbmlDriver decodes VINTs and populates ir_regions in SQLite" {
     const mkv_bytes = [_]u8{
@@ -363,20 +363,20 @@ test "M1.2: EbmlDriver decodes VINTs and populates ir_regions in SQLite" {
         0xEC, 0x84, 0x00, 0x00, 0x00, 0x00,
         0x1F, 0x43, 0xB6, 0x75, 0x85, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE,
     };
-    // Consulta SQL de verificación:
+    // Verification SQL query:
     // SELECT tag_name, role, depth FROM ir_regions ORDER BY region_id ASC;
     // -> ("1A45DFA3","container",0), ("4282","metadata",1), ("18538067","container",0), ("EC","padding",1), ("1F43B675","media_payload",1)
 }
 ```
 
-### Test 3: Registro de Desbordamiento (`is_truncated_or_overflow = 1`) en SQLite
+### Test 3: Overflow Recording (`is_truncated_or_overflow = 1`) in SQLite
 ```zig
 test "M1.3: Overflowing child box is recorded in ir_regions with is_truncated_or_overflow = 1" {
     const malformed_mp4 = [_]u8{
         0x00, 0x00, 0x00, 0x10, 'm', 'o', 'o', 'v',
-        0x00, 0x00, 0x27, 0x0F, 's', 't', 's', 'z', // declara 9999 bytes dentro de un padre de 16 bytes
+        0x00, 0x00, 0x27, 0x0F, 's', 't', 's', 'z', // declares 9999 bytes inside a 16-byte parent
     };
-    // Consulta SQL de verificación:
+    // Verification SQL query:
     // SELECT tag_name, declared_payload_size, parent_limit, is_truncated_or_overflow
     // FROM ir_regions WHERE is_truncated_or_overflow = 1;
     // -> ("stsz", 9991, 16, 1)

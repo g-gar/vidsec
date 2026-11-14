@@ -1,27 +1,27 @@
-# Especificación de Hito M0: Chasis Declarativo YAML, Bus SQLite Agnóstico y Cargador de Plugins con Control de Versiones (`C-ABI`)
+# Milestone M0 Specification: Declarative YAML Chassis, Agnostic SQLite Bus, and Versioned Plugin Loader (`C-ABI`)
 
-> **Directivas Globales:** Ver [`../AGENTS.md`](../AGENTS.md) antes de implementar este hito.
-
----
-
-## 1. Alcance Funcional y Contratos de Compatibilidad
-
-### Objetivo del Hito
-Construir el **chasis universal, bus de estado en SQLite y motor de ejecución declarativo** de `vidsec`, **100% agnóstico del dominio** (no conoce conceptos de contenedores de vídeo, ni de hallazgos de auditoría, ni de transcodificación). Al finalizar `M0`, el binario `vidsec` es capaz de:
-1. Inicializar una base de datos **SQLite3** (`:memory:` por defecto o archivo en disco con `--save-db <ruta>`) aplicando inicialmente el **Banco 0 de gobierno del motor (`configs/schemas/m0_engine_v1.sql`)**: `run_metadata`, `schema_registry`, `pipeline_gates` y `pipeline_trace`.
-2. Leer **`configs/pipeline.yaml`**, que declara:
-   - El bloque `database:` (configuración de SQLite y directorio `schemas_dir: "configs/schemas"`).
-   - El array `plugins:` (lista explícita de `.so`/`.dll` a cargar, su restricción de versión SemVer opcional y su archivo `config:` opcional).
-   - El árbol `pipeline:` (grupos jerárquicos `StageGroup`, pasos `LeafStep`, políticas de fallo y compuertas con nombre `open_gate_on_success` / `require_gate`).
-3. Validar en el arranque (**Pre-Flight Compatibility Check & Schema Bank Provisioning**) la **Matriz de Versiones y Dependencias en 3 Niveles** (ver [`ADR-006`](../ADR/ADR-006_on_demand_ddl_banks_and_hard_plugin_dependencies.md)):
-   - **Nivel 1 (`abi_version`):** Compatibilidad binaria del `.so` con `PipelineContext_ABI` (`M0`).
-   - **Nivel 2 (`plugin_version` SemVer + Hard Plugin Dependencies `requires_plugins`):** Cumplimiento del rango `min_version` / `max_version` declarado en `pipeline.yaml` y verificación de que todo plugin requerido en `requires_plugins_ptr` (`PluginDependency_ABI`) aparezca antes en el orden de ejecución del pipeline (permitiendo también plugins autónomos con `requires_plugins_len = 0` que operen directamente sobre bytes crudos).
-   - **Nivel 3 (Bancos DDL SQLite bajo demanda `requires_schemas`):** Por cada banco `SchemaContract_ABI` (`domain`, `version`, `writable`) solicitado por un plugin cargado, `M0` carga y ejecuta automáticamente el archivo DDL físico `configs/schemas/<domain>_v<version>.sql` (si aún no está registrado en `schema_registry`), garantizando que las tablas existan siempre aunque se omitan plugins opcionales.
-4. Ejecutar el árbol del pipeline configurando en cada paso el firewall `sqlite3_set_authorizer` según los permisos `writable` de los bancos declarados por el plugin y entregando el puntero `*sqlite3`, el lector `SafeCursor` y el canal de eventos.
+> **Global Directives:** See [`../AGENTS.md`](../AGENTS.md) before implementing this milestone.
 
 ---
 
-## 2. Arquitectura UML del Hito (`classDiagram`)
+## 1. Functional Scope and Compatibility Contracts
+
+### Milestone Objective
+Build the **universal chassis, SQLite state bus, and declarative execution engine** of `vidsec`, **100% domain-agnostic** (it has no knowledge of video container concepts, audit findings, or transcoding). By the end of `M0`, the `vidsec` binary is able to:
+1. Initialize a **SQLite3** database (`:memory:` by default or an on-disk file with `--save-db <path>`) by initially applying **Engine Governance Bank 0 (`configs/schemas/m0_engine_v1.sql`)**: `run_metadata`, `schema_registry`, `pipeline_gates`, and `pipeline_trace`.
+2. Read **`configs/pipeline.yaml`**, which declares:
+   - The `database:` block (SQLite configuration and `schemas_dir: "configs/schemas"` directory).
+   - The `plugins:` array (explicit list of `.so`/`.dll` files to load, their optional SemVer version constraint, and their optional `config:` file).
+   - The `pipeline:` tree (hierarchical `StageGroup` groups, `LeafStep` steps, failure policies, and named gates `open_gate_on_success` / `require_gate`).
+3. Validate at startup (**Pre-Flight Compatibility Check & Schema Bank Provisioning**) the **3-Level Version and Dependency Matrix** (see [`ADR-006`](../ADR/ADR-006_on_demand_ddl_banks_and_hard_plugin_dependencies.md)):
+   - **Level 1 (`abi_version`):** Binary compatibility of the `.so` with `PipelineContext_ABI` (`M0`).
+   - **Level 2 (`plugin_version` SemVer + Hard Plugin Dependencies `requires_plugins`):** Compliance with the `min_version` / `max_version` range declared in `pipeline.yaml` and verification that every plugin required in `requires_plugins_ptr` (`PluginDependency_ABI`) appears earlier in the pipeline execution order (also allowing standalone plugins with `requires_plugins_len = 0` that operate directly on raw bytes).
+   - **Level 3 (On-demand SQLite DDL Banks `requires_schemas`):** For each `SchemaContract_ABI` bank (`domain`, `version`, `writable`) requested by a loaded plugin, `M0` automatically loads and executes the physical DDL file `configs/schemas/<domain>_v<version>.sql` (if not yet registered in `schema_registry`), ensuring that tables always exist even if optional plugins are omitted.
+4. Execute the pipeline tree by configuring the `sqlite3_set_authorizer` firewall at each step according to the `writable` permissions of the banks declared by the plugin, and providing the `*sqlite3` pointer, the `SafeCursor` reader, and the event channel.
+
+---
+
+## 2. Milestone UML Architecture (`classDiagram`)
 
 ```mermaid
 classDiagram
@@ -131,11 +131,11 @@ classDiagram
 
 ---
 
-## 3. Contratos de Tipos en Zig y Esquema SQLite (`DDL / Queries`)
+## 3. Zig Type Contracts and SQLite Schema (`DDL / Queries`)
 
-### 3.A. Tipos, Errores y Firmas Públicas en Zig (`src/core/plugin_abi.zig`)
+### 3.A. Public Zig Types, Errors, and Signatures (`src/core/plugin_abi.zig`)
 > [!IMPORTANT]
-> `M0` es completamente agnóstico de qué tablas usen los hitos `M1`–`M5`. Cada plugin declara qué bancos DDL SQLite necesita mapear (`requires_schemas_ptr`, ej. `"ir_core"` v1, `"audit_findings"` v1) y qué *Hard Dependencies* sobre otros plugins exige (`requires_plugins_ptr`).
+> `M0` is completely agnostic to which tables milestones `M1`–`M5` use. Each plugin declares which SQLite DDL banks it needs mapped (`requires_schemas_ptr`, e.g. `"ir_core"` v1, `"audit_findings"` v1) and which *Hard Dependencies* on other plugins it requires (`requires_plugins_ptr`).
 
 ```zig
 const std = @import("std");
@@ -157,16 +157,16 @@ pub const SemVer_ABI = extern struct {
     }
 };
 
-/// Define un banco de esquema SQLite (configs/schemas/<domain>_v<version>.sql) requerido por el plugin.
+/// Defines a SQLite schema bank (configs/schemas/<domain>_v<version>.sql) required by the plugin.
 pub const SchemaContract_ABI = extern struct {
-    domain: [*:0]const u8,      // Ej: "ir_core", "ir_deep", "audit_findings", "working_artifacts"
-    version: u32,               // Ej: 1 -> carga configs/schemas/<domain>_v1.sql
-    writable: bool = false,     // false = solo SELECT; true = permite INSERT/UPDATE en este banco
+    domain: [*:0]const u8,      // E.g., "ir_core", "ir_deep", "audit_findings", "working_artifacts"
+    version: u32,               // E.g., 1 -> loads configs/schemas/<domain>_v1.sql
+    writable: bool = false,     // false = SELECT only; true = allows INSERT/UPDATE in this bank
 };
 
-/// Define una dependencia dura (Hard Dependency) sobre un plugin anterior en el pipeline.
+/// Defines a hard dependency (Hard Dependency) on an earlier plugin in the pipeline.
 pub const PluginDependency_ABI = extern struct {
-    plugin_id: [*:0]const u8,   // Ej: "vidsec.m1.ir_builder" o "vidsec.m3.deep_extractor"
+    plugin_id: [*:0]const u8,   // E.g., "vidsec.m1.ir_builder" or "vidsec.m3.deep_extractor"
     min_version: SemVer_ABI,
 };
 
@@ -187,21 +187,21 @@ pub const PipelineContext_ABI = extern struct {
     abi_version: u32 = VIDSEC_ABI_VERSION,
     opaque_host_ctx: *anyopaque,
 
-    /// Conexión activa a la base de datos SQLite3 compartida entre los plugins del pipeline.
+    /// Active connection to the SQLite3 database shared among pipeline plugins.
     sqlite_db: *sqlite3,
 
-    /// Ruta del archivo de entrada proporcionado por CLI.
+    /// Input file path provided via CLI.
     input_path_ptr: [*:0]const u8,
 
-    /// Ruta opcional al archivo YAML de configuración específico de este plugin (`config:` en pipeline.yaml).
+    /// Optional path to the plugin-specific YAML configuration file (`config:` in pipeline.yaml).
     plugin_config_path_ptr: ?[*:0]const u8,
 
     file_size: u64,
 
-    /// Lee `len` bytes desde `offset` usando el SafeCursor del host. Devuelve 0 en éxito, != 0 en error.
+    /// Reads `len` bytes from `offset` using the host's SafeCursor. Returns 0 on success, != 0 on error.
     cursor_read_at: *const fn (host_ctx: *anyopaque, offset: u64, dest_ptr: [*]u8, len: usize) callconv(.C) u32,
 
-    /// Emite un evento de telemetría/alerta en tiempo real al PipelineObserver (CLI / JSON Stream).
+    /// Emits a real-time telemetry/alert event to the PipelineObserver (CLI / JSON Stream).
     emit_event: *const fn (
         host_ctx: *anyopaque,
         level: EventLevel_ABI,
@@ -209,30 +209,30 @@ pub const PipelineContext_ABI = extern struct {
         message: [*:0]const u8,
     ) callconv(.C) void,
 
-    /// Abre o cierra una compuerta con nombre en la tabla `pipeline_gates` de M0 (ej. "sanitized_gate" = true).
+    /// Opens or closes a named gate in the `pipeline_gates` table of M0 (e.g. "sanitized_gate" = true).
     set_gate_state: *const fn (host_ctx: *anyopaque, gate_name: [*:0]const u8, is_open: bool) callconv(.C) u32,
 
-    /// Obtiene un parámetro inline configurado en `params:` del step actual dentro de `pipeline.yaml`.
+    /// Retrieves an inline parameter configured in `params:` of the current step inside `pipeline.yaml`.
     get_param: *const fn (host_ctx: *anyopaque, key: [*:0]const u8) callconv(.C) ?[*:0]const u8,
 
-    /// Notifica porcentaje de progreso (0..100) al PipelineObserver.
+    /// Reports progress percentage (0..100) to the PipelineObserver.
     report_progress: *const fn (host_ctx: *anyopaque, pct: u8) callconv(.C) void,
 };
 
 pub const VidsecPluginABI = extern struct {
-    /// Nivel 1: Versión binaria del contrato C-ABI con el motor M0 (debe ser 1).
+    /// Level 1: Binary version of the C-ABI contract with the M0 engine (must be 1).
     abi_version: u32 = VIDSEC_ABI_VERSION,
     plugin_id: [*:0]const u8,
 
-    /// Nivel 2: Versión SemVer propia del binario `.so` (ej. M1 = 1.0.0, M2 = 5.2.0).
+    /// Level 2: SemVer version of the `.so` binary itself (e.g. M1 = 1.0.0, M2 = 5.2.0).
     plugin_version: SemVer_ABI,
 
-    /// Nivel 3A: Bancos de esquema SQLite (configs/schemas/<domain>_v<version>.sql) que M0 aprovisiona al cargar el plugin:
+    /// Level 3A: SQLite schema banks (configs/schemas/<domain>_v<version>.sql) provisioned by M0 when loading the plugin:
     requires_schemas_ptr: ?[*]const SchemaContract_ABI = null,
     requires_schemas_len: usize = 0,
 
-    /// Nivel 3B: Hard Dependencies (plugins que obligatoriamente deben ejecutarse antes en pipeline.yaml):
-    /// Si es null/0, el plugin es autónomo (ej. M1 o un analizador directo sobre bytes crudos de MP4).
+    /// Level 3B: Hard Dependencies (plugins that must execute earlier in pipeline.yaml):
+    /// If null/0, the plugin is standalone (e.g. M1 or a direct analyzer over raw MP4 bytes).
     requires_plugins_ptr: ?[*]const PluginDependency_ABI = null,
     requires_plugins_len: usize = 0,
 
@@ -242,15 +242,15 @@ pub const VidsecPluginABI = extern struct {
 
 ---
 
-### 3.B. Contrato de Esquema SQLite Exclusivo de `M0` (`configs/schema_m0.sql`)
+### 3.B. Exclusive `M0` SQLite Schema Contract (`configs/schema_m0.sql`)
 
-`M0` solo crea las 4 tablas de gobierno del propio motor de ejecución. Cada hito posterior (`M1`–`M5`) creará sus propias tablas de dominio y las registrará en `schema_registry`:
+`M0` only creates the 4 governance tables of the execution engine itself. Each subsequent milestone (`M1`–`M5`) will create its own domain tables and register them in `schema_registry`:
 
 ```sql
 PRAGMA foreign_keys = ON;
 PRAGMA busy_timeout = 5000;
 
--- 1. Metadatos de la sesión de ejecución del motor
+-- 1. Metadata of the engine execution session
 CREATE TABLE IF NOT EXISTS run_metadata (
     run_id INTEGER PRIMARY KEY CHECK (run_id = 1),
     input_path TEXT NOT NULL,
@@ -258,22 +258,22 @@ CREATE TABLE IF NOT EXISTS run_metadata (
     started_at_ns INTEGER NOT NULL
 );
 
--- 2. Registro de dominios de esquema SQLite activos (poblado a medida que se ejecutan plugins productores)
+-- 2. Registry of active SQLite schema domains (populated as producer plugins execute)
 CREATE TABLE IF NOT EXISTS schema_registry (
-    schema_domain TEXT PRIMARY KEY,     -- Ej. "ir_core" (M1), "audit_findings" (M2), "ir_deep" (M3), "working_artifacts" (M4)
+    schema_domain TEXT PRIMARY KEY,     -- E.g. "ir_core" (M1), "audit_findings" (M2), "ir_deep" (M3), "working_artifacts" (M4)
     schema_version INTEGER NOT NULL,
     producer_plugin_id TEXT NOT NULL,
     producer_plugin_version TEXT NOT NULL
 );
 
--- 3. Estado de compuertas lógicas entre etapas (ej. "sanitized_gate")
+-- 3. State of logical gates between stages (e.g. "sanitized_gate")
 CREATE TABLE IF NOT EXISTS pipeline_gates (
     gate_name TEXT PRIMARY KEY,
-    is_open INTEGER NOT NULL DEFAULT 0, -- 0 = cerrada (bloquea grupos con require_gate), 1 = abierta
+    is_open INTEGER NOT NULL DEFAULT 0, -- 0 = closed (blocks groups with require_gate), 1 = open
     updated_by_step TEXT NOT NULL
 );
 
--- 4. Traza de telemetría y tiempos de cada paso ejecutado
+-- 4. Telemetry and timing trace for each executed step
 CREATE TABLE IF NOT EXISTS pipeline_trace (
     trace_id INTEGER PRIMARY KEY AUTOINCREMENT,
     node_name TEXT NOT NULL,
@@ -286,44 +286,44 @@ CREATE TABLE IF NOT EXISTS pipeline_trace (
 
 ---
 
-## 4. Modelo de Memoria, Arenas y Ciclo de Vida de SQLite
+## 4. Memory Model, Arenas, and SQLite Lifecycle
 
-| Recurso / Estructura | Propietario / Almacenamiento | Tiempo de Vida (Lifetime) | Quién libera / cierra |
+| Resource / Structure | Owner / Storage | Lifetime | Who Frees / Closes |
 | :--- | :--- | :--- | :--- |
-| Gobierno del pipeline (`run_metadata`, `schema_registry`, `pipeline_gates`, `pipeline_trace`) | Instancia `sqlite3*` en `StateDatabase` | Toda la ejecución del pipeline sobre el archivo actual. | `StateDatabase.deinit()` cierra con `sqlite3_close_v2(db)`. |
-| Árbol declarativo `PipelineNode` y declaraciones `PluginDeclaration` | `pipeline_arena` (respaldado por `gpa`) | Desde el parseo de `pipeline.yaml` hasta el cierre o `reloadAll()`. | `PipelineEngine` al salir o recargar. |
-| Librerías dinámicas (`std.DynLib`) | `PluginLoader` (`gpa`) | Mientras el catálogo de plugins esté activo. | `PluginLoader.deinit()` llama a `dyn_lib.close()`. |
+| Pipeline governance (`run_metadata`, `schema_registry`, `pipeline_gates`, `pipeline_trace`) | `sqlite3*` instance in `StateDatabase` | Entire pipeline execution on the current file. | `StateDatabase.deinit()` closes via `sqlite3_close_v2(db)`. |
+| Declarative `PipelineNode` tree and `PluginDeclaration` declarations | `pipeline_arena` (backed by `gpa`) | From `pipeline.yaml` parsing until shutdown or `reloadAll()`. | `PipelineEngine` on exit or reload. |
+| Dynamic libraries (`std.DynLib`) | `PluginLoader` (`gpa`) | While the plugin catalog is active. | `PluginLoader.deinit()` calls `dyn_lib.close()`. |
 
-### Invariante de Enlace Dinámico Único de `libsqlite3` en `build.zig`
-Para que el puntero `*sqlite3` creado por `StateDatabase` en `M0` sea operado de forma segura por cualquier plugin cargado mediante `std.DynLib`, `build.zig` debe definir una función auxiliar común (ej. `linkSharedSqlite(compile_step: *std.Build.Step.Compile)`) que invoque `compile_step.linkSystemLibrary("sqlite3")` y `compile_step.linkLibC()`. **Queda prohibido compilar `sqlite3.c` estáticamente dentro de los artefactos `.so`**, evitando duplicar el estado global de SQLite (mutexes y caché de páginas) en el proceso.
+### Single Dynamic Linking Invariant for `libsqlite3` in `build.zig`
+So that the `*sqlite3` pointer created by `StateDatabase` in `M0` can be safely operated on by any plugin loaded via `std.DynLib`, `build.zig` must define a common helper function (e.g. `linkSharedSqlite(compile_step: *std.Build.Step.Compile)`) that invokes `compile_step.linkSystemLibrary("sqlite3")` and `compile_step.linkLibC()`. **Statically compiling `sqlite3.c` into `.so` artifacts is prohibited**, avoiding duplicating SQLite's global state (mutexes and page cache) in the process.
 
-### Firewall de Capacidades en SQLite (`sqlite3_set_authorizer` — Ver `ADR-003`) y Auto-Aislamiento Landlock (`ADR-005`)
-1. **Protección de Tablas de Gobierno (`setStepAuthorizer`):**
-   - Antes de invocar `plugin.execute_step(&ctx_abi)`, `PipelineEngine` activa `sqlite3_set_authorizer` para impedir que cualquier plugin modifique por SQL directo las tablas exclusivas de `M0` (`run_metadata`, `schema_registry`, `pipeline_gates`, `pipeline_trace` $\rightarrow$ devuelve `SQLITE_DENY` ante `INSERT`/`UPDATE`/`DELETE`/`DROP`). El estado de las compuertas solo puede actualizarse a través del callback auditado `ctx.set_gate_state`.
-   - Asimismo, si un plugin no es el productor del dominio `"ir_core"`, el autorizador deniega cualquier `UPDATE`/`DELETE`/`DROP` sobre `container_metadata` e `ir_regions`, garantizando la inmutabilidad del `ContainerIR`.
-2. **Confinamiento sin Privilegios con Linux Landlock LSM (Opcional / Graceful Fallback):**
-   - Una vez cargados los `.so` en el *pre-flight check*, `M0` aplica `prctl(PR_SET_NO_NEW_PRIVS, 1)` y, si el kernel Linux soporta Landlock ($\ge 5.13$), restringe las rutas accesibles por el proceso al archivo de entrada (solo lectura), `/usr`, `/lib`, `configs/` y los directorios de trabajo/cuarentena.
+### SQLite Capability Firewall (`sqlite3_set_authorizer` — See `ADR-003`) and Landlock Self-Isolation (`ADR-005`)
+1. **Governance Table Protection (`setStepAuthorizer`):**
+   - Before invoking `plugin.execute_step(&ctx_abi)`, `PipelineEngine` enables `sqlite3_set_authorizer` to prevent any plugin from modifying `M0`'s exclusive tables via direct SQL (`run_metadata`, `schema_registry`, `pipeline_gates`, `pipeline_trace` $\rightarrow$ returns `SQLITE_DENY` on `INSERT`/`UPDATE`/`DELETE`/`DROP`). Gate states may only be updated through the audited callback `ctx.set_gate_state`.
+   - Likewise, if a plugin is not the producer of the `"ir_core"` domain, the authorizer denies any `UPDATE`/`DELETE`/`DROP` on `container_metadata` and `ir_regions`, guaranteeing the immutability of the `ContainerIR`.
+2. **Unprivileged Confinement with Linux Landlock LSM (Optional / Graceful Fallback):**
+   - Once the `.so` files are loaded in the *pre-flight check*, `M0` applies `prctl(PR_SET_NO_NEW_PRIVS, 1)` and, if the Linux kernel supports Landlock ($\ge 5.13$), restricts the paths accessible by the process to the input file (read-only), `/usr`, `/lib`, `configs/`, and the working/quarantine directories.
 
 ---
 
-## 5. Flujo Algorítmico (`sequenceDiagram`) y Validación de Versiones por Dominio
+## 5. Algorithmic Flow (`sequenceDiagram`) and Per-Domain Version Validation
 
-### 5.1. Algoritmo de Validación Pre-Flight y Aprovisionamiento de Bancos SQLite (`validatePipelineCompatibility`)
-Antes de iniciar la ejecución sobre el archivo de entrada, `PluginLoader` recorre la secuencia de pasos declarados en `pipeline.yaml`:
-1. **Nivel 1 (`ABI`):** `descriptor.abi_version == 1`. Si no $\rightarrow$ `error.AbiVersionMismatch`.
-2. **Nivel 2 (`SemVer del Plugin`):** Verifica que `descriptor.plugin_version` esté dentro de `[min_version, max_version]` si fueron declarados en el bloque `plugins:` del YAML. Si no $\rightarrow$ `error.PluginVersionOutOfBounds`.
-3. **Nivel 3A (`Aprovisionamiento de Bancos SQLite bajo Demanda` — `SchemaContract_ABI`):**
-   - Por cada banco `bank` en `descriptor.requires_schemas_ptr[0..descriptor.requires_schemas_len]`:
-     - Si `bank.domain` aún no está en `schema_registry`, `StateDatabase.ensureSchemaBankLoaded` carga `configs/schemas/{domain}_v{version}.sql`, lo ejecuta en SQLite y registra `(domain, version)` en `schema_registry`.
-     - Si `bank.domain` ya fue cargado por un plugin anterior pero con una `version != bank.version` $\rightarrow$ devuelve `error.SchemaVersionMismatchBetweenPlugins`.
-     - Si el archivo `.sql` del banco no existe $\rightarrow$ devuelve `error.SchemaBankDdlNotFound`.
-4. **Nivel 3B (`Hard Dependencies entre Plugins` — `PluginDependency_ABI`):**
-   - Por cada dependencia dura `dep` en `descriptor.requires_plugins_ptr[0..descriptor.requires_plugins_len]`:
-     - Comprueba que `dep.plugin_id` haya aparecido en un paso anterior del recorrido de ejecución y que su `plugin_version` sea $\ge \text{dep.min\_version}$.
-     - Si no apareció antes $\rightarrow$ devuelve `error.MissingHardPluginDependency`.
-   - Añade `(descriptor.plugin_id, descriptor.plugin_version)` al conjunto `executed_plugins_so_far`.
+### 5.1. Pre-Flight Validation and SQLite Bank Provisioning Algorithm (`validatePipelineCompatibility`)
+Before starting execution on the input file, `PluginLoader` traverses the sequence of steps declared in `pipeline.yaml`:
+1. **Level 1 (`ABI`):** `descriptor.abi_version == 1`. Otherwise $\rightarrow$ `error.AbiVersionMismatch`.
+2. **Level 2 (`Plugin SemVer`):** Verifies that `descriptor.plugin_version` is within `[min_version, max_version]` if declared in the YAML `plugins:` block. Otherwise $\rightarrow$ `error.PluginVersionOutOfBounds`.
+3. **Level 3A (`On-Demand SQLite Bank Provisioning` — `SchemaContract_ABI`):**
+   - For each bank `bank` in `descriptor.requires_schemas_ptr[0..descriptor.requires_schemas_len]`:
+     - If `bank.domain` is not yet in `schema_registry`, `StateDatabase.ensureSchemaBankLoaded` loads `configs/schemas/{domain}_v{version}.sql`, executes it in SQLite, and registers `(domain, version)` in `schema_registry`.
+     - If `bank.domain` was already loaded by an earlier plugin but with a `version != bank.version` $\rightarrow$ returns `error.SchemaVersionMismatchBetweenPlugins`.
+     - If the bank's `.sql` file does not exist $\rightarrow$ returns `error.SchemaBankDdlNotFound`.
+4. **Level 3B (`Hard Dependencies between Plugins` — `PluginDependency_ABI`):**
+   - For each hard dependency `dep` in `descriptor.requires_plugins_ptr[0..descriptor.requires_plugins_len]`:
+     - Checks that `dep.plugin_id` has appeared in an earlier step of the execution traversal and that its `plugin_version` is $\ge \text{dep.min\_version}$.
+     - If it did not appear earlier $\rightarrow$ returns `error.MissingHardPluginDependency`.
+   - Adds `(descriptor.plugin_id, descriptor.plugin_version)` to the `executed_plugins_so_far` set.
 
-### 5.2. Diagrama de Secuencia: Pre-Flight Check, Carga y Ejecución contra SQLite
+### 5.2. Sequence Diagram: Pre-Flight Check, Loading, and Execution against SQLite
 
 ```mermaid
 sequenceDiagram
@@ -337,41 +337,41 @@ sequenceDiagram
     CLI->>Yaml: parseConfig("configs/pipeline.yaml")
     Yaml-->>CLI: ParsedPipelineConfig (db_cfg, plugins[], root_node)
 
-    loop Cada item en plugins[]
+    loop Each item in plugins[]
         CLI->>Loader: loadDeclaredPlugin(spec)
-        Loader->>Loader: Verifica permisos seguros (mode & 0o022 == 0)
-        Loader->>Loader: DynLib.open + verifica Nivel 1 (ABI) y Nivel 2 (SemVer)
+        Loader->>Loader: Verifies safe permissions (mode & 0o022 == 0)
+        Loader->>Loader: DynLib.open + verifies Level 1 (ABI) and Level 2 (SemVer)
     end
 
     CLI->>Loader: validatePipelineCompatibility(execution_order)
-    Note over Loader: Verifica Nivel 3: Cada SchemaContract_ABI requerido ha sido producido con versión compatible
+    Note over Loader: Verifies Level 3: Every required SchemaContract_ABI has been produced with a compatible version
 
     CLI->>DB: initMemoryOrFile(":memory:", schema_m0.sql)
     CLI->>Engine: executeRoot(root_node, ctx)
 
-    loop Cada LeafStep del árbol
+    loop Each LeafStep in the tree
         Engine->>DB: setStepAuthorizer(produces_domain, is_append_plugin)
         Engine->>Plugin: execute_step(&ctx_abi)
-        Plugin->>DB: Crea/consulta sus tablas permitidas en ctx_abi.sqlite_db
-        Plugin->>Engine: set_gate_state("sanitized_gate", true) (vía callback host)
+        Plugin->>DB: Creates/queries its allowed tables on ctx_abi.sqlite_db
+        Plugin->>Engine: set_gate_state("sanitized_gate", true) (via host callback)
         Plugin-->>Engine: StepVerdict_ABI
-        Engine->>DB: clearAuthorizer() + Registra schema_registry y pipeline_trace
+        Engine->>DB: clearAuthorizer() + Records schema_registry and pipeline_trace
     end
 ```
 
-### 5.3. Tabla de Casos Borde (Edge Cases) Obligatorios
+### 5.3. Mandatory Edge Cases Table
 
-| Componente | Caso Borde | Comportamiento Exacto Requerido |
+| Component | Edge Case | Exact Required Behavior |
 | :--- | :--- | :--- |
-| `SafeCursor` | `pushLimit(size)` donde `pos + size` desborda `u64` o supera `currentLimit()` | Devolver `error.IntegerOverflow` o `error.BoundsViolation` sin alterar `limit_stack`. |
-| `PluginLoader` | Un plugin consumidor requiere `domain = "ir_core"` versión `2..2`, pero el productor anterior declara versión `1` | Abortar en el *pre-flight check* con `error.SchemaVersionMismatchBetweenPlugins`. |
-| `PluginLoader` | Un plugin consumidor requiere `domain = "ir_core"` y ningún step anterior lo produce | Abortar en el *pre-flight check* con `error.MissingSchemaProducerBeforeConsumer`. |
-| `PipelineEngine` | Un `StageGroup` declara `require_gate: "sanitized_gate"`, pero en la tabla `pipeline_gates` esa compuerta no existe o tiene `is_open = 0` | Abortar la entrada al grupo devolviendo `error.PipelineGateLocked`. |
-| `StateDatabase` (`Authorizer`) | Un plugin intenta ejecutar por SQL directo `UPDATE pipeline_gates SET is_open = 1` o `DELETE FROM ir_regions` | `sqlite3_prepare_v2` falla con `SQLITE_AUTH` (`23`) gracias al callback `sqlite3_set_authorizer` (`ADR-003`). |
+| `SafeCursor` | `pushLimit(size)` where `pos + size` overflows `u64` or exceeds `currentLimit()` | Return `error.IntegerOverflow` or `error.BoundsViolation` without altering `limit_stack`. |
+| `PluginLoader` | A consumer plugin requires `domain = "ir_core"` version `2..2`, but the earlier producer declares version `1` | Abort during the *pre-flight check* with `error.SchemaVersionMismatchBetweenPlugins`. |
+| `PluginLoader` | A consumer plugin requires `domain = "ir_core"` and no earlier step produces it | Abort during the *pre-flight check* with `error.MissingSchemaProducerBeforeConsumer`. |
+| `PipelineEngine` | A `StageGroup` declares `require_gate: "sanitized_gate"`, but in `pipeline_gates` that gate does not exist or has `is_open = 0` | Abort entry into the group returning `error.PipelineGateLocked`. |
+| `StateDatabase` (`Authorizer`) | A plugin attempts to execute via direct SQL `UPDATE pipeline_gates SET is_open = 1` or `DELETE FROM ir_regions` | `sqlite3_prepare_v2` fails with `SQLITE_AUTH` (`23`) thanks to the `sqlite3_set_authorizer` callback (`ADR-003`). |
 
 ---
 
-## 6. Declaración en `configs/pipeline.yaml`
+## 6. Declaration in `configs/pipeline.yaml`
 
 ```yaml
 database:
@@ -426,20 +426,20 @@ pipeline:
 
 ---
 
-## 7. Vectores Binarios en Crudo y Suite de Tests de Aceptación (`zig build test`)
+## 7. Raw Binary Vectors and Acceptance Test Suite (`zig build test`)
 
-### Test 1: `SafeCursor` — Límites Aritméticos y Pila de Profundidad
-- Verifica con el vector de 16 bytes `[_]u8{ 0x00, 0x00, 0x00, 0x10, 'f', 't', 'y', 'p', ... }` que `pushLimit` captura `error.BoundsViolation` y `error.IntegerOverflow`.
+### Test 1: `SafeCursor` — Arithmetic Bounds and Depth Stack
+- Verifies with the 16-byte vector `[_]u8{ 0x00, 0x00, 0x00, 0x10, 'f', 't', 'y', 'p', ... }` that `pushLimit` catches `error.BoundsViolation` and `error.IntegerOverflow`.
 
-### Test 2: Validación Pre-Flight de Bancos SQLite (`SchemaContract_ABI`) y Hard Dependencies (`PluginDependency_ABI`)
-- **Caso A (Compatible con SemVer dispares + Aprovisionamiento de Banco):**
-  - Mock Plugin A (`1.0.0`) declara `requires_schemas = &.{ .{ .domain = "mock_domain", .version = 1, .writable = true } }`.
-  - Mock Plugin B (`5.4.0`) declara `requires_schemas = &.{ .{ .domain = "mock_domain", .version = 1, .writable = false } }` y `requires_plugins = &.{ .{ .plugin_id = "mock.plugin.a", .min_version = .{ .major = 1, .minor = 0, .patch = 0 } } }`.
-  - Resultado: `validatePipelineCompatibility` carga `configs/schemas/mock_domain_v1.sql` una sola vez y aprueba la topología.
-- **Caso B (Choque de versión de banco SQLite o falta de Hard Dependency):**
-  - Mock Plugin B (`6.0.0`) pide `"mock_domain"` `version = 2` mientras Mock Plugin A (`1.0.0`) pidió `version = 1` $\rightarrow$ `error.SchemaVersionMismatchBetweenPlugins`.
-  - Si se elimina Mock Plugin A del pipeline mientras Mock Plugin B lo mantiene en `requires_plugins` $\rightarrow$ `error.MissingHardPluginDependency`.
+### Test 2: Pre-Flight Validation of SQLite Banks (`SchemaContract_ABI`) and Hard Dependencies (`PluginDependency_ABI`)
+- **Case A (Compatible with disparate SemVer + Bank Provisioning):**
+  - Mock Plugin A (`1.0.0`) declares `requires_schemas = &.{ .{ .domain = "mock_domain", .version = 1, .writable = true } }`.
+  - Mock Plugin B (`5.4.0`) declares `requires_schemas = &.{ .{ .domain = "mock_domain", .version = 1, .writable = false } }` and `requires_plugins = &.{ .{ .plugin_id = "mock.plugin.a", .min_version = .{ .major = 1, .minor = 0, .patch = 0 } } }`.
+  - Result: `validatePipelineCompatibility` loads `configs/schemas/mock_domain_v1.sql` once and approves the topology.
+- **Case B (SQLite bank version clash or missing Hard Dependency):**
+  - Mock Plugin B (`6.0.0`) requests `"mock_domain"` `version = 2` while Mock Plugin A (`1.0.0`) requested `version = 1` $\rightarrow$ `error.SchemaVersionMismatchBetweenPlugins`.
+  - If Mock Plugin A is removed from the pipeline while Mock Plugin B keeps it in `requires_plugins` $\rightarrow$ `error.MissingHardPluginDependency`.
 
-### Test 3: Compuertas con Nombre en SQLite (`pipeline_gates` + `require_gate`) y Firewall `sqlite3_set_authorizer` (`ADR-003`)
-- Ejecuta un pipeline donde un step abre `"test_gate"` mediante `ctx.set_gate_state(ctx, "test_gate", true)` y verifica que el siguiente grupo con `require_gate: "test_gate"` se ejecuta; luego repite con `is_open = false` y verifica que devuelve `error.PipelineGateLocked`.
-- Verifica que si un plugin intenta ejecutar directamente `sqlite3_exec(ctx.sqlite_db, "UPDATE pipeline_gates SET is_open = 1;", ...)` o `DROP TABLE run_metadata;`, SQLite rechaza la sentencia con `SQLITE_AUTH` (`23`).
+### Test 3: Named Gates in SQLite (`pipeline_gates` + `require_gate`) and `sqlite3_set_authorizer` Firewall (`ADR-003`)
+- Executes a pipeline where a step opens `"test_gate"` via `ctx.set_gate_state(ctx, "test_gate", true)` and verifies that the next group with `require_gate: "test_gate"` executes; then repeats with `is_open = false` and verifies that it returns `error.PipelineGateLocked`.
+- Verifies that if a plugin attempts to directly execute `sqlite3_exec(ctx.sqlite_db, "UPDATE pipeline_gates SET is_open = 1;", ...)` or `DROP TABLE run_metadata;`, SQLite rejects the statement with `SQLITE_AUTH` (`23`).

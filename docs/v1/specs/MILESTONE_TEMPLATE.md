@@ -1,33 +1,33 @@
-# Plantilla Estándar de Especificación de Hito (`MILESTONE_TEMPLATE.md`)
+# Standard Milestone Specification Template (`MILESTONE_TEMPLATE.md`)
 
 > [!IMPORTANT]
-> **Propósito de este documento:**
-> Esta plantilla define la estructura **obligatoria** que seguirán los documentos `M0` a `M5` dentro de `/home/ubuntu/.gemini/antigravity/scratch/vidsec/specs/`.
-> Cada hito se diseña como un **paquete modular e independiente** que se enchufa al motor (`M0`) y opera contra la base de datos de estado e IR en **SQLite**, permitiendo que un agente de codificación (Gemini, Claude, etc.) implemente y verifique cada hito de forma autónoma con `zig build test`.
+> **Purpose of this document:**
+> This template defines the **mandatory** structure that documents `M0` through `M5` must follow inside `docs/v1/specs/`.
+> Each milestone is designed as a **modular, independent package** that plugs into the engine (`M0`) and operates against the **SQLite** state and IR database, enabling a coding agent (Gemini, Claude, etc.) to implement and verify each milestone autonomously with `zig build test`.
 
 ---
 
-## Estructura Obligatoria de cada Documento `M[0-5]_*.md`
+## Mandatory Structure of Each `M[0-5]_*.md` Document
 
 > [!NOTE]
-> Las directivas globales del compilador Zig, uso seguro de SQLite (`prepared statements` y transacciones), matriz de versionado en 3 niveles y prohibición de `@panic`/`unreachable` están centralizadas en [`../AGENTS.md`](../AGENTS.md) y no se repiten en cada hito.
+> Global Zig compiler directives, safe SQLite usage (`prepared statements` and transactions), the 3-tier versioning matrix, and the ban on `@panic`/`unreachable` are centralized in [`../AGENTS.md`](../AGENTS.md) and are not repeated in each milestone.
 
 ---
 
-### 1. Alcance Funcional y Contratos de Compatibilidad
-*Resumen directo de qué construye este hito, las tablas SQLite que produce o consume y su contrato de versiones.*
+### 1. Functional Scope and Compatibility Contracts
+*Direct summary of what this milestone builds, the SQLite tables it produces or consumes, and its version contract.*
 
-- **Objetivo del Hito (1 párrafo):** Qué capacidad aporta este paquete al ecosistema de `vidsec`.
-- **Contrato de Versionado y Dependencias del Plugin (`VidsecPluginABI`):**
+- **Milestone Objective (1 paragraph):** What capability this package contributes to the `vidsec` ecosystem.
+- **Plugin Versioning & Dependency Contract (`VidsecPluginABI`):**
   - `abi_version`: `1`
-  - `plugin_version`: `SemVer_ABI` (ej. `1.0.0`)
-  - `requires_schemas_ptr` / `requires_schemas_len`: Slice de bancos DDL SQLite `SchemaContract_ABI` (`domain`, `version`, `writable`) que `M0` aprovisiona desde `configs/schemas/<domain>_v<version>.sql` al cargar el plugin.
-  - `requires_plugins_ptr` / `requires_plugins_len`: Slice de *Hard Dependencies* `PluginDependency_ABI` (`plugin_id`, `min_version`) que deben ejecutarse antes en el pipeline (o vacío si el plugin es autónomo).
+  - `plugin_version`: `SemVer_ABI` (e.g., `1.0.0`)
+  - `requires_schemas_ptr` / `requires_schemas_len`: Slice of SQLite DDL banks `SchemaContract_ABI` (`domain`, `version`, `writable`) that `M0` provisions from `configs/schemas/<domain>_v<version>.sql` when loading the plugin.
+  - `requires_plugins_ptr` / `requires_plugins_len`: Slice of *Hard Dependencies* `PluginDependency_ABI` (`plugin_id`, `min_version`) that must execute earlier in the pipeline (or empty if the plugin is standalone).
 
 ---
 
-### 2. Arquitectura UML del Hito (`classDiagram`)
-*Diagrama de Clases UML adaptado a Zig (donde cada archivo `.zig` es un `struct`/módulo). El título de cada nodo indica su ruta (`ruta/modulo.zig :: StructName`), mostrando de un vistazo los módulos del hito, sus campos, métodos y su interacción con `PipelineContext_ABI` / `sqlite3`.*
+### 2. Milestone UML Architecture (`classDiagram`)
+*UML Class Diagram adapted to Zig (where each `.zig` file is a `struct`/module). Each node title indicates its path (`path/module.zig :: StructName`), showing at a glance the milestone's modules, their fields, methods, and interaction with `PipelineContext_ABI` / `sqlite3`.*
 
 ```mermaid
 classDiagram
@@ -60,37 +60,37 @@ classDiagram
 
 ---
 
-### 3. Contratos de Tipos en Zig y Esquema SQLite (`DDL / Queries`)
-*El corazón de la especificación. Se divide en dos subsecciones obligatorias:*
+### 3. Zig Type Contracts and SQLite Schema (`DDL / Queries`)
+*The core of the specification. Divided into two mandatory subsections:*
 
-#### 3.A. Tipos, Errores y Firmas Públicas en Zig
-- **`Error Sets` explícitos** (`DriverError`, `SqliteError`, etc.).
-- **Estructuras de datos (`struct` / `extern struct`)** y descriptores `export const vidsec_plugin_descriptor`.
+#### 3.A. Zig Types, Errors, and Public Signatures
+- **Explicit `Error Sets`** (`DriverError`, `SqliteError`, etc.).
+- **Data structures (`struct` / `extern struct`)** and `export const vidsec_plugin_descriptor` descriptors.
 
-#### 3.B. Contrato de Esquema SQLite Requerido / Producido (`SQL Schema & Queries`)
-- **Tablas e Índices Creados o Modificados (`CREATE TABLE`, `CREATE INDEX`):** Definición SQL exacta con tipos (`INTEGER`, `TEXT`, `BLOB`, `REAL`) y restricciones.
-- **Consultas o Inserciones Estándar (`Prepared Statements`):** Las consultas SQL parametrizadas (`?1`, `?2`) que ejecuta cada step de este hito sobre la base de datos SQLite compartida.
+#### 3.B. Required / Produced SQLite Schema Contract (`SQL Schema & Queries`)
+- **Created or Modified Tables and Indexes (`CREATE TABLE`, `CREATE INDEX`):** Exact SQL definition with types (`INTEGER`, `TEXT`, `BLOB`, `REAL`) and constraints.
+- **Standard Queries or Inserts (`Prepared Statements`):** The parameterized SQL queries (`?1`, `?2`) executed by each step of this milestone on the shared SQLite database.
 
 ---
 
-### 4. Modelo de Memoria, Arenas y Transacciones SQLite
-*Fija las reglas de propiedad (ownership) de memoria y el ciclo de vida de las sentencias SQLite.*
+### 4. Memory Model, Arenas, and SQLite Transactions
+*Establishes memory ownership rules and SQLite statement lifecycles.*
 
-| Recurso / Estructura | Propietario / Almacenamiento | Tiempo de Vida (Lifetime) | Quién libera / cierra |
+| Resource / Structure | Owner / Storage | Lifetime | Who frees / closes |
 | :--- | :--- | :--- | :--- |
-| Representación Intermedia (`ir_*`), Hallazgos (`audit_findings`) y Artefactos (`working_artifacts`) | Base de datos `sqlite3*` (`:memory:` o archivo `.sqlite`) | Toda la ejecución del pipeline sobre el archivo actual. | `PipelineContext.deinit()` en `M0` (`sqlite3_close_v2`). |
-| Sentencias preparadas (`*sqlite3_stmt`) de un Step | Plugin en ejecución | Solo durante la llamada a `execute_step`. | `defer sqlite3_finalize(stmt)` antes de salir de `execute_step`. |
-| Buffers temporales de lectura (`SafeCursor`) | `ArenaAllocator` local del Step o pila `[4096]u8` | Solo durante `execute_step`. | `defer local_arena.deinit()`. |
+| Intermediate Representation (`ir_*`), Findings (`audit_findings`), and Artifacts (`working_artifacts`) | `sqlite3*` database (`:memory:` or `.sqlite` file) | Entire pipeline run on the current file. | `PipelineContext.deinit()` in `M0` (`sqlite3_close_v2`). |
+| Prepared statements (`*sqlite3_stmt`) of a Step | Executing plugin | Only during the `execute_step` call. | `defer sqlite3_finalize(stmt)` before returning from `execute_step`. |
+| Temporary read buffers (`SafeCursor`) | Step-local `ArenaAllocator` or stack `[4096]u8` | Only during `execute_step`. | `defer local_arena.deinit()`. |
 
-- **Constantes de protección contra DoS (Hard Limits):**
-  - Ej.: `MAX_BOX_DEPTH = 32`, `MAX_IR_REGIONS = 250_000`, `SQLITE_BATCH_COMMIT_SIZE = 10_000`.
+- **DoS Protection Constants (Hard Limits):**
+  - E.g.: `MAX_BOX_DEPTH = 32`, `MAX_IR_REGIONS = 250_000`, `SQLITE_BATCH_COMMIT_SIZE = 10_000`.
 
 ---
 
-### 5. Flujo Algorítmico (`sequenceDiagram`) y Casos Borde
-*Combina un diagrama de secuencia UML para visualizar la interacción dinámica entre el plugin, `SafeCursor` y `SQLite` con una tabla de casos borde obligatorios.*
+### 5. Algorithmic Flow (`sequenceDiagram`) and Edge Cases
+*Combines a UML sequence diagram to visualize dynamic interaction between the plugin, `SafeCursor`, and `SQLite` with a table of mandatory edge cases.*
 
-1. **Diagrama de Secuencia (`sequenceDiagram`) y flujo paso a paso:**
+1. **Sequence Diagram (`sequenceDiagram`) and step-by-step flow:**
    ```mermaid
    sequenceDiagram
        participant Host as PipelineEngine (M0)
@@ -101,28 +101,28 @@ classDiagram
        Host->>Plugin: execute_step(ctx_abi)
        Plugin->>DB: BEGIN IMMEDIATE TRANSACTION
        Plugin->>DB: sqlite3_prepare_v2("INSERT INTO ir_regions ...")
-       loop Cada caja del contenedor
+       loop Each container box
            Plugin->>Cursor: readU32Be() + readFourCC()
            Plugin->>DB: sqlite3_bind_* + sqlite3_step() + sqlite3_reset()
        end
        Plugin->>DB: sqlite3_finalize(stmt) + COMMIT
        Plugin-->>Host: StepVerdict_ABI.proceed
    ```
-2. **Tabla de Casos Borde (Edge Cases) obligatorios:**
-   - Casos límite binarios del formato y manejo de errores de SQLite (`SQLITE_BUSY`, `SQLITE_CONSTRAINT`, rollback de transacción ante error).
+2. **Mandatory Edge Cases Table:**
+   - Binary format boundary cases and SQLite error handling (`SQLITE_BUSY`, `SQLITE_CONSTRAINT`, transaction rollback on error).
 
 ---
 
-### 6. Declaración en `pipeline.yaml` y Configuración Opcional del Plugin
-*Muestra cómo se registra el plugin en el array `plugins:` (con su ruta `.so`, restricción de versión opcional y archivo `config:` opcional) y cómo se invoca en el árbol `pipeline:`.*
+### 6. Declaration in `pipeline.yaml` and Optional Plugin Configuration
+*Shows how the plugin is registered in the `plugins:` array (with its `.so` path, optional version constraint, and optional `config:` file) and how it is invoked in the `pipeline:` tree.*
 
 ---
 
-### 7. Vectores Binarios en Crudo y Suite de Tests de Aceptación (`zig build test`)
-*Proporciona micro-contenedores binarios codificados como arrays de bytes en Zig (`[_]u8{ ... }`) y las consultas SQL de verificación para que los tests del hito sean 100% autónomos.*
+### 7. Raw Binary Vectors and Acceptance Test Suite (`zig build test`)
+*Provides binary micro-containers encoded as Zig byte arrays (`[_]u8{ ... }`) and SQL verification queries so the milestone's tests are 100% self-contained.*
 
-- **Test Vector 1 (Caso Limpio / Happy Path):** Bytes hexadecimales exactos + verificación mediante `SELECT COUNT(*) FROM ...` en SQLite.
-- **Test Vector 2 (Caso Malicioso / Exploit Sintético):** Bytes hexadecimales exactos con la anomalía inyectada + verificación del registro en la tabla `audit_findings`.
-- **Checklist de Verificación Autónoma:**
-  1. `zig build` compila con 0 errores y 0 warnings.
-  2. `zig build test` pasa el 100% de los tests sin fugas en `std.testing.allocator` ni sentencias SQLite sin finalizar (`sqlite3_next_stmt == null`).
+- **Test Vector 1 (Clean Case / Happy Path):** Exact hex bytes + verification via `SELECT COUNT(*) FROM ...` in SQLite.
+- **Test Vector 2 (Malicious Case / Synthetic Exploit):** Exact hex bytes with the injected anomaly + verification of the row recorded in `audit_findings`.
+- **Autonomous Verification Checklist:**
+  1. `zig build` compiles with 0 errors and 0 warnings.
+  2. `zig build test` passes 100% of tests with no leaks in `std.testing.allocator` and no unfinalized SQLite statements (`sqlite3_next_stmt == null`).
