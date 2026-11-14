@@ -20,17 +20,26 @@ pub fn build(b: *std.Build) void {
     const flowdata_mod = flowdata_dep.module("flowdata");
     const abi_mod = flowdata_dep.module("flowdata_abi");
     const dataflow_mod = flowdata_dep.module("flowdata_dataflow");
-    const extensions_mod = flowdata_dep.module("flowdata_extensions");
     const ds_memory_mod = flowdata_dep.module("flowdata_datasource_memory");
     const ds_file_store_mod = flowdata_dep.module("flowdata_datasource_file_store");
     const ds_sqlite_mod = flowdata_dep.module("flowdata_datasource_sqlite");
+    const ext_artifact_mod = flowdata_dep.module("flowdata_ext_artifact");
+    const ext_inbound_cli_mod = flowdata_dep.module("flowdata_ext_inbound_cli");
+    const ext_inbound_http_mod = flowdata_dep.module("flowdata_ext_inbound_http");
+    const ext_inbound_grpc_mod = flowdata_dep.module("flowdata_ext_inbound_grpc");
+    const media_ir_mod = flowdata_dep.module("media_ir");
+    const isobmff_mod = flowdata_dep.module("isobmff");
+    const ebml_mod = flowdata_dep.module("ebml");
+    const riff_mod = flowdata_dep.module("riff");
+    const tika_mod = flowdata_dep.module("tika");
 
-    // 2. Standalone zero-allocation Magic Number & MIME Type detection module (`src/magic/mod.zig`)
+    // 2. Vidsec forensic magic scanner & triage helpers (`src/magic/mod.zig`)
     const magic_mod = b.addModule("vidsec_magic", .{
         .root_source_file = b.path("src/magic/mod.zig"),
         .target = target,
         .optimize = optimize,
     });
+    magic_mod.addImport("tika", tika_mod);
 
     // 3. Standalone zero-allocation Math, Shannon Entropy, Statistics, Intervals & Matrix module (`src/math/mod.zig`)
     const math_mod = b.addModule("vidsec_math", .{
@@ -39,77 +48,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // 4. Standalone Video Intermediate Representation module (`src/ir/mod.zig`)
-    const ir_mod = b.addModule("vidsec_ir", .{
-        .root_source_file = b.path("src/ir/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    // 5. Standalone Common Format Abstractions module (`src/formats/common/mod.zig`)
-    const formats_common_mod = b.addModule("vidsec_formats_common", .{
-        .root_source_file = b.path("src/formats/common/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    formats_common_mod.addImport("vidsec_ir", ir_mod);
-
-    // 6. Standalone ISOBMFF parsing & structural triage module (`src/formats/isobmff/mod.zig`)
-    const isobmff_mod = b.addModule("vidsec_isobmff", .{
-        .root_source_file = b.path("src/formats/isobmff/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    isobmff_mod.addImport("vidsec_formats_common", formats_common_mod);
-
-    // 7. Standalone MP4 inspection, brand & track decoding module (`src/formats/mp4/mod.zig`)
-    const mp4_mod = b.addModule("vidsec_mp4", .{
-        .root_source_file = b.path("src/formats/mp4/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    mp4_mod.addImport("vidsec_isobmff", isobmff_mod);
-
-    // 8. Standalone EBML grammar & element hierarchy parsing module (`src/formats/ebml/mod.zig`)
-    const ebml_mod = b.addModule("vidsec_ebml", .{
-        .root_source_file = b.path("src/formats/ebml/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    ebml_mod.addImport("vidsec_formats_common", formats_common_mod);
-
-    // 9. Standalone MKV track & cluster inspection module (`src/formats/mkv/mod.zig`)
-    const mkv_mod = b.addModule("vidsec_mkv", .{
-        .root_source_file = b.path("src/formats/mkv/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    mkv_mod.addImport("vidsec_ebml", ebml_mod);
-
-    // 10. Standalone RIFF container & chunk hierarchy parsing module (`src/formats/riff/mod.zig`)
-    const riff_mod = b.addModule("vidsec_riff", .{
-        .root_source_file = b.path("src/formats/riff/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    riff_mod.addImport("vidsec_formats_common", formats_common_mod);
-
-    // 11. Standalone Abstract Forensics library module (`src/forensics/mod.zig`)
-    const forensics_mod = b.addModule("vidsec_forensics", .{
-        .root_source_file = b.path("src/forensics/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    forensics_mod.addImport("vidsec_ir", ir_mod);
-    forensics_mod.addImport("vidsec_math", math_mod);
-
-    // 12. Vidsec core framework library module (`src/root.zig`)
+    // 4. Vidsec core framework library module (`src/root.zig`)
     const root_mod = b.addModule("vidsec", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -119,23 +58,19 @@ pub fn build(b: *std.Build) void {
     root_mod.linkSystemLibrary("sqlite3", .{});
     root_mod.addImport("build_options", options_mod);
     root_mod.addImport("flowdata", flowdata_mod);
-    root_mod.addImport("vidsec_extensions", extensions_mod);
+    root_mod.addImport("flowdata_ext_artifact", ext_artifact_mod);
     root_mod.addImport("flowdata_abi", abi_mod);
+    root_mod.addImport("media_ir", media_ir_mod);
+    root_mod.addImport("isobmff", isobmff_mod);
+    root_mod.addImport("ebml", ebml_mod);
+    root_mod.addImport("riff", riff_mod);
+    root_mod.addImport("tika", tika_mod);
     root_mod.addImport("vidsec_magic", magic_mod);
     root_mod.addImport("vidsec_math", math_mod);
-    root_mod.addImport("vidsec_isobmff", isobmff_mod);
-    root_mod.addImport("vidsec_mp4", mp4_mod);
-    root_mod.addImport("vidsec_ebml", ebml_mod);
-    root_mod.addImport("vidsec_mkv", mkv_mod);
-    root_mod.addImport("vidsec_riff", riff_mod);
-    root_mod.addImport("vidsec_ir", ir_mod);
-    root_mod.addImport("vidsec_formats_common", formats_common_mod);
-    root_mod.addImport("vidsec_forensics", forensics_mod);
     root_mod.addImport("vidsec_dataflow", dataflow_mod);
 
-    // 10. Official `.so` Plugin Shared Libraries (`src/*`)
-    _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, ir_mod, forensics_mod, "analyzer", "src/analysis/mod.zig");
-    _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, magic_mod, math_mod, isobmff_mod, mp4_mod, ebml_mod, mkv_mod, riff_mod, ir_mod, forensics_mod, "remediation", "src/remediation/mod.zig");
+    // 5. Official `.so` Plugin Shared Library (`src/catalog.zig`)
+    _ = addPluginSharedLib(b, target, optimize, vidsec_version, abi_mod, tika_mod, magic_mod, math_mod, media_ir_mod, isobmff_mod, ebml_mod, riff_mod, "analyzer", "src/catalog.zig");
 
     // 6. Main CLI executable (`vidsec`)
     const exe_mod = b.createModule(.{
@@ -146,7 +81,15 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.addImport("build_options", options_mod);
     exe_mod.addImport("vidsec", root_mod);
+    exe_mod.addImport("flowdata", flowdata_mod);
     exe_mod.addImport("flowdata_abi", abi_mod);
+    exe_mod.addImport("flowdata_datasource_memory", ds_memory_mod);
+    exe_mod.addImport("flowdata_datasource_file_store", ds_file_store_mod);
+    exe_mod.addImport("flowdata_datasource_sqlite", ds_sqlite_mod);
+    exe_mod.addImport("flowdata_ext_inbound_cli", ext_inbound_cli_mod);
+    exe_mod.addImport("flowdata_ext_inbound_http", ext_inbound_http_mod);
+    exe_mod.addImport("flowdata_ext_inbound_grpc", ext_inbound_grpc_mod);
+    exe_mod.addImport("tika", tika_mod);
     exe_mod.addImport("vidsec_magic", magic_mod);
     exe_mod.addImport("vidsec_math", math_mod);
 
@@ -189,18 +132,16 @@ pub fn build(b: *std.Build) void {
     test_suite_mod.addImport("vidsec", root_mod);
     test_suite_mod.addImport("flowdata", flowdata_mod);
     test_suite_mod.addImport("flowdata_abi", abi_mod);
+    test_suite_mod.addImport("tika", tika_mod);
     test_suite_mod.addImport("vidsec_magic", magic_mod);
     test_suite_mod.addImport("vidsec_math", math_mod);
-    test_suite_mod.addImport("vidsec_formats_common", formats_common_mod);
-    test_suite_mod.addImport("vidsec_isobmff", isobmff_mod);
-    test_suite_mod.addImport("vidsec_mp4", mp4_mod);
-    test_suite_mod.addImport("vidsec_ebml", ebml_mod);
-    test_suite_mod.addImport("vidsec_mkv", mkv_mod);
-    test_suite_mod.addImport("vidsec_riff", riff_mod);
-    test_suite_mod.addImport("vidsec_ir", ir_mod);
-    test_suite_mod.addImport("vidsec_forensics", forensics_mod);
+    test_suite_mod.addImport("media_ir", media_ir_mod);
+    test_suite_mod.addImport("isobmff", isobmff_mod);
+    test_suite_mod.addImport("ebml", ebml_mod);
+    test_suite_mod.addImport("riff", riff_mod);
     test_suite_mod.addImport("vidsec_dataflow", dataflow_mod);
-    test_suite_mod.addImport("vidsec_extensions", extensions_mod);
+    test_suite_mod.addImport("flowdata_datasource_memory", ds_memory_mod);
+    test_suite_mod.addImport("flowdata_datasource_sqlite", ds_sqlite_mod);
 
     const test_suite = b.addTest(.{
         .root_module = test_suite_mod,
@@ -228,15 +169,13 @@ pub fn addPluginSharedLib(
     optimize: std.builtin.OptimizeMode,
     version: std.SemanticVersion,
     abi_mod: *std.Build.Module,
+    tika_mod: *std.Build.Module,
     magic_mod: *std.Build.Module,
     math_mod: *std.Build.Module,
-    isobmff_mod: ?*std.Build.Module,
-    mp4_mod: ?*std.Build.Module,
-    ebml_mod: ?*std.Build.Module,
-    mkv_mod: ?*std.Build.Module,
-    riff_mod: ?*std.Build.Module,
-    ir_mod: ?*std.Build.Module,
-    forensics_mod: ?*std.Build.Module,
+    media_ir_mod: *std.Build.Module,
+    isobmff_mod: *std.Build.Module,
+    ebml_mod: *std.Build.Module,
+    riff_mod: *std.Build.Module,
     name: []const u8,
     root_source: []const u8,
 ) *std.Build.Step.Compile {
@@ -247,29 +186,13 @@ pub fn addPluginSharedLib(
         .link_libc = true,
     });
     plugin_mod.addImport("flowdata_abi", abi_mod);
+    plugin_mod.addImport("tika", tika_mod);
     plugin_mod.addImport("vidsec_magic", magic_mod);
     plugin_mod.addImport("vidsec_math", math_mod);
-    if (ir_mod) |m| {
-        plugin_mod.addImport("vidsec_ir", m);
-    }
-    if (forensics_mod) |m| {
-        plugin_mod.addImport("vidsec_forensics", m);
-    }
-    if (isobmff_mod) |m| {
-        plugin_mod.addImport("vidsec_isobmff", m);
-    }
-    if (mp4_mod) |m| {
-        plugin_mod.addImport("vidsec_mp4", m);
-    }
-    if (ebml_mod) |m| {
-        plugin_mod.addImport("vidsec_ebml", m);
-    }
-    if (mkv_mod) |m| {
-        plugin_mod.addImport("vidsec_mkv", m);
-    }
-    if (riff_mod) |m| {
-        plugin_mod.addImport("vidsec_riff", m);
-    }
+    plugin_mod.addImport("media_ir", media_ir_mod);
+    plugin_mod.addImport("isobmff", isobmff_mod);
+    plugin_mod.addImport("ebml", ebml_mod);
+    plugin_mod.addImport("riff", riff_mod);
 
     const lib = b.addLibrary(.{
         .linkage = .dynamic,
