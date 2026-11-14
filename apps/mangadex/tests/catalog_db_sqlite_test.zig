@@ -1,6 +1,6 @@
 const std = @import("std");
 const flowdata = @import("flowdata");
-const extensions = @import("flowdata_extensions");
+const sqlite_driver = @import("flowdata_datasource_sqlite");
 const SeriesDetails = @import("mangadex_plugin").tasks.fetch_series_details.SeriesDetails;
 const RepositoryRegistry = flowdata.RepositoryRegistry;
 const WriteSpec = flowdata.dataflow.WriteSpec;
@@ -13,7 +13,7 @@ test "MangaDex catalog_db works end-to-end with SQLite driver and schemas.yaml" 
 
     var registry = RepositoryRegistry.init(alloc);
     defer registry.deinit();
-    try extensions.datasources.registerDefaultDrivers(&registry);
+    try registry.registerDriver("sqlite", &sqlite_driver.SqliteRepository.createHeap);
 
     const params = [_]flowdata.repository.ConfigParam{
         .{ .key = "path", .value = ":memory:" },

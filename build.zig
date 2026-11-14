@@ -115,6 +115,23 @@ pub fn build(b: *std.Build) void {
     drivers_mod.addImport("flowdata_datasource_yaml", ds_yaml_mod);
     drivers_mod.addImport("flowdata_datasource_ssh_store", ds_ssh_store_mod);
 
+    const ext_names = [_]struct { mod: []const u8, path: []const u8 }{
+        .{ .mod = "flowdata_ext_inbound_cli", .path = "extensions/inbound_cli/src/root.zig" },
+        .{ .mod = "flowdata_ext_inbound_http", .path = "extensions/inbound_http/src/root.zig" },
+        .{ .mod = "flowdata_ext_inbound_grpc", .path = "extensions/inbound_grpc/src/root.zig" },
+        .{ .mod = "flowdata_ext_trace_jsonl", .path = "extensions/trace_jsonl/src/root.zig" },
+        .{ .mod = "flowdata_ext_opentelemetry", .path = "extensions/opentelemetry/src/root.zig" },
+        .{ .mod = "flowdata_ext_dag_viz", .path = "extensions/dag_viz/src/root.zig" },
+    };
+    for (ext_names) |ext| {
+        const ext_mod = b.addModule(ext.mod, .{
+            .root_source_file = b.path(ext.path),
+            .target = target,
+            .optimize = optimize,
+        });
+        ext_mod.addImport("flowdata", flowdata_mod);
+    }
+
     const extensions_mod = b.addModule("flowdata_extensions", .{
         .root_source_file = b.path("extensions/mod.zig"),
         .target = target,

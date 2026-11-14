@@ -53,7 +53,17 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const flowdata_mod = flowdata_dep.module("flowdata");
-    const extensions_mod = flowdata_dep.module("flowdata_extensions");
+    const ds_memory_mod = flowdata_dep.module("flowdata_datasource_memory");
+    const ds_file_store_mod = flowdata_dep.module("flowdata_datasource_file_store");
+    const ds_sqlite_mod = flowdata_dep.module("flowdata_datasource_sqlite");
+    const ds_yaml_mod = flowdata_dep.module("flowdata_datasource_yaml");
+    const ds_ssh_store_mod = flowdata_dep.module("flowdata_datasource_ssh_store");
+    const ext_inbound_cli_mod = flowdata_dep.module("flowdata_ext_inbound_cli");
+    const ext_inbound_http_mod = flowdata_dep.module("flowdata_ext_inbound_http");
+    const ext_inbound_grpc_mod = flowdata_dep.module("flowdata_ext_inbound_grpc");
+    const ext_trace_jsonl_mod = flowdata_dep.module("flowdata_ext_trace_jsonl");
+    const ext_opentelemetry_mod = flowdata_dep.module("flowdata_ext_opentelemetry");
+    const ext_dag_viz_mod = flowdata_dep.module("flowdata_ext_dag_viz");
 
     // 4. App module (combining Flowdata, Adapters, Config, and SDK)
     const app_mod = b.addModule("mangadex_app", .{
@@ -106,9 +116,18 @@ pub fn build(b: *std.Build) void {
     exe_mod.addImport("comicinfo", comicinfo_mod);
     exe_mod.addImport("sources", sources_mod);
     exe_mod.addImport("flowdata", flowdata_mod);
-    exe_mod.addImport("flowdata_extensions", extensions_mod);
+    exe_mod.addImport("flowdata_datasource_memory", ds_memory_mod);
+    exe_mod.addImport("flowdata_datasource_file_store", ds_file_store_mod);
+    exe_mod.addImport("flowdata_datasource_sqlite", ds_sqlite_mod);
+    exe_mod.addImport("flowdata_datasource_yaml", ds_yaml_mod);
+    exe_mod.addImport("flowdata_datasource_ssh_store", ds_ssh_store_mod);
+    exe_mod.addImport("flowdata_ext_inbound_cli", ext_inbound_cli_mod);
+    exe_mod.addImport("flowdata_ext_inbound_http", ext_inbound_http_mod);
+    exe_mod.addImport("flowdata_ext_inbound_grpc", ext_inbound_grpc_mod);
+    exe_mod.addImport("flowdata_ext_trace_jsonl", ext_trace_jsonl_mod);
+    exe_mod.addImport("flowdata_ext_opentelemetry", ext_opentelemetry_mod);
+    exe_mod.addImport("flowdata_ext_dag_viz", ext_dag_viz_mod);
     exe_mod.addImport("mangadex_plugin", plugin_mod);
-    exe_mod.linkSystemLibrary("sqlite3", .{});
 
     const exe = b.addExecutable(.{
         .name = "mangadex",
@@ -129,10 +148,9 @@ pub fn build(b: *std.Build) void {
     test_mod.addImport("comicinfo", comicinfo_mod);
     test_mod.addImport("sources", sources_mod);
     test_mod.addImport("flowdata", flowdata_mod);
-    test_mod.addImport("flowdata_extensions", extensions_mod);
+    test_mod.addImport("flowdata_datasource_sqlite", ds_sqlite_mod);
     test_mod.addImport("mangadex_app", app_mod);
     test_mod.addImport("mangadex_plugin", plugin_mod);
-    test_mod.linkSystemLibrary("sqlite3", .{});
 
     const test_artifact = b.addTest(.{
         .root_module = test_mod,
