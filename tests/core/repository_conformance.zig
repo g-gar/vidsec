@@ -310,3 +310,27 @@ test "ARCH-009A: Preflight TaskDescriptor_ABI metadata & SchemaCatalog validatio
     });
     try testing.expectError(error.MissingPrimaryKeyField, preflight.validateTaskOutputSchema(&missing_pk_task, users_tbl));
 }
+
+test "ARCH-009A: ConcurrencyPolicy & ManagedRepository explicit policy selection" {
+    const policies = [_]flowdata.ConcurrencyPolicy{
+        .none,
+        .mutex,
+        .{ .async_batch = .{ .capacity = 8, .batch_size = 4 } },
+    };
+
+    for (policies) |policy| {
+        const mem = try MemoryRepository.createHeap(testing.allocator, &.{});
+        var managed = try flowdata.ManagedRepository.init(testing.allocator, mem, policy);
+        defer managed.deinit();
+
+        const repo = managed.repository();
+        const Row = struct { id: i64 };
+        const row = Row{ .id = 42 };
+        try repo.write(.{
+            .table = "items",
+            .mode = .append,
+            .payload = PayloadHandle.fromScalar(Row, &row),
+        });
+        try testing.expectEqual(@as(usize, 1), repo.count("items"));
+    }
+}

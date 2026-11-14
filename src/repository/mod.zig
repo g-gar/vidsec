@@ -5,6 +5,7 @@ pub const specs_mod = @import("specs.zig");
 pub const row_iterator_mod = @import("row_iterator.zig");
 pub const synchronized_repository = @import("synchronized_repository.zig");
 pub const async_batch_repository = @import("async_batch_repository.zig");
+pub const concurrency_policy = @import("concurrency_policy.zig");
 
 pub const Repository = storage_repository.Repository;
 pub const RepositoryVTable = storage_repository.RepositoryVTable;
@@ -28,3 +29,5 @@ pub const ProjectionMode = specs_mod.ProjectionMode;
 pub const RowIterator = row_iterator_mod.RowIterator;
 pub const SynchronizedRepository = synchronized_repository.SynchronizedRepository;
 pub const AsyncBatchRepository = async_batch_repository.AsyncBatchRepository;
+pub const ConcurrencyPolicy = concurrency_policy.ConcurrencyPolicy;
+pub const ManagedRepository = concurrency_policy.ManagedRepository;

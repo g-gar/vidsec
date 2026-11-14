@@ -20,6 +20,11 @@ const RowIterator = @import("row_iterator.zig").RowIterator;
 /// parallel DAG workers can safely share repositories without file-level contention
 /// or deadlocks.
 ///
+/// Concurrency policy note: this decorator serializes ALL operations (reads and writes)
+/// behind a single mutex — safe and simple for single-connection drivers (including
+/// SQLite WAL). If read contention becomes a bottleneck under WAL, introduce a
+/// dedicated read-only connection pool wrapper rather than nesting multiple mutexes.
+///
 /// Usage:
 /// ```zig
 /// var synced = SynchronizedRepository.init(allocator, inner_repo);
@@ -141,6 +146,27 @@ pub const SynchronizedRepository = struct {
         try self.inner.rollback();
     }
 
+    fn doBeginSavepoint(ctx: *anyopaque, name: []const u8) anyerror!void {
+        const self: *SynchronizedRepository = @ptrCast(@alignCast(ctx));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        try self.inner.beginSavepoint(name);
+    }
+
+    fn doRollbackSavepoint(ctx: *anyopaque, name: []const u8) anyerror!void {
+        const self: *SynchronizedRepository = @ptrCast(@alignCast(ctx));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        try self.inner.rollbackSavepoint(name);
+    }
+
+    fn doReleaseSavepoint(ctx: *anyopaque, name: []const u8) anyerror!void {
+        const self: *SynchronizedRepository = @ptrCast(@alignCast(ctx));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        try self.inner.releaseSavepoint(name);
+    }
+
     const vtable = Repository.VTable{
         .writePayload = doWritePayload,
         .writePayloadWithParams = doWritePayloadWithParams,
@@ -155,6 +181,9 @@ pub const SynchronizedRepository = struct {
         .beginTx = doBeginTx,
         .commit = doCommit,
         .rollback = doRollback,
+        .beginSavepoint = doBeginSavepoint,
+        .rollbackSavepoint = doRollbackSavepoint,
+        .releaseSavepoint = doReleaseSavepoint,
     };
 };
 

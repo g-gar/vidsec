@@ -1,3 +1,7 @@
+/// Universal, engine-agnostic Schema AST (`SchemaCatalog`, `TableSchema`, `ColumnSpec`).
+/// Invariant: must contain zero SQL and zero storage-driver specifics.
+/// Note: YAML decoding (`yaml.Map` / `parseYaml`) is slated to move to `src/yaml/`
+/// so this module remains format-agnostic as well.
 pub const types = @import("types.zig");
 pub const column = @import("column.zig");
 pub const index = @import("index.zig");

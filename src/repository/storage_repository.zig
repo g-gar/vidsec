@@ -176,6 +176,7 @@ pub const StorageRepository = Repository;
 const RowIterator = @import("row_iterator.zig").RowIterator;
 
 const SliceIter = struct {
+    allocator: Allocator,
     payload: PayloadHandle,
     done: bool = false,
 
@@ -187,7 +188,8 @@ const SliceIter = struct {
     }
 
     fn deinit(ctx: *anyopaque) void {
-        _ = ctx; // allocator-managed by caller
+        const self: *SliceIter = @ptrCast(@alignCast(ctx));
+        self.allocator.destroy(self);
     }
 
     const vtable = RowIterator.VTable{
@@ -198,6 +200,6 @@ const SliceIter = struct {
 
 fn sliceIterator(allocator: Allocator, payload: PayloadHandle) !RowIterator {
     const iter = try allocator.create(SliceIter);
-    iter.* = .{ .payload = payload };
+    iter.* = .{ .allocator = allocator, .payload = payload };
     return .{ .ptr = iter, .vtable = &SliceIter.vtable };
 }
