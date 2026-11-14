@@ -126,7 +126,7 @@ pipelines:
   #                         [tracked_targets]
   #                                |
   #                       (1. fetch_details)
-  #                           /        \  (Fork / Fan-out asíncrono)
+  #                           /        \  (Fork / Asynchronous fan-out)
   #                          /          \
   #               (2. fetch_chapters)    (7. generate_comicinfo) [CPU-only]
   #                        |                       |
