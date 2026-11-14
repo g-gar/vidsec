@@ -6,7 +6,7 @@
 | **Parent Master** | [`ARCH-009`](./009-unified-sqlite-storage-and-schema.md) |
 | **Depends On** | [`ARCH-002`](./002-open-kernel-extension-system.md), [`ARCH-016`](./016-reactive-bifurcation-parallel-expansion-and-join.md), [`ARCH-025`](./025-datasource-roles-and-batch-emission-decoupling.md) |
 | **Area** | `src/schema/`, `src/repository/`, `src/dataflow/`, `src/plugin/`, `src/engine/` |
-| **Status** | `PARTIALLY IMPLEMENTED (CORE COMPLETE)` |
+| **Status** | `IMPLEMENTED` |
 
 ---
 

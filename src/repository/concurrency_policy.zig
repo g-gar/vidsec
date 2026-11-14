@@ -54,8 +54,8 @@ pub const ManagedRepository = union(enum) {
         }
     }
 
-    pub fn repository(self: *ManagedRepository) Repository {
-        return switch (self.*) {
+    pub fn repository(self: ManagedRepository) Repository {
+        return switch (self) {
             .none => |r| r,
             .mutex => |m| m.wrapper.repository(),
             .async_batch => |a| a.wrapper.repository(),

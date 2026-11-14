@@ -178,6 +178,9 @@ pub const PipelineRunner = struct {
 
         var repos = repository_mod.RepositoryRegistry.init(allocator);
         errdefer repos.deinit();
+        if (pipeline_ast.runtime.scheduler == .dag) {
+            repos.setConcurrencyPolicy(.mutex);
+        }
         if (options.driver_initializer) |init_fn| {
             try init_fn(&repos);
         }
@@ -264,6 +267,9 @@ pub const PipelineRunner = struct {
                         for (t.outputs) |out_ch| {
                             if (self.ast.getDatasource(out_ch.datasource)) |ds| {
                                 if (ds.role == .source) return error.CannotWriteToSourceDatasource;
+                            }
+                            if (self.repos.get(out_ch.datasource)) |repo| {
+                                try engine_mod.preflight.validateDirectivesCapabilities(null, false, repo.getCapabilities());
                             }
                             if (loaded_catalog) |*cat| {
                                 if (resolved_desc) |desc| {
