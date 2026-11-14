@@ -1,9 +1,9 @@
 const std = @import("std");
-const types = @import("types.zig");
-const executable = @import("executable.zig");
-const archive = @import("archive.zig");
-const document = @import("document.zig");
-const MagicInfo = types.MagicInfo;
+const tika = @import("tika");
+const executable = tika.executable;
+const archive = tika.archive;
+const document = tika.document;
+const MagicInfo = tika.MagicInfo;
 
 /// Represents a hostile signature discovered at `relative_offset` inside a byte window
 /// (such as a `free`/`Void`/`JUNK` padding box, `mdat` slack space, or trailing overlay).

@@ -94,6 +94,44 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // 3h. Standalone Universal Media Container IR Library
+    const media_ir_lib_mod = b.addModule("media_ir", .{
+        .root_source_file = b.path("libs/media_ir/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // 3i. Standalone ISOBMFF / MP4 Container Library
+    const isobmff_lib_mod = b.addModule("isobmff", .{
+        .root_source_file = b.path("libs/isobmff/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    isobmff_lib_mod.addImport("media_ir", media_ir_lib_mod);
+
+    // 3j. Standalone EBML / Matroska (MKV / WebM) Container Library
+    const ebml_lib_mod = b.addModule("ebml", .{
+        .root_source_file = b.path("libs/ebml/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    ebml_lib_mod.addImport("media_ir", media_ir_lib_mod);
+
+    // 3k. Standalone RIFF / AVI Container Library
+    const riff_lib_mod = b.addModule("riff", .{
+        .root_source_file = b.path("libs/riff/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    riff_lib_mod.addImport("media_ir", media_ir_lib_mod);
+
+    // 3l. Standalone Tika Magic & MIME Identification Library
+    const tika_lib_mod = b.addModule("tika", .{
+        .root_source_file = b.path("libs/tika/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // 4. Drivers: Datasource backends
     const ds_memory_mod = b.addModule("flowdata_datasource_memory", .{
         .root_source_file = b.path("drivers/memory/src/root.zig"),
@@ -150,6 +188,14 @@ pub fn build(b: *std.Build) void {
     drivers_mod.addImport("flowdata_datasource_yaml", ds_yaml_mod);
     drivers_mod.addImport("flowdata_datasource_ssh_store", ds_ssh_store_mod);
 
+    const artifact_ext_mod = b.addModule("flowdata_ext_artifact", .{
+        .root_source_file = b.path("extensions/artifact/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    artifact_ext_mod.addImport("flowdata", flowdata_mod);
+
     const ext_names = [_]struct { mod: []const u8, path: []const u8 }{
         .{ .mod = "flowdata_ext_inbound_cli", .path = "extensions/inbound_cli/src/root.zig" },
         .{ .mod = "flowdata_ext_inbound_http", .path = "extensions/inbound_http/src/root.zig" },
@@ -192,6 +238,11 @@ pub fn build(b: *std.Build) void {
     const run_libs_comicinfo = b.addRunArtifact(b.addTest(.{ .root_module = comicinfo_lib_mod }));
     const run_libs_komga = b.addRunArtifact(b.addTest(.{ .root_module = komga_lib_mod }));
     const run_libs_mangadex = b.addRunArtifact(b.addTest(.{ .root_module = mangadex_lib_mod }));
+    const run_libs_media_ir = b.addRunArtifact(b.addTest(.{ .root_module = media_ir_lib_mod }));
+    const run_libs_isobmff = b.addRunArtifact(b.addTest(.{ .root_module = isobmff_lib_mod }));
+    const run_libs_ebml = b.addRunArtifact(b.addTest(.{ .root_module = ebml_lib_mod }));
+    const run_libs_riff = b.addRunArtifact(b.addTest(.{ .root_module = riff_lib_mod }));
+    const run_libs_tika = b.addRunArtifact(b.addTest(.{ .root_module = tika_lib_mod }));
     const run_ds_memory = b.addRunArtifact(b.addTest(.{ .root_module = ds_memory_mod }));
     const run_ds_file_store = b.addRunArtifact(b.addTest(.{ .root_module = ds_file_store_mod }));
     const run_ds_sqlite = b.addRunArtifact(b.addTest(.{ .root_module = ds_sqlite_mod }));
@@ -241,6 +292,11 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_libs_comicinfo.step);
     test_step.dependOn(&run_libs_komga.step);
     test_step.dependOn(&run_libs_mangadex.step);
+    test_step.dependOn(&run_libs_media_ir.step);
+    test_step.dependOn(&run_libs_isobmff.step);
+    test_step.dependOn(&run_libs_ebml.step);
+    test_step.dependOn(&run_libs_riff.step);
+    test_step.dependOn(&run_libs_tika.step);
     test_step.dependOn(&run_ds_memory.step);
     test_step.dependOn(&run_ds_file_store.step);
     test_step.dependOn(&run_ds_sqlite.step);
