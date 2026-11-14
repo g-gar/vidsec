@@ -129,8 +129,10 @@ pub fn build(b: *std.Build) void {
     test_mod.addImport("comicinfo", comicinfo_mod);
     test_mod.addImport("sources", sources_mod);
     test_mod.addImport("flowdata", flowdata_mod);
+    test_mod.addImport("flowdata_extensions", extensions_mod);
     test_mod.addImport("mangadex_app", app_mod);
     test_mod.addImport("mangadex_plugin", plugin_mod);
+    test_mod.linkSystemLibrary("sqlite3", .{});
 
     const test_artifact = b.addTest(.{
         .root_module = test_mod,

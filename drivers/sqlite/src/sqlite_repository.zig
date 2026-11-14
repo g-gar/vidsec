@@ -683,11 +683,11 @@ pub const SqliteRepository = struct {
         self_ptr.* = SqliteRepository.initWithConfig(allocator, opened_db, schemaless, migrate_mode);
 
         if (schema_path) |spath| {
+            errdefer self_ptr.schema_arena.deinit();
+            errdefer self_ptr.tables.deinit(allocator);
             const bytes = try flowdata.readFileBytes(allocator, spath);
             defer allocator.free(bytes);
-            var schema_arena = std.heap.ArenaAllocator.init(allocator);
-            defer schema_arena.deinit();
-            const arena = schema_arena.allocator();
+            const arena = self_ptr.schema_arena.allocator();
 
             const catalog = try flowdata.yaml.parseSchemaCatalog(arena, bytes, null);
             try self_ptr.ensureSchema(&catalog);
